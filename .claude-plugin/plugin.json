@@ -1,0 +1,8 @@
+{
+  "name": "claudio",
+  "description": "Spec-driven development workflow: create specifications and implement them task-by-task",
+  "version": "1.0.0",
+  "author": {
+    "name": "Julien Rollin"
+  }
+}
