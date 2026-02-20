@@ -1,10 +1,13 @@
 {
   "name": "claudio",
   "description": "Spec-driven development skills for Claude Code",
+  "owner": {
+    "name": "Julien Rollin"
+  },
   "plugins": [
     {
       "name": "claudio",
-      "path": "."
+      "source": "git@github.com:jrollin/claudio.git"
     }
   ]
 }
