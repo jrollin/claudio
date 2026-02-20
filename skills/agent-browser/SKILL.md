@@ -25,8 +25,18 @@ agent-browser diff screenshot --baseline .claude/local/screenshots/before.png -o
 1. Navigate: `agent-browser open <url>`
 2. Snapshot: `agent-browser snapshot` (returns elements with refs like `@e1`, `@e2`)
 3. Interact using `@refs` from the snapshot
-4. Re-snapshot after navigation or significant DOM changes
+4. **Re-snapshot after every navigation or DOM change** — refs go stale immediately
 5. Close: `agent-browser close`
+
+> **`@eN` refs are single-use per snapshot.** Any click that triggers navigation invalidates all refs. Always call `snapshot` again before the next interaction.
+
+## Known limitations
+
+- `scrollintoview` expects a CSS selector, not an `@eN` ref — use `eval` instead:
+  ```bash
+  agent-browser eval "document.querySelector('[aria-label=\"Label\"]').scrollIntoView()"
+  ```
+- `find text/role` only supports `click` and `hover` as subactions — for `fill` or other interactions, use `snapshot` + `@ref`
 
 ## Commands
 
