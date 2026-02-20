@@ -1,7 +1,7 @@
 {
   "name": "claudio",
-  "description": "Spec-driven development workflow: create specifications and implement them task-by-task",
-  "version": "1.1.0",
+  "description": "Spec driven and quality best practice",
+  "version": "1.1.1",
   "author": {
     "name": "Julien Rollin"
   },
