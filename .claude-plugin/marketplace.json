@@ -7,7 +7,10 @@
   "plugins": [
     {
       "name": "claudio",
-      "source": "git@github.com:jrollin/claudio.git"
+      "source": {
+        "source": "github",
+        "repo": "jrollin/claudio"
+      }
     }
   ]
 }
