@@ -1,0 +1,10 @@
+{
+  "name": "claudio",
+  "description": "Spec-driven development skills for Claude Code",
+  "plugins": [
+    {
+      "name": "claudio",
+      "path": "."
+    }
+  ]
+}
