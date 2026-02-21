@@ -89,7 +89,7 @@ Create `docs/features/<feature-name>/tasks.md`.
 
 - Use `T-X` IDs for every task (heading-based entries, not tables)
 - Group tasks by implementation phase
-- Each task references: `US-X` (stories), `TD-X` (decisions), `BR-X` (rules)
+- Each task references `US-X` (stories) and `TD-X` (decisions) in its `Refs` field, and `BR-X` (rules) in a separate `Rules` field
 - Each task lists files to create/modify (must match File Inventory)
 - Each task specifies a runnable verification command
 - Note dependencies between tasks using `T-X` IDs
@@ -117,6 +117,7 @@ Generate a completion summary (cross-reference consistency is validated by the P
 | Requirements example | `references/example-requirements.md` | Writing requirements (Phase 1) |
 | Design example | `references/example-design.md` | Writing design (Phase 2) |
 | Tasks example | `references/example-tasks.md` | Writing tasks (Phase 3) |
+| Tasks do & don't | `references/do-dont-tasks.md` | Writing tasks (Phase 3) |
 
 ## Edge Cases
 
