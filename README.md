@@ -9,6 +9,8 @@ Claude Code plugin for spec-driven development and TDD.
 | `spec-create` | Create feature specifications (Requirements → Design → Tasks) |
 | `spec-impl` | Implement tasks from a completed specification |
 | `tdd` | Test-driven development: red-green-refactor cycle, write failing tests first |
+| `event-modeling-spec` | Design systems with Event Modeling methodology (commands/events/views blueprints) |
+| `event-modeling-tasks` | Translate a completed event model into implementation tasks |
 
 ## Install
 
@@ -34,6 +36,8 @@ claude --plugin-dir /path/to/claudio
 /claudio:spec-create <feature-name> [description]
 /claudio:spec-impl <feature-name>
 /claudio:tdd
+/claudio:event-modeling-spec <system-name> [description]
+/claudio:event-modeling-tasks <system-name>
 ```
 
 Typical workflow:
