@@ -24,6 +24,7 @@ Write draft → Present to user → Receive feedback → Revise → Re-present �
 ```
 
 - Never proceed on partial approval ("looks good except for US-3" = not approved)
+- On partial feedback, revise only the flagged items, keep approved items stable, and re-present the full document for final approval
 - Apply all feedback before re-presenting
 - Use `AskUserQuestion` for targeted clarification when feedback is unclear
 
@@ -33,7 +34,9 @@ Write draft → Present to user → Receive feedback → Revise → Re-present �
 
 - [ ] requirements.md exists and is complete
 - [ ] At least one user story with acceptance criteria
-- [ ] Non-functional requirements addressed (or explicitly marked N/A)
+- [ ] All acceptance criteria have `AC-X.Y` IDs
+- [ ] Business rules extracted as `BR-X` (if applicable) — domain intent only, no implementation parameters
+- [ ] Non-functional requirements have `NFR-X` IDs (or section explicitly marked N/A)
 - [ ] Open questions resolved or deferred to "Out of Scope"
 - [ ] User has explicitly approved
 
@@ -41,23 +44,31 @@ Write draft → Present to user → Receive feedback → Revise → Re-present �
 
 - [ ] design.md exists and is complete
 - [ ] Architecture overview covers affected components
-- [ ] At least one technical decision documented with alternatives
+- [ ] Usage flow diagram (Mermaid flowchart) present
+- [ ] Component diagram (Mermaid graph) present
+- [ ] At least one technical decision documented with `TD-X` ID and alternatives
+- [ ] File Inventory table lists all files to create/modify
 - [ ] Design is consistent with approved requirements
 - [ ] User has explicitly approved
 
 ### Before Phase 4 (Summary)
 
 - [ ] tasks.md exists and is complete
-- [ ] All tasks reference user stories from requirements
-- [ ] Each task has a verification method
-- [ ] Dependencies between tasks are noted
+- [ ] All tasks have `T-X` IDs (heading-based entries)
+- [ ] All tasks reference `US-X` from requirements in Refs
+- [ ] Tasks reference `TD-X` from design where applicable
+- [ ] All tasks list files matching design's File Inventory — every inventory file appears in at least one task
+- [ ] Each task has a runnable verification command
+- [ ] Dependencies between tasks use `T-X` IDs
+- [ ] Business rules referenced via `BR-X` where applicable
+- [ ] IDs are consistent across all 3 documents (each `T-X` traces to `US-X`, `TD-X`, `BR-X`)
 - [ ] User has explicitly approved
 
 ## Error Handling
 
 | Situation | Action |
 |-----------|--------|
-| Requirements are unclear or vague | Ask targeted questions via `AskUserQuestion` — don't guess |
+| Requirements are unclear or vague | Ask targeted questions via asking the user directly — don't guess |
 | Design is too complex for one feature | Suggest decomposing into smaller features |
 | Tasks are too broad | Break into smaller, verifiable units |
 | User wants to skip a phase | Refuse — explain phases are sequential and each builds on the previous |
@@ -69,10 +80,10 @@ Write draft → Present to user → Receive feedback → Revise → Re-present �
 When invoked for a feature that already has partial files:
 
 1. Check `docs/features/<feature-name>/` for existing files
-2. Determine which phases are complete:
-   - `requirements.md` exists → Phase 1 done
-   - `design.md` exists → Phase 2 done
-   - `tasks.md` exists → Phase 3 done
-3. If partial: read existing files to restore context
+2. Determine which phases *may* be complete based on file existence:
+   - `requirements.md` exists → Phase 1 likely done
+   - `design.md` exists → Phase 2 likely done
+   - `tasks.md` exists → Phase 3 likely done
+3. If partial: read existing files to restore context. Validate **structural completeness** (required headings present, IDs assigned, sections non-empty) before treating any phase as done — a file may be incomplete if the session was interrupted mid-write. Quality checks (content adequacy, consistency) are deferred to user review
 4. Ask user: "I found existing [files]. Resume from [next phase] or start fresh?"
 5. If resuming: read and summarize existing docs, confirm they're still valid, then continue

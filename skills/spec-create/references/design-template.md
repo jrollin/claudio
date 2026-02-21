@@ -5,12 +5,38 @@
 
 ## Structure
 
+Follow this skeleton exactly — every heading must appear in the output. The Example section below illustrates the structure with concrete content; do not copy example content into output.
+
 ````markdown
 # <Feature Name> — Design
 
 ## Architecture Overview
 
 [High-level system design, component relationships, how this feature fits into the existing system]
+
+## Usage Flow
+
+```mermaid
+flowchart TD
+    A[User action] --> B{Decision?}
+    B -->|Yes| C[Happy path]
+    B -->|No| D[Alternative path]
+    C --> E[Result]
+    D --> E
+```
+
+[Mermaid flowchart showing the user journey through the feature — from entry point to outcomes]
+
+## Component Diagram
+
+```mermaid
+graph LR
+    A[Component A] --> B[Component B]
+    A --> C[Component C]
+    B --> D[(Storage)]
+```
+
+[Mermaid diagram showing system structure: components, their relationships, and data flow]
 
 ## Technical Decisions
 
@@ -47,7 +73,18 @@
 
 ## Sequence Diagrams
 
-[Critical flows visualized using Mermaid]
+[Critical flows visualized using Mermaid — focus on multi-component interactions]
+
+## File Inventory
+
+| File | Action | Purpose |
+|------|--------|---------|
+| `src/auth/service.ts` | new | Core authentication service |
+| `src/auth/types.ts` | new | Type definitions for auth domain |
+| `src/middleware/auth.ts` | modify | Add token validation middleware |
+| `tests/auth/service.test.ts` | new | Unit tests for auth service |
+
+[Complete list of files to create or modify. This is the primary input for spec-impl.]
 ````
 
 ## Guidelines
@@ -59,6 +96,26 @@
 - Call out new components/modules being introduced
 - Keep it high-level — implementation details go in "Implementation Considerations"
 
+### Usage Flow
+
+Mermaid `flowchart` showing the user journey:
+
+- Start with the user's entry point (command, click, event)
+- Show decision points and branching paths
+- Include error/edge-case paths, not just the happy path
+- End with observable outcomes
+
+This helps developers and agents understand the feature's scope at a glance.
+
+### Component Diagram
+
+Mermaid `graph` showing system structure:
+
+- Show components, services, and stores involved
+- Arrow direction = dependency or data flow
+- Include external systems the feature interacts with
+- Use shapes to distinguish types: `[Service]`, `[(Database)]`, `([Queue])`
+
 ### Technical Decisions
 
 Use the "alternatives considered" pattern for every non-trivial decision:
@@ -68,11 +125,11 @@ Use the "alternatives considered" pattern for every non-trivial decision:
 3. Explain why each alternative was rejected
 4. State the rationale for the chosen approach
 
-This creates a decision log that prevents re-debating settled questions.
+TD-X IDs are referenced by tasks (`T-X` entries reference `TD-X` for traceability).
 
 ### Sequence Diagrams
 
-Use Mermaid syntax for visual flows:
+Use Mermaid syntax for multi-component interaction flows:
 
 ````markdown
 ```mermaid
@@ -94,6 +151,16 @@ sequenceDiagram
 
 Only diagram flows that involve multiple components or non-obvious sequencing.
 
+### File Inventory
+
+List every file the feature will create or modify:
+
+- **File**: path relative to project root
+- **Action**: `new` or `modify`
+- **Purpose**: one-line description of the file's role
+
+This table is the primary input for spec-impl — it tells the implementing agent exactly which files to touch. File Inventory is the **source of truth** for file paths; task entries reference subsets of it. If paths change, update File Inventory first, then propagate to tasks.
+
 ### Scope Guidance
 
 | Belongs in Design | Belongs in Requirements | Belongs in Tasks |
@@ -106,90 +173,4 @@ Only diagram flows that involve multiple components or non-obvious sequencing.
 
 ## Example
 
-````markdown
-# Notification Routing — Design
-
-## Architecture Overview
-
-The notification router sits between the CLI command layer and individual notifier
-adapters. It reads a channel configuration, resolves which adapters to invoke,
-and fans out the message.
-
-Components:
-- `NotificationRouter` — core orchestrator
-- `ChannelConfig` — YAML-based channel definitions
-- `SlackAdapter`, `EmailAdapter` — pluggable notifier implementations
-
-## Technical Decisions
-
-### TD-1: Configuration format
-
-**Choice**: YAML file at `~/.config/notify/channels.yml`
-**Alternatives considered**:
-- JSON — rejected: harder to read/edit manually
-- TOML — rejected: less common in this ecosystem, steeper learning curve
-- Environment variables — rejected: can't express channel routing rules
-
-**Rationale**: YAML balances human readability with structured data. Users already
-edit YAML configs in this project (e.g., manifest.yml).
-
-### TD-2: Adapter pattern for notifiers
-
-**Choice**: Trait-based adapter pattern with runtime dispatch
-**Alternatives considered**:
-- Hardcoded if/else per channel — rejected: adding channels requires modifying router
-- Plugin system with dynamic loading — rejected: over-engineered for 2-3 channels
-
-**Rationale**: Simple trait implementation per channel. Adding a new channel means
-one new struct + trait impl, no router changes.
-
-## Implementation Considerations
-
-### Data Model
-
-Channel config shape:
-```yaml
-channels:
-  - name: deploy-alerts
-    type: slack
-    webhook_url: ${SLACK_WEBHOOK}
-    events: [deploy, rollback]
-  - name: team-email
-    type: email
-    to: team@example.com
-    events: [deploy]
-```
-
-### API / Interface
-
-```
-notify send <event> <message> [--channel <name>]
-notify channels list
-notify channels test <name>
-```
-
-### Security
-
-- Webhook URLs stored in config file with `0600` permissions
-- Support env var interpolation (`${VAR}`) to avoid secrets in plaintext
-
-## Sequence Diagrams
-
-```mermaid
-sequenceDiagram
-    participant CLI
-    participant Router
-    participant Config
-    participant Slack
-    participant Email
-
-    CLI->>Router: send("deploy", "v1.2 deployed")
-    Router->>Config: get_channels_for("deploy")
-    Config-->>Router: [deploy-alerts, team-email]
-    Router->>Slack: deliver(deploy-alerts, message)
-    Slack-->>Router: ok
-    Router->>Email: deliver(team-email, message)
-    Email-->>Router: ok
-    Router-->>CLI: 2/2 delivered
-```
-````
+See `references/example-design.md` for a full User Authentication design example. The same feature is used across `example-requirements.md` and `example-tasks.md` for end-to-end traceability.

@@ -5,6 +5,8 @@
 
 ## Structure
 
+Follow this skeleton exactly — every heading must appear in the output. The Example section below illustrates the structure with concrete content; do not copy example content into output.
+
 ```markdown
 # <Feature Name> — Requirements
 
@@ -20,8 +22,8 @@ WHEN [actor] [condition/event]
 THE [expected behavior]
 
 **Acceptance Criteria:**
-- [ ] [Specific, testable criterion]
-- [ ] [Another criterion]
+- [ ] AC-1.1: [Specific, testable criterion]
+- [ ] AC-1.2: [Another criterion]
 
 ### US-2 <Story Title>
 
@@ -29,13 +31,18 @@ WHEN [actor] [condition/event]
 THE [expected behavior]
 
 **Acceptance Criteria:**
-- [ ] ...
+- [ ] AC-2.1: ...
+
+## Business Rules
+
+- **BR-1**: [Rule description — e.g., "Account locks after 5 failed login attempts"]
+- **BR-2**: [Rule description]
 
 ## Non-Functional Requirements
 
-- **Performance**: [Response time, throughput constraints]
-- **Security**: [Auth, data protection, input validation]
-- **Compatibility**: [Platforms, versions, dependencies]
+- **NFR-1** (Performance): [Response time, throughput constraints]
+- **NFR-2** (Security): [Auth, data protection, input validation]
+- **NFR-3** (Compatibility): [Platforms, versions, dependencies]
 
 ## Out of Scope
 
@@ -57,104 +64,49 @@ THE [expected behavior]
 ```
 
 - **WHEN**: describes the trigger — who does what, under what condition
-- **THE**: describes what the system must do in response
+- **THE**: describes what the system does in response
+
+We use WHEN/THE instead of AS A/I WANT/SO THAT because it focuses on observable behavior (trigger → response) rather than persona and motivation. This maps directly to test cases: the WHEN becomes the test setup, THE becomes the assertion.
+
+Do **not** use "SYSTEM SHALL" — the THE clause already implies system behavior.
 
 Each US must have at least one acceptance criterion that is directly testable.
 
-## Examples
+## Acceptance Criteria IDs
 
-### Example 1: CLI Tool Feature
+Prefix each criterion with `AC-X.Y` where X is the story number and Y is the criterion number. IDs are assigned once and stay stable — if you insert a criterion between AC-3.2 and AC-3.3, use AC-3.4 (append, don't renumber):
 
-```markdown
-# Dotfile Sync — Requirements
-
-## Overview
-
-A CLI command that synchronizes dotfiles between the local machine and a git repository,
-ensuring consistent development environments across machines.
-
-## User Stories
-
-### US-1 Initial sync from repository
-
-WHEN a user runs `dotfiles sync pull` on a new machine
-THE SYSTEM SHALL clone the dotfiles repository and create symlinks for all managed files
+```
+### US-3 Password Reset
 
 **Acceptance Criteria:**
-- [ ] All files listed in manifest.yml get symlinked to their target paths
-- [ ] Existing files at target paths are backed up to `~/.dotfiles-backup/` before overwriting
-- [ ] Command exits with error if repository URL is not configured
-
-### US-2 Detecting local changes
-
-WHEN a user runs `dotfiles sync status`
-THE SYSTEM SHALL display files that differ between local and repository versions
-
-**Acceptance Criteria:**
-- [ ] Modified files shown with diff summary
-- [ ] New local files (not in repo) shown as "untracked"
-- [ ] Missing files (in repo but not local) shown as "missing"
-
-## Non-Functional Requirements
-
-- **Performance**: Sync status must complete in under 2 seconds for up to 200 managed files
-- **Compatibility**: macOS and Linux (Ubuntu 22.04+)
-
-## Out of Scope
-
-- GUI interface
-- Automatic conflict resolution (user must resolve manually)
-
-## Open Questions
-
-- [ ] Should we support per-machine overrides (e.g., different .zshrc for work vs personal)?
+- [ ] AC-3.1: Reset email sent within 5 seconds of request
+- [ ] AC-3.2: Reset link expires after 1 hour
+- [ ] AC-3.3: Using an expired link shows an error message
 ```
 
-### Example 2: Config/Plugin Feature
+These IDs provide fine-grained traceability. Tasks reference stories at the `US-X` level; `AC-X.Y` IDs let reviewers verify that all criteria are covered.
+
+## Business Rules
+
+Extract reusable domain rules into the `## Business Rules` section with `BR-X` IDs. Business rules are referenced by tasks and acceptance criteria:
+
+- A rule that applies across multiple stories belongs in Business Rules (not inline in AC)
+- Each BR should be a single, testable constraint
+- Include **business-owned thresholds** (lockout after 5 attempts, session expires after 24h) — these are business decisions. Exclude **implementation choices** (bcrypt, Redis, specific DB schema) — those belong in design
+- Tasks reference `BR-X` to indicate which rules they enforce
 
 ```markdown
-# Neovim Diagnostic Toggle — Requirements
+## Business Rules
 
-## Overview
-
-A keybinding to toggle inline diagnostic virtual text on/off in Neovim,
-useful for markdown editing where diagnostics clutter the view.
-
-## User Stories
-
-### US-1 Hiding diagnostics in markdown
-
-WHEN a user opens a markdown file
-THE SYSTEM SHALL hide diagnostic virtual text by default
-
-**Acceptance Criteria:**
-- [ ] Virtual text is hidden on BufEnter for markdown filetypes
-- [ ] Other diagnostic features (signs, underlines) remain active
-- [ ] Non-markdown files are unaffected
-
-### US-2 Toggling diagnostics manually
-
-WHEN a user presses `<leader>dv` in a markdown buffer
-THE SYSTEM SHALL toggle virtual text visibility for that buffer only
-
-**Acceptance Criteria:**
-- [ ] Toggle is per-buffer (not global)
-- [ ] State persists while buffer is open
-- [ ] Works regardless of how many LSP clients are attached
-
-## Non-Functional Requirements
-
-- **Compatibility**: Neovim 0.10+ with LazyVim
-
-## Out of Scope
-
-- Toggling other diagnostic display modes (signs, underlines)
-- Per-project diagnostic settings
-
-## Open Questions
-
-- [ ] Should the toggle state persist across buffer re-opens?
+- **BR-1**: Sessions expire after 24 hours of inactivity
+- **BR-2**: Account locks after 5 consecutive failed login attempts
+- **BR-3**: Locked accounts unlock automatically after 30 minutes
 ```
+
+## Example
+
+See `references/example-requirements.md` for a full User Authentication requirements example. The same feature is used across `example-design.md` and `example-tasks.md` for end-to-end traceability.
 
 ## Common Mistakes to Avoid
 
@@ -163,3 +115,5 @@ THE SYSTEM SHALL toggle virtual text visibility for that buffer only
 - **Missing error cases**: Always include what happens when things go wrong (invalid input, network failure, missing files)
 - **Actor ambiguity**: "When data is processed" — specify *who* triggers it and *how*
 - **Scope creep in AC**: Acceptance criteria should validate the US, not introduce new requirements
+- **Inline business rules**: If a rule applies to multiple stories, extract it to `## Business Rules` with a `BR-X` ID
+- **Missing AC IDs**: Every acceptance criterion must have an `AC-X.Y` prefix for task traceability

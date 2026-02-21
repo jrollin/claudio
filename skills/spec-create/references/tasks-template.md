@@ -5,94 +5,76 @@
 
 ## Structure
 
+Follow this skeleton exactly — every heading must appear in the output. The Example section below illustrates the structure with concrete content; do not copy example content into output.
+
 ```markdown
 # <Feature Name> — Tasks
 
 ## Phase 1: <Phase Title>
 
-| Task | Status | Refs | Verification | Notes |
-|------|--------|------|--------------|-------|
-| <Task description> | Not Started | US-1 | <What proves it's done> | <Context> |
+### T-1: <Task title>
+- **Refs**: US-1, US-2, TD-1
+- **Files**: `src/auth/service.ts` (new), `src/auth/types.ts` (modify)
+- **Verify**: `npm test -- --grep "auth service"`
+- **Rules**: BR-1
+- **Status**: Not Started
+
+### T-2: <Task title>
+- **Refs**: US-3, TD-2
+- **Files**: `src/auth/lockout.ts` (new)
+- **Verify**: `npm test -- --grep "lockout"`
+- **Blocked by**: T-1
+- **Rules**: BR-2, BR-3
+- **Status**: Not Started
 
 ## Phase 2: <Phase Title>
 
-| Task | Status | Refs | Verification | Notes |
-|------|--------|------|--------------|-------|
-| ... | ... | ... | ... | ... |
+### T-3: <Task title>
+...
 
 ## Related Features
 
-- **<feature-name>**: [What shared state or business rules overlap]
+- **<feature-name>**: [What shared state or business rules overlap — informational, not parsed by agents]
 ```
 
-## Column Definitions
+## Field Definitions
 
-- **Task**: Imperative description of the work unit (e.g., "Create NotificationRouter service")
-- **Status**: `Not Started` | `In Progress` | `Complete`
-- **Refs**: User story references from requirements (e.g., `US-1, US-3`)
-- **Verification**: What test, check, or evidence proves the task is done
-- **Notes**: Implementation details, file paths, business rules
+- **Refs**: User story and technical decision references from requirements/design (e.g., `US-1, TD-2`)
+- **Files**: Files to create or modify, with action in parentheses — subset of File Inventory in design.md. If they drift, design.md's File Inventory is the source of truth; update tasks to match
+- **Verify**: Command or test that proves the task is done — must be a single inline code span (backtick-delimited) runnable with the project's test runner (e.g., `npm test`, `cargo test`, `pytest`)
+- **Blocked by**: Task IDs that must complete first — omit if none
+- **Rules**: Business rule IDs from requirements (e.g., `BR-1`) that this task enforces — omit if none
+- **Status**: `Not Started` | `In Progress` | `Complete` — spec-create sets all to `Not Started`; consuming agents (spec-impl) update status as they execute tasks
+
+Fields with no value (**Blocked by**, **Rules**) can be omitted entirely to reduce noise on small specs. Fields are identified by their `**Label**:` prefix, not by position — agents should parse by label, not line order.
 
 ## Rules
 
 ### DO
 
-- Group tasks by implementation phase (Phase 1, Phase 2, etc.)
-- Reference user stories (`US-1`, `US-2`) instead of repeating acceptance criteria
-- Focus on major milestones (service creation, API endpoints, integrations)
-- Track progress with simple status: Not Started | In Progress | Complete
-- Each task references which US/AC it proves (traceability)
-- Each task states what validates it (unit test, integration test, manual check)
-- Note dependencies and blockers between tasks
-- Note business rules inline (e.g., "BR: max 3 retries before lockout")
+- Use `T-X` IDs for every task — these are parsed by spec-impl for tracking
+- Group tasks by implementation phase (Phase 1, Phase 2, etc. — sequential starting at 1, no gaps) — phases are for human readability only; **execution order is determined by `Blocked by` fields**, not phase boundaries. An agent should topologically sort on `Blocked by` and ignore phase grouping. Tasks with all dependencies satisfied may be executed in parallel. A task with no `Blocked by` field can start immediately — if ordering matters, add an explicit `Blocked by`
+- Reference user stories (`US-1`) and technical decisions (`TD-2`) in Refs
+- Reference business rules (`BR-1`) in Rules field
+- List concrete files with action (`new` / `modify`) — must align with design's File Inventory. Every file in File Inventory must appear in at least one task; if a file has no task, it's either missing a task or shouldn't be in the inventory
+- Provide a runnable verification command or test pattern
+- Note dependencies between tasks using `T-X` IDs in Blocked by
 - Note cross-feature impact when tasks touch shared state
 
 ### DON'T
 
 - Don't create micro-checklists for every test case — tests prove implementation, not the reverse
-- Don't duplicate acceptance criteria from requirements.md
-- Don't list every single test file — link to test suite, not individual cases
+- Don't duplicate acceptance criteria text from requirements.md — the `AC-X.Y` IDs in requirements exist for reviewers to verify coverage, not for task Refs
+- Don't enumerate individual test *cases* beyond what's in File Inventory — test files listed in File Inventory must appear in tasks, but don't add extra test files that aren't in the inventory
 - Don't create tasks without clear verification methods
+- Don't use tables — heading-based entries are more reliably parsed by agents
 
 ## Test Quality Rules
 
 - Tests must cover the business rule, not just the happy path — include edge cases, error paths, boundary conditions
 - No flaky tests: deterministic, no timing dependencies, no external service calls without mocks
 - If a task touches shared state or cross-feature behavior, note related features that could be affected
-- Track business rules inline: each task notes which business rule(s) it enforces
-
-## Dependency Notation
-
-Use "Blocked by:" prefix in Notes column for sequential dependencies:
-
-```markdown
-| Set up database schema | Not Started | US-1 | Migration runs clean | — |
-| Create API endpoint    | Not Started | US-1, US-2 | Integration test passes | Blocked by: schema setup |
-```
 
 ## Example
 
-```markdown
-# User Authentication — Tasks
-
-## Phase 1: Core Auth Service
-
-| Task | Status | Refs | Verification | Notes |
-|------|--------|------|--------------|-------|
-| Create `AuthService` with login/logout | Not Started | US-1, US-2 | `test_login_valid_credentials`, `test_logout_clears_session` | BR: session expires after 24h |
-| Implement account lockout | Not Started | US-3 | `test_login_locks_after_5_failures`, `test_lockout_resets_after_30min` | BR: account locks after 5 failed attempts |
-| Add password hashing | Not Started | US-1 | `test_password_not_stored_plaintext` | Use bcrypt, cost factor 12 |
-
-## Phase 2: API Integration
-
-| Task | Status | Refs | Verification | Notes |
-|------|--------|------|--------------|-------|
-| Create `/auth/login` endpoint | Not Started | US-1 | Integration test: valid login returns 200 + token | Blocked by: AuthService |
-| Create `/auth/logout` endpoint | Not Started | US-2 | Integration test: logout invalidates token | Blocked by: AuthService |
-| Add rate limiting middleware | Not Started | US-3 | `test_rate_limit_blocks_after_threshold` | BR: 10 req/min per IP |
-
-## Related Features
-
-- **password-reset**: Shares lockout state — resetting password must clear lockout counter
-- **user-profile**: Login creates session used by profile endpoints
-```
+See `references/example-tasks.md` for a full User Authentication tasks example. The same feature is used across `example-requirements.md` and `example-design.md` for end-to-end traceability.
