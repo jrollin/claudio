@@ -38,7 +38,7 @@ This document describes the system as a **timeline of events** — business fact
 | Guest | Identity & Loyalty | Registration, profiles, loyalty accounts and rewards |
 | Inventory | Rooms | Room catalog, availability |
 | Booking | Reservations | Booking lifecycle from initiation to cancellation |
-| Payment | Payments | Authorization, capture, refunds |
+| Payment | Payments | Authorization, capture, refunds, external payment translation |
 | Stay | Operations | Check-in, room keys, check-out, occupancy |
 
 ---
@@ -485,6 +485,51 @@ PaymentRefunded {
 
 ---
 
+### P-4: RecordStripePayment
+**Pattern:** Translation
+**Swim Lane:** Payment
+
+**External source:** Stripe emits `payment_intent.succeeded`
+
+**Todo-list view:**
+```
+UnprocessedStripePayments {
+  rows: [{ stripePaymentIntentId: "pi_3OqA2CLkdIwHu7ix0", amount: 240.00, currency: "EUR", bookingId: "b-9001" }]
+}
+```
+Feeds from: Stripe `payment_intent.succeeded` where `PaymentRecorded` missing for that `stripePaymentIntentId`
+
+**Robot:** Stripe Payment Translator
+
+**Command (blue):**
+```
+RecordPayment {
+  bookingId: "b-9001",
+  stripePaymentIntentId: "pi_3OqA2CLkdIwHu7ix0",
+  amount: 240.00,
+  currency: "EUR"
+}
+```
+
+**Event (orange):**
+```
+PaymentRecorded {
+  paymentId: "pay-7002",
+  bookingId: "b-9001",
+  stripePaymentIntentId: "pi_3OqA2CLkdIwHu7ix0",
+  amount: 240.00,
+  currency: "EUR",
+  recordedAt: "2026-02-21T10:06:45Z"
+}
+```
+
+**Specification:**
+> Given: Todo view "UnprocessedStripePayments" shows [{ stripePaymentIntentId: "pi_3OqA2CLkdIwHu7ix0", bookingId: "b-9001", amount: 240.00 }]
+> When: Translator calls RecordPayment { bookingId: "b-9001", stripePaymentIntentId: "pi_3OqA2CLkdIwHu7ix0", amount: 240.00, currency: "EUR" }
+> Then: PaymentRecorded { paymentId: "pay-7002", bookingId: "b-9001", stripePaymentIntentId: "pi_3OqA2CLkdIwHu7ix0", amount: 240.00, recordedAt: "2026-02-21T10:06:45Z" } — row removed from todo
+
+---
+
 ### S-1: CheckIn
 **Pattern:** Command
 **Swim Lane:** Stay
@@ -716,7 +761,7 @@ LoyaltyRewardRedeemed {
 | Identity Team | Guest | G-1 (RegisterGuest), G-2 (GuestProfile), G-3 (OpenLoyaltyAccount) |
 | Inventory Team | Inventory | I-1 (AddRoom), I-2 (RoomAvailability) |
 | Booking Team | Booking | B-1 (InitiateBooking), B-2 (ConfirmBooking), B-3 (CancelBooking), B-4 (GuestBookings) |
-| Payment Team | Payment | P-1 (AuthorizePayment), P-2 (CapturePayment), P-3 (RefundPayment) |
+| Payment Team | Payment | P-1 (AuthorizePayment), P-2 (CapturePayment), P-3 (RefundPayment), P-4 (RecordStripePayment) |
 | Stay Team | Stay | S-1 (CheckIn), S-2 (IssueRoomKey), S-3 (CheckOut), S-4 (RoomOccupancy) |
 | Loyalty Team | Guest (sub-domain) | L-1 (EarnLoyaltyPoints), L-2 (RedeemLoyaltyReward) |
 
@@ -728,11 +773,12 @@ LoyaltyRewardRedeemed {
 | Every command has a Given-When-Then with realistic data | ✅ | 9 commands with concrete values |
 | Every view has a Given-Then specification | ✅ | 4 views with concrete values |
 | Every automation has a todo-list view and a produced command | ✅ | 6 automations, each with named todo view |
-| No orphan events | ✅ | All 15 events consumed by at least one view or automation |
+| Every translation has a named external source, todo-list view, named translator, and produced command | ✅ | 1 translation (Stripe webhook) with external source named |
+| No orphan events | ✅ | All 16 events consumed by at least one view or automation |
 
 ## Summary
 
-- **Total slices:** 18
-- **Patterns:** 8 commands, 4 views, 6 automations, 0 translations
+- **Total slices:** 19
+- **Patterns:** 8 commands, 4 views, 6 automations, 1 translation
 - **Swim lanes:** Guest, Inventory, Booking, Payment, Stay
-- **Events:** 15
+- **Events:** 16

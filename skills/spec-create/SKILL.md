@@ -111,7 +111,9 @@ Generate a completion summary (cross-reference consistency is validated by the P
 | Topic | Reference | Load When |
 |-------|-----------|-----------|
 | Requirements format and examples | `references/requirements-template.md` | Writing requirements (Phase 1) |
+| Requirements do & don't | `references/do-dont-requirements.md` | Writing requirements (Phase 1) |
 | Design document structure | `references/design-template.md` | Writing design (Phase 2) |
+| Design do & don't | `references/do-dont-design.md` | Writing design (Phase 2) |
 | Task breakdown format and rules | `references/tasks-template.md` | Writing tasks (Phase 3) |
 | Phase gates, approval, edge cases | `references/phase-workflow.md` | Need detailed phase guidance |
 | Requirements example | `references/example-requirements.md` | Writing requirements (Phase 1) |

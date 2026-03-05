@@ -24,9 +24,15 @@ Write the test first. Watch it fail. Write minimal code to pass.
 
 **Exceptions (ask your human partner):**
 
-- Throwaway prototypes
-- Generated code
-- Configuration files
+Use this checklist to decide — if uncertain, default to TDD:
+
+| Question | Yes → exception applies |
+|----------|------------------------|
+| Is the code intended to be fully discarded after the session (not merged)? | Throwaway prototype |
+| Was the code produced entirely by a code-generation tool, not hand-written? | Generated code |
+| Does the file contain only values and no logic (env vars, JSON config, Dockerfile)? | Configuration file |
+
+If none of the above apply, follow TDD. "It feels too simple" is not an exception.
 
 Thinking "skip TDD just this once"? Stop. That's rationalization.
 
@@ -54,6 +60,13 @@ RED (write test) → VERIFY FAIL → GREEN (minimal code) → VERIFY PASS → RE
 ```
 
 ### RED - Write Failing Test
+
+**Pre-coding checklist (complete before writing a single line of production code):**
+
+- [ ] No production code for this behavior exists yet — if it does, delete it first
+- [ ] This is a behavioral change, not a config file / generated file / throwaway prototype
+- [ ] I can describe the desired API (inputs, outputs, error cases) without looking at an implementation
+- [ ] I know which test file to create or extend
 
 Write one minimal test showing what should happen.
 
@@ -175,7 +188,7 @@ Can't check all boxes? You skipped TDD. Start over.
 
 ## Testing Anti-Patterns
 
-When adding mocks or test utilities, read @testing-anti-patterns.md to avoid common pitfalls:
+When adding mocks or test utilities, read `../testing-anti-patterns.md` (at `skills/tdd/testing-anti-patterns.md`) to avoid common pitfalls:
 
 - Testing mock behavior instead of real behavior
 - Adding test-only methods to production classes

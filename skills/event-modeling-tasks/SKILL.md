@@ -37,7 +37,14 @@ If the event model is incomplete, use **event-modeling-spec** first.
 | EarnLoyaltyPoints | `EARN` | Clear in context |
 | OpenLoyaltyAccount | `LOYALTY-OPEN` | Two words needed — "open" alone is ambiguous |
 
-Infrastructure: `HTL-INFRA-EVENTS`, `HTL-INFRA-DISPATCH`
+Infrastructure tasks use `<TRIGRAM>-INFRA-<NAME>` and go in Phase 0:
+
+| Task | Short Name | Why |
+|------|-----------|-----|
+| Event persistence setup | `INFRA-EVENTS` | Shared foundation for all slices |
+| Automation dispatcher setup | `INFRA-DISPATCH` | Required by all Automation and Translation slices |
+
+Example: `HTL-INFRA-EVENTS`, `HTL-INFRA-DISPATCH`
 
 ## Rules
 
@@ -49,6 +56,7 @@ Infrastructure: `HTL-INFRA-EVENTS`, `HTL-INFRA-DISPATCH`
 - **Error case verification per pattern:**
   - Commands: test precondition rejection (Given events missing → rejected)
   - Automations: test idempotency (run robot twice → second run does nothing)
+  - Translations: test idempotency (run translator twice → second run does nothing; stub external system in tests)
   - Views: test empty/missing data response (no events → empty result or 404)
 
 ## Deriving Dependencies
@@ -69,6 +77,8 @@ Group tasks by dependency depth:
 Tasks within the same phase can be implemented in parallel. Order tasks within a phase by: Commands first, then Views, then Automations.
 
 ## Process
+
+> **Always include the "How to Read These Tasks" preamble** in every generated task file — never omit it. The preamble is the primary guide for developers unfamiliar with Event Modeling. It is not optional.
 
 1. **Assign trigram** — Confirm with user
 2. **List slices** — ID, pattern, swim lane

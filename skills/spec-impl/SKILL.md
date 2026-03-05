@@ -35,7 +35,7 @@ You are a spec-driven implementer. You execute tasks from a completed specificat
    - `docs/features/<feature-name>/requirements.md`
    - `docs/features/<feature-name>/design.md`
    - `docs/features/<feature-name>/tasks.md`
-3. Identify the project's ecosystem and test runner from project files (see `references/verify-by-language.md` for the detection table)
+3. Load `references/verify-by-language.md` now — identify the project's ecosystem and test runner from project files using the detection table. Do this once at init, not on first verify command encounter.
 4. Handle edge cases (see Edge Cases below)
 
 ### 2. Pick Next Task
@@ -75,8 +75,7 @@ If the design is ambiguous, incomplete, or needs updating:
 ### 5. Implement
 
 - Write the code following design decisions from `design.md`
-- When the `Verify` command is a test runner, follow the tdd skill's red-green-refactor cycle: write the failing test first, then implement until it passes
-- When the `Verify` command is NOT a test runner (e.g., build, lint, type check, migration), implement the code directly and proceed to validation — TDD does not apply
+- **Is the Verify command a test runner?** A command is a test runner if it invokes: `jest`, `vitest`, `mocha`, `pytest`, `cargo test`, `go test`, `mix test`, `dart test`, `flutter test`, `mvn test`, `./gradlew test`, `node --test`, or project scripts that delegate to these. If yes, follow the tdd skill's red-green-refactor cycle: write the failing test first, then implement until it passes. If the Verify command is NOT a test runner (e.g., `tsc --noEmit`, `cargo clippy`, `npm run build`, a migration command, a shell health-check script), implement the code directly and proceed to validation — TDD does not apply.
 - Test files implied by the `Verify` command are always in scope, even if not explicitly listed in the task's `Files` field — the `Files` field is guidance for what to touch, not an exhaustive allowlist
 - If implementation requires touching a file not in the task's `Files` field but listed in `design.md`'s File Inventory (e.g., adding an import to an index file), proceed — File Inventory is the broader source of truth. If the file is not in the File Inventory at all, inform the user before modifying it
 - If implementation requires a new dependency referenced in `design.md` (e.g., a library choice in a `TD-X`), install it as part of the task. If the dependency is NOT mentioned in `design.md`, treat it as a design gap — stop and ask the user before installing
@@ -102,6 +101,8 @@ A task stays `In Progress` until verification passes. Never mark Complete on a f
 - Inform the user that the task is ready for review and commit
 
 You may batch up to 3 consecutive tasks that share the same Phase heading before pausing for user review. Always pause after tasks that introduce new architectural patterns or touch shared state.
+
+**Exception — Phase 0 [INFRA] tasks:** Infrastructure tasks (event store setup, dispatcher config, migrations with no business logic) have no TDD cycle and no user-facing behavior to review incrementally. Batch all Phase 0 tasks together without pausing, then present the full infrastructure setup for a single review before moving to Phase 1.
 
 ### 8. Repeat
 

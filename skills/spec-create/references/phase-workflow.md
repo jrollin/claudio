@@ -64,6 +64,20 @@ Write draft → Present to user → Receive feedback → Revise → Re-present �
 - [ ] IDs are consistent across all 3 documents (each `T-X` traces to `US-X`, `TD-X`, `BR-X`)
 - [ ] User has explicitly approved
 
+#### Cross-Reference Consistency (validate before entering Phase 4)
+
+These checks must all pass before generating the summary. If any fail, return to the relevant phase to fix:
+
+| Check | Rule |
+|-------|------|
+| Every `US-X` in requirements maps to ≥ 1 `T-X` in tasks | No user story left unimplemented |
+| Every `TD-X` in design appears in ≥ 1 `T-X` Refs field | No architectural decision left unenforced |
+| No `T-X` has `NFR-X` in its `Refs` field | NFRs are cross-cutting constraints, not per-task references |
+| No `T-X` has `AC-X.Y` in its `Refs` field | Tasks reference stories (`US-X`), not individual criteria |
+| Every file in design's File Inventory appears in ≥ 1 task's `Files` field | No inventory file is orphaned |
+| `Blocked by` fields form a DAG — no cycles | Topological ordering is possible |
+| All `BR-X` referenced by tasks exist in requirements | No phantom business rule references |
+
 ## Error Handling
 
 | Situation | Action |

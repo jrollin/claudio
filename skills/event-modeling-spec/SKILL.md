@@ -144,6 +144,7 @@ Generate the event model document using `references/output-template.md`. The doc
 | Missing specifications with realistic data | Every slice needs Given-When-Then with concrete values |
 | Automation vs Translation confusion | Automation = we reach out; Translation = they notify us |
 | Trigger section on Automation slices | Automations have no user trigger — the robot is the actor. Omit the Trigger section |
+| Todo-list view missing population/removal logic | Always write "Feeds from: Event A where Event B missing for same ID" — name both events explicitly |
 
 ## External References
 

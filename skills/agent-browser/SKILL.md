@@ -161,6 +161,28 @@ agent-browser console           # View console messages
 agent-browser errors            # View uncaught errors
 ```
 
+## DO / DON'T
+
+| DO | DON'T |
+|----|-------|
+| Call `snapshot` again after every click, navigation, or DOM mutation | Reuse `@eN` refs from a previous snapshot — they are invalid after any page change |
+| Use `eval "document.querySelector('...').scrollIntoView()"` to scroll to an element | Use `scrollintoview @eN` — it expects a CSS selector, not a ref |
+| Use `find role/text/label/testid` for stable semantic locators when only `click` or `hover` is needed | Use `find ... fill` — `find` only supports `click` and `hover` as subactions |
+| Create `.claude/local/screenshots/` before the first screenshot command | Assume the directory exists |
+| Call `wait --load networkidle` after navigation-triggering clicks | Proceed immediately after a click — network may not have settled |
+| Close the browser with `agent-browser close` when done | Leave the session open between tasks |
+
+## Multi-step Checklist
+
+Use this checklist when running a multi-step browser flow:
+
+- [ ] Directory `.claude/local/screenshots/` exists before saving any file
+- [ ] `open <url>` called — browser is on the correct page
+- [ ] `snapshot` called — you have fresh `@eN` refs
+- [ ] After every action that triggers navigation or DOM change: call `snapshot` again before the next interaction
+- [ ] `wait --load networkidle` (or `wait --text` / `wait --url`) used after navigation-triggering clicks
+- [ ] `close` called at the end of the session
+
 ## Example: Form submission
 
 ```bash
