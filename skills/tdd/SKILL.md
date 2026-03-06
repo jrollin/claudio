@@ -1,6 +1,10 @@
 ---
 name: tdd
-description: Use when implementing any feature or bugfix, before writing implementation code. Invoke for test-driven development, red-green-refactor cycle, writing failing tests first, TDD workflow, and test-first programming.
+description: >
+  Use when implementing ANY feature or bugfix — invoke this skill before writing a single line of production code.
+  Trigger for: test-driven development, red-green-refactor cycle, failing tests first, TDD workflow, test-first programming.
+  Also trigger when the user asks to "implement", "add", "build", "fix a bug", "write a function", or "create" anything that involves production code — even if they don't mention TDD.
+  Even if the task seems too simple to need tests, invoke this skill.
 ---
 
 # Test-Driven Development (TDD)
@@ -96,7 +100,13 @@ Confirm:
 
 ### GREEN - Minimal Code
 
-Write simplest code to pass the test. Don't add features, refactor other code, or "improve" beyond the test.
+Write the **stupidest code that makes the test green**. Not "simple" — **minimal**.
+
+- One test expects `true`? Return `true`. Not `email.includes('@')`. Not a regex.
+- One test expects `3` for `add(1, 2)`? Return `a + b`. Not input validation.
+- Any logic that handles untested cases = code without a failing test = violates the Iron Law.
+
+Don't add features, handle edge cases, refactor other code, or "improve" beyond the test. Future tests will drive the real implementation.
 
 ### Verify GREEN - Watch It Pass
 
@@ -188,7 +198,7 @@ Can't check all boxes? You skipped TDD. Start over.
 
 ## Testing Anti-Patterns
 
-When adding mocks or test utilities, read `../testing-anti-patterns.md` (at `skills/tdd/testing-anti-patterns.md`) to avoid common pitfalls:
+When adding mocks or test utilities, read `testing-anti-patterns.md` to avoid common pitfalls:
 
 - Testing mock behavior instead of real behavior
 - Adding test-only methods to production classes

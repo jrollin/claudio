@@ -1,0 +1,394 @@
+# Golden examples for TDD skill behavioral testing.
+#
+# Each scenario defines a user request and the expected agent behavior
+# when the SKILL.md is loaded. Used with eval.sh (LLM-as-judge).
+#
+# Schema:
+#   - id: unique identifier
+#     description: what this tests
+#     user_query: the user's message to the agent
+#     context: optional context provided before the query
+#     expected:
+#       behavior: description of the correct agent behavior
+#       reasoning: why this is correct per the TDD skill
+#     anti_patterns: behaviors the agent must NOT exhibit
+#     tags: [iron-law, red-green-refactor, exceptions, anti-patterns, when-to-use, good-tests, when-stuck]
+#
+# Judging rules:
+#   - PASS = agent's PRIMARY response demonstrates TDD-first behavior
+#   - FAIL = agent skips the test, writes implementation first, or omits fail-verification
+#   - Anti-patterns apply to the agent's main course of action, not to edge-case caveats
+
+# ============================================================
+# Iron Law: test before code
+# ============================================================
+
+- id: write_test_before_code
+  description: New feature request — agent must write failing test before any production code
+  user_query: "Implement a function `add(a, b)` that returns the sum of two numbers in TypeScript."
+  expected:
+    behavior: >
+      Agent describes writing a failing test for add() first (e.g. expect(add(1, 2)).toBe(3)),
+      running it to watch it fail, then writing the minimal implementation.
+      The test file must come before any implementation code in the described steps.
+    reasoning: >
+      The Iron Law: NO PRODUCTION CODE WITHOUT A FAILING TEST FIRST.
+      New feature = always TDD. The agent must not write the function body first.
+  anti_patterns:
+    - Writing the implementation function before describing the test
+    - Providing a complete implementation without mentioning a test first
+    - Saying "here is the implementation" as the first action
+  tags: [iron-law]
+
+- id: refuse_code_before_test
+  description: User provides pre-written code and asks to add tests — agent must delete it and restart with TDD
+  user_query: "I already wrote this function, can you just add tests for it?"
+  context: |
+    The user has shared this implementation:
+    ```typescript
+    function parseDate(input: string): Date {
+      return new Date(input);
+    }
+    ```
+  expected:
+    behavior: >
+      Agent explicitly states the pre-written code must be deleted per the Iron Law,
+      and proposes restarting with a failing test first. It must not write tests
+      around the existing implementation.
+    reasoning: >
+      The Iron Law says: "Write code before the test? Delete it. Start over."
+      "Don't keep it as reference", "Don't adapt it while writing tests".
+      Tests written after implementation are tests-after, not TDD.
+  anti_patterns:
+    - Accepting the existing code and writing tests around it
+    - Writing tests that validate the current implementation without deleting it first
+    - Saying "I'll write tests for this code"
+  tags: [iron-law]
+
+- id: no_testing_after
+  description: User explicitly asks to implement first and test later — agent must refuse
+  user_query: "Just write the implementation for now, we'll add tests at the end of the sprint."
+  expected:
+    behavior: >
+      Agent refuses the test-last approach, citing TDD principles. It explains
+      that tests written after implementation only verify what the code does,
+      not what it should do, and proposes following the red-green-refactor cycle instead.
+    reasoning: >
+      Red Flag from the skill: "I'll test after" and "Tests after achieve same goals"
+      are explicitly listed as rationalizations to reject.
+      "Tests-after = what does this do? Tests-first = what should this do?"
+  anti_patterns:
+    - Agreeing to write implementation first and defer tests
+    - Writing any production code without a test plan
+    - Saying "sure, we can add tests later"
+  tags: [iron-law]
+
+# ============================================================
+# Red-Green-Refactor cycle
+# ============================================================
+
+- id: red_must_fail_first
+  description: After writing a test, agent must explicitly verify it fails before implementing
+  user_query: "I've written the test for my new validateEmail function. What do I do next?"
+  context: |
+    The user has written:
+    ```typescript
+    test('validates correct email', () => {
+      expect(validateEmail('user@example.com')).toBe(true);
+    });
+    ```
+    No implementation exists yet.
+  expected:
+    behavior: >
+      Agent instructs the user to run the test NOW and confirm it fails — before
+      writing any implementation. It must explain that watching the test fail is
+      MANDATORY and must not be skipped.
+    reasoning: >
+      "Verify RED - Watch It Fail: MANDATORY. Never skip."
+      "Core principle: If you didn't watch the test fail, you don't know if it tests the right thing."
+  anti_patterns:
+    - Jumping directly to writing the validateEmail implementation
+    - Skipping the "run and verify it fails" step
+    - Saying "now write the implementation" without mentioning the fail verification
+  tags: [red-green-refactor]
+
+- id: minimal_green_implementation
+  description: After a failing test, agent must write minimal code — not a full implementation
+  user_query: "The test is failing as expected (RED phase complete). Now make it green."
+  context: |
+    We are in the GREEN phase of TDD. There is exactly one failing test:
+    ```typescript
+    test('validates correct email', () => {
+      expect(validateEmail('user@example.com')).toBe(true);
+    });
+    ```
+    Test output: "validateEmail is not defined"
+    This is the only test. No other tests exist for this function.
+  expected:
+    behavior: >
+      Agent proposes `return true` (or equivalent unconditional return) as the
+      implementation. It must NOT suggest a regex, `email.includes('@')`, or
+      any conditional logic. Mentioning deferral of edge cases is good but not
+      required — the key is the implementation choice.
+    reasoning: >
+      "GREEN - Minimal Code: Write the stupidest code that makes the test green."
+      Only one test expects true for a valid email. `return true` satisfies it.
+      Any logic that also handles the false case (includes, regex) covers untested
+      behavior = code without a failing test = Iron Law violation.
+  anti_patterns:
+    - Writing a regex validator when only one happy-path test exists
+    - Adding logic for edge cases not yet covered by a test
+    - Justifying extra logic as "avoiding a future rewrite"
+    - Refactoring while implementing
+  tags: [red-green-refactor]
+
+- id: refactor_only_after_green
+  description: Agent must not refactor until all tests pass
+  user_query: "While implementing this, I noticed the code structure could be improved. Should I refactor now?"
+  context: "The current test is still failing — we are in the RED phase."
+  expected:
+    behavior: >
+      Agent explicitly says: do NOT refactor while in the RED phase. Refactoring
+      is only allowed after all tests are green. It must instruct the user to
+      first write minimal code to pass the test, verify GREEN, then refactor.
+    reasoning: >
+      "REFACTOR - Clean Up: After green only."
+      The red-green-refactor cycle is strict: refactor only happens in the refactor
+      phase, never during RED or while writing minimal GREEN code.
+  anti_patterns:
+    - Suggesting refactoring while a test is still failing
+    - Mixing implementation and refactoring in the same step
+    - Saying "refactor as you go"
+  tags: [red-green-refactor]
+
+# ============================================================
+# When to use TDD
+# ============================================================
+
+- id: bug_fix_requires_test
+  description: Bug fix request — agent must write a failing regression test first
+  user_query: "There's a bug: getUserById returns null when the id is 0. Please fix it."
+  expected:
+    behavior: >
+      Agent says to write a failing test first that reproduces the bug
+      (e.g. expect(getUserById(0)).not.toBeNull()), watch it fail,
+      then fix the implementation. The test is the first step, not the fix.
+    reasoning: >
+      "When to Use — Always: Bug fixes."
+      A regression test written first proves the bug exists, then proves the fix works.
+      It also prevents the bug from reappearing.
+  anti_patterns:
+    - Fixing the implementation directly without writing a test first
+    - Saying "just add a guard clause for id === 0"
+    - Writing the fix before the failing test
+  tags: [when-to-use]
+
+# ============================================================
+# Exceptions
+# ============================================================
+
+- id: exception_prototype
+  description: User says it is a throwaway prototype — agent must ask for confirmation before skipping TDD
+  user_query: "This is just a quick prototype to demo to stakeholders tomorrow, skip TDD for now."
+  expected:
+    behavior: >
+      Agent acknowledges the exception checklist and asks the user to confirm
+      that the code will be fully discarded (not merged). It defaults to TDD
+      if there is any uncertainty, and makes explicit what "throwaway" means
+      per the skill (not merged, fully discarded after the session).
+    reasoning: >
+      Exceptions table: "Is the code intended to be fully discarded after the session (not merged)?"
+      "If uncertain, default to TDD." The agent must ask, not assume.
+  anti_patterns:
+    - Immediately agreeing to skip TDD without asking any clarifying question
+    - Proceeding to write implementation code directly
+    - Treating "demo" or "prototype" as automatically exempt without verification
+  tags: [exceptions]
+
+- id: exception_config_file
+  description: User is editing a config/JSON file — agent correctly identifies TDD exception
+  user_query: "Add a new environment variable entry to our .env.example file."
+  expected:
+    behavior: >
+      Agent correctly identifies this as a configuration file exception (values only,
+      no logic) and proceeds without requiring a test. It may optionally note
+      that TDD does not apply here per the exceptions table.
+    reasoning: >
+      Exception: "Does the file contain only values and no logic (env vars, JSON config, Dockerfile)?"
+      A .env.example file is pure configuration — TDD does not apply.
+  anti_patterns:
+    - Requiring the user to write a test for a config file change
+    - Refusing to proceed without a failing test
+    - Applying TDD rules to a file with no logic
+  tags: [exceptions]
+
+# ============================================================
+# Anti-patterns detection
+# ============================================================
+
+- id: anti_pattern_mock_behavior
+  description: User writes a test asserting on a mock element — agent must flag the anti-pattern
+  user_query: "Is this test correct?"
+  context: |
+    The user has written:
+    ```typescript
+    test('renders sidebar', () => {
+      render(<Page />);
+      expect(screen.getByTestId('sidebar-mock')).toBeInTheDocument();
+    });
+    ```
+  expected:
+    behavior: >
+      Agent identifies this as Anti-Pattern 1 from testing-anti-patterns.md:
+      "Testing Mock Behavior". It explains the test is checking that the mock
+      exists, not that the component works, and proposes testing real behavior
+      (e.g. expect(screen.getByRole('navigation')).toBeInTheDocument()) or
+      removing the mock entirely.
+    reasoning: >
+      testing-anti-patterns.md Anti-Pattern 1: asserting on '*-mock' test IDs
+      verifies mock existence, not real component behavior.
+      "Test what the code does, not what the mocks do."
+  anti_patterns:
+    - Saying the test looks correct
+    - Not mentioning the mock assertion problem
+    - Suggesting only minor style fixes without addressing the anti-pattern
+  tags: [anti-patterns]
+
+# ============================================================
+# Iron Law: rationalizations
+# ============================================================
+
+- id: rationalization_too_simple
+  description: User claims code is too simple to need a test — agent must reject the rationalization
+  user_query: "This is just a one-line getter, it's not worth writing a test for it."
+  expected:
+    behavior: >
+      Agent rejects the "too simple to test" rationalization explicitly.
+      It explains that simple code breaks too, a test takes 30 seconds,
+      and "it feels too simple" is not listed as an exception in the skill.
+      It proposes writing the test anyway.
+    reasoning: >
+      Red Flag table: "Too simple to test → Simple code breaks. Test takes 30 seconds."
+      Exceptions table: "It feels too simple is not an exception."
+      The agent must not agree that simplicity justifies skipping TDD.
+  anti_patterns:
+    - Agreeing the code is too simple to test
+    - Skipping TDD for a one-line getter
+    - Saying "sure, no need for a test here"
+  tags: [iron-law]
+
+- id: rationalization_manual_tested
+  description: User says they already tested manually — agent must explain why that is not sufficient
+  user_query: "I already ran it manually in the browser and it works, we're good."
+  expected:
+    behavior: >
+      Agent explains that manual testing does not replace automated tests:
+      it is ad-hoc, leaves no record, and cannot be re-run. It proposes
+      writing a test that captures the verified behavior so it can be
+      re-run automatically.
+    reasoning: >
+      Red Flag table: "Already manually tested → Ad-hoc ≠ systematic. No record, can't re-run."
+      Manual verification does not satisfy TDD. The agent must not accept it as done.
+  anti_patterns:
+    - Accepting manual testing as equivalent to a written test
+    - Saying "that's fine, manual testing is enough"
+    - Moving on without proposing to write an automated test
+  tags: [iron-law]
+
+# ============================================================
+# Red-Green-Refactor: Verify GREEN
+# ============================================================
+
+- id: green_other_tests_break
+  description: New test passes but other tests now fail — agent must require fixing them before moving on
+  user_query: "My new test passes now, but two other tests are failing. Can I move on to the next feature?"
+  expected:
+    behavior: >
+      Agent explicitly says no — other tests failing means the suite is not green.
+      It must instruct the user to fix the regressions before moving on.
+      Moving on with a broken test suite violates the Verify GREEN step.
+    reasoning: >
+      "Verify GREEN: Other tests still pass? Other tests fail? Fix now."
+      The green phase requires ALL tests to pass, not just the new one.
+      Leaving regressions and moving on is not acceptable.
+  anti_patterns:
+    - Saying it is okay to move on since the new test passes
+    - Deferring the regression fixes to later
+    - Treating the two failing tests as a separate concern
+  tags: [red-green-refactor]
+
+# ============================================================
+# Good Tests
+# ============================================================
+
+- id: test_name_and
+  description: Test name contains "and" — agent must tell user to split it into focused tests
+  user_query: "Is this test okay?"
+  context: |
+    The user has written:
+    ```
+    test('validates email and domain and whitespace', () => {
+      // ...
+    });
+    ```
+  expected:
+    behavior: >
+      Agent flags the "and" in the test name as a sign the test covers multiple
+      behaviors. It instructs the user to split it into separate focused tests,
+      one per behavior (e.g. 'rejects empty email', 'rejects invalid domain',
+      'trims whitespace'). Each test should cover one thing.
+    reasoning: >
+      Good Tests table: "Minimal — One thing. 'and' in name? Split it."
+      The exact bad example in the skill is: test('validates email and domain and whitespace').
+      Multiple behaviors in one test obscure intent and make failures harder to diagnose.
+  anti_patterns:
+    - Saying the test looks fine
+    - Not mentioning the "and" problem
+    - Suggesting only renaming without splitting
+  tags: [good-tests]
+
+# ============================================================
+# When Stuck
+# ============================================================
+
+- id: stuck_must_mock_everything
+  description: User needs to mock many dependencies to test a function — agent must flag the design smell
+  user_query: "To test this function I need to mock 6 different dependencies. How do I set all that up?"
+  expected:
+    behavior: >
+      Agent does not help write 6 mocks. Instead it flags that needing to mock
+      everything is a design smell: the code is too coupled. It recommends
+      simplifying the design using dependency injection or breaking the function
+      into smaller, more testable units before writing the test.
+    reasoning: >
+      When Stuck table: "Must mock everything → Code too coupled. Use dependency injection."
+      The correct response is to address the root cause (design), not to build
+      a complex mock setup that papers over it.
+  anti_patterns:
+    - Providing instructions for setting up 6 mocks
+    - Helping with the mock setup without mentioning the design problem
+    - Saying "here's how to mock all dependencies"
+  tags: [when-stuck]
+
+# ============================================================
+# Anti-patterns: test-only method in production class
+# ============================================================
+
+- id: anti_pattern_test_only_method
+  description: User adds a cleanup method to a production class only used in tests — agent must redirect to test utilities
+  user_query: "I added a `destroy()` method to my Session class so tests can clean up after each run. Is that okay?"
+  expected:
+    behavior: >
+      Agent identifies this as Anti-Pattern 2: test-only methods in production classes.
+      It explains the production class should not be polluted with test-only code,
+      and proposes moving the cleanup logic to a test utility function instead
+      (e.g. a cleanupSession() helper in test-utils/).
+    reasoning: >
+      testing-anti-patterns.md Anti-Pattern 2: adding methods only called by tests
+      to production classes violates YAGNI and separation of concerns.
+      "Production class polluted with test-only code. Dangerous if accidentally called in production."
+  anti_patterns:
+    - Saying the destroy() method is fine to add
+    - Suggesting keeping it with a comment marking it as test-only
+    - Not mentioning the separation of concerns issue
+  tags: [anti-patterns]
