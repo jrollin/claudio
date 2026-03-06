@@ -1,0 +1,430 @@
+# Golden examples for spec-impl skill behavioral testing.
+#
+# Each scenario defines a user request and the expected agent behavior
+# when the SKILL.md is loaded. Used with eval.sh (LLM-as-judge).
+#
+# Schema: see skills/skill-testing/references/golden-examples-schema.md
+#
+# Judging rules:
+#   - PASS = agent's PRIMARY response follows the spec-impl workflow
+#   - FAIL = agent skips steps, improvises on ambiguous design, or violates constraints
+
+# ============================================================
+# Initialization
+# ============================================================
+
+- id: read_all_spec_files
+  description: Agent must read all 3 spec files at initialization
+  user_query: "/spec-impl payment-flow"
+  context: |
+    The directory docs/features/payment-flow/ exists with all 3 files:
+    requirements.md, design.md, and tasks.md.
+  expected:
+    behavior: >
+      Agent reads all 3 spec files (requirements.md, design.md, tasks.md)
+      at initialization for full context. It also loads or mentions
+      references/verify-by-language.md to detect the project ecosystem.
+      It does NOT start implementing before reading all files.
+    reasoning: >
+      "Read all 3 spec files for full context."
+      "Load references/verify-by-language.md now — identify the project's
+      ecosystem and test runner from project files."
+      Constraints MUST DO: "Read all 3 spec files at start for full context."
+  anti_patterns:
+    - Starting implementation without reading all 3 spec files
+    - Reading only tasks.md and skipping requirements or design
+    - Skipping ecosystem detection
+  tags: [initialization]
+
+- id: missing_spec_directory
+  description: Agent errors when spec directory does not exist
+  user_query: "/spec-impl user-auth"
+  context: |
+    The directory docs/features/user-auth/ does not exist.
+    No feature directories exist under docs/features/.
+  expected:
+    behavior: >
+      Agent reports that no spec exists for "user-auth" and suggests
+      running /spec-create user-auth first. It does NOT attempt to
+      create the spec or start implementing without one.
+    reasoning: >
+      "docs/features/<name>/ doesn't exist -> 'No specs found.
+      Run /spec-create <name> first.'"
+  anti_patterns:
+    - Attempting to create the spec files
+    - Starting implementation without a spec
+    - Silently continuing as if files exist
+  tags: [initialization, edge-cases]
+
+# ============================================================
+# Task picking and ordering
+# ============================================================
+
+- id: pick_unblocked_by_order
+  description: Agent picks first unblocked task by document order, skipping blocked ones
+  user_query: "Pick the next task to implement."
+  context: |
+    We are running /spec-impl payment-flow. All spec files have been read.
+    tasks.md contains:
+      T-1 (no deps) -> Status: Complete
+      T-2 (Blocked by T-1) -> Status: Complete
+      T-3 (Blocked by T-5) -> Status: Not Started
+      T-4 (no deps) -> Status: Not Started
+      T-5 (Blocked by T-2) -> Status: Not Started
+  expected:
+    behavior: >
+      Agent checks Blocked by fields first: T-3 is blocked (T-5 not done),
+      T-4 is unblocked (no deps), T-5 is unblocked (T-2 done). Agent picks
+      T-4 as the first unblocked task by document order. It does NOT pick
+      T-3 just because it appears before T-4 in the file.
+    reasoning: >
+      "A task is unblocked when it has no Blocked by field, or all tasks
+      listed in Blocked by have Status: Complete."
+      "Select the first unblocked task (by document order) with status
+      Not Started or In Progress."
+  anti_patterns:
+    - Picking T-3 because it comes before T-4 in the file
+    - Picking T-5 before T-4 (T-4 is first by document order among unblocked)
+    - Ignoring Blocked by fields entirely
+  tags: [task-picking]
+
+- id: resume_from_in_progress
+  description: Agent reconstructs state from tasks.md on session resume
+  user_query: "/spec-impl payment-flow"
+  context: |
+    The directory docs/features/payment-flow/ exists with all 3 files.
+    tasks.md shows:
+      T-1 -> Status: Complete
+      T-2 -> Status: Complete
+      T-3 -> Status: In Progress
+      T-4 -> Status: Not Started
+    This is a fresh session — the agent has no prior chat history.
+  expected:
+    behavior: >
+      Agent reads tasks.md, detects T-3 has Status: In Progress, and
+      resumes from T-3. It reconstructs state from the file, not from
+      chat history. It checks what files exist on disk and may run
+      T-3's Verify command to determine current state.
+    reasoning: >
+      "If resuming a session, reconstruct state from tasks.md — never
+      rely on chat history."
+      "Session interrupted mid-task -> On resume, read tasks.md to find
+      in-progress task, continue from there."
+  anti_patterns:
+    - Starting from T-1 or T-4 instead of the in-progress T-3
+    - Relying on chat history or memory from a previous session
+    - Skipping T-3 and moving to T-4
+  tags: [task-picking, session-resume]
+
+# ============================================================
+# Restate before coding
+# ============================================================
+
+- id: restate_before_coding
+  description: Agent restates goal, files, rules, and verify before coding
+  user_query: "Implement T-3."
+  context: |
+    We are running /spec-impl payment-flow. Spec files are loaded.
+    T-3 in tasks.md:
+      ### T-3: Implement account lockout
+      - **Refs**: US-3, TD-2
+      - **Files**: `src/auth/lockout.ts` (new), `tests/auth/lockout.test.ts` (new)
+      - **Verify**: `npx vitest run tests/auth/lockout.test.ts`
+      - **Blocked by**: T-2
+      - **Rules**: BR-2, BR-3
+      - **Status**: Not Started
+    T-2 is already Complete.
+  expected:
+    behavior: >
+      Agent restates the task before coding: Goal (what T-3 achieves
+      from title + Refs), Key files (from Files field), Rules (BR-2, BR-3),
+      and Verify command. It sets Status to In Progress in tasks.md.
+      It does NOT jump straight to writing code.
+    reasoning: >
+      "Before touching any code, restate: Goal, Key files, Rules, Verify."
+      "Set Status: In Progress in tasks.md."
+      Constraints MUST DO: "Restate task goal, files, rules, and verify
+      command before coding."
+  anti_patterns:
+    - Starting to write code without restating the task
+    - Omitting the Verify command from the restate
+    - Not setting Status to In Progress before coding
+  tags: [restate]
+
+# ============================================================
+# Design sufficiency
+# ============================================================
+
+- id: design_gap_stops_work
+  description: Agent stops when design is ambiguous and asks user
+  user_query: "Implement T-3: Add caching layer."
+  context: |
+    We are running /spec-impl payment-flow. Spec files are loaded.
+    T-3 references TD-4. design.md says for TD-4:
+    "Consider adding caching for performance."
+    No caching strategy, TTL, or storage backend is specified.
+    T-3 creates files in src/cache/ — a directory not touched by any prior task.
+  expected:
+    behavior: >
+      Agent identifies that design.md is ambiguous for T-3 — "consider"
+      is not a decision, no alternatives evaluated, no strategy specified.
+      Agent stops immediately and informs the user what is missing
+      (caching strategy, TTL, storage backend). It does NOT guess or
+      improvise an implementation.
+    reasoning: >
+      "If the design is ambiguous, incomplete, or needs updating:
+      Stop immediately — do not guess or improvise."
+      Constraints MUST NOT: "Improvise when design is ambiguous —
+      always stop and ask for clarification."
+  anti_patterns:
+    - Implementing Redis or any caching solution without user input
+    - Guessing a caching strategy and proceeding
+    - Treating "consider" as a decided technical decision
+  tags: [design-sufficiency]
+
+- id: skip_validated_design
+  description: Agent skips design check when TD-X already validated by prior task
+  user_query: "Implement T-4."
+  context: |
+    We are running /spec-impl payment-flow. Spec files are loaded.
+    T-2 (Complete) validated TD-1 (database sessions) and TD-2 (service layer pattern).
+    T-4 references TD-2 only and creates files in the same src/auth/ directory as T-2.
+    T-3 is also Complete.
+  expected:
+    behavior: >
+      Agent recognizes that TD-2 was already validated during T-2 and
+      T-4 works in the same directory (src/auth/). It skips the design
+      sufficiency check and proceeds to implementation. It does NOT
+      re-check design for already-validated decisions.
+    reasoning: >
+      "Skip if a previous task already validated the same TD-X references
+      and directory."
+  anti_patterns:
+    - Performing a full design sufficiency check for already-validated TD-2
+    - Stopping to ask the user about TD-2 when it was already validated
+  tags: [design-sufficiency]
+
+# ============================================================
+# TDD vs direct implementation
+# ============================================================
+
+- id: tdd_for_test_runner
+  description: Agent follows TDD red-green-refactor when Verify is a test runner
+  user_query: "Implement T-3."
+  context: |
+    We are running /spec-impl payment-flow. Spec files are loaded.
+    T-3's Verify command: `npx vitest run tests/auth/lockout.test.ts`
+    T-3's Files: `src/auth/lockout.ts` (new)
+    T-3 is unblocked and we have restated it.
+  expected:
+    behavior: >
+      Agent recognizes that vitest is a test runner and follows TDD:
+      writes a failing test first, then implements until the test passes.
+      It does NOT write the implementation before the test.
+    reasoning: >
+      "Is the Verify command a test runner? If yes, follow the tdd skill's
+      red-green-refactor cycle: write the failing test first, then implement
+      until it passes."
+      Test runner list includes: jest, vitest, mocha, pytest, cargo test, etc.
+  anti_patterns:
+    - Writing the implementation before writing the test
+    - Skipping the test entirely and implementing directly
+    - Not recognizing vitest as a test runner
+  tags: [tdd]
+
+- id: direct_for_non_test_runner
+  description: Agent implements directly when Verify is not a test runner
+  user_query: "Implement T-1."
+  context: |
+    We are running /spec-impl payment-flow. Spec files are loaded.
+    T-1's Verify command: `npx tsc --noEmit`
+    T-1's Files: `src/types/payment.ts` (new)
+    T-1 is unblocked and we have restated it.
+  expected:
+    behavior: >
+      Agent recognizes that tsc --noEmit is NOT a test runner (it's a type
+      checker). It implements the code directly without TDD. It does NOT
+      write a failing test first — TDD does not apply to non-test-runner
+      Verify commands.
+    reasoning: >
+      "If the Verify command is NOT a test runner (e.g., tsc --noEmit,
+      cargo clippy, npm run build), implement the code directly and
+      proceed to validation — TDD does not apply."
+  anti_patterns:
+    - Writing a failing test before implementing types
+    - Treating tsc --noEmit as a test runner requiring TDD
+  tags: [tdd]
+
+# ============================================================
+# Verification
+# ============================================================
+
+- id: never_mark_complete_on_fail
+  description: Agent never marks Complete when verification fails
+  user_query: "The verify command returned exit code 1. What should I do?"
+  context: |
+    We are running /spec-impl payment-flow. T-3 is In Progress.
+    The Verify command `npx vitest run tests/auth/lockout.test.ts` was run.
+    Output:
+      FAIL tests/auth/lockout.test.ts
+      ✓ locks after 5 failures
+      ✗ auto-unlocks after 30 minutes — expected true, got false
+      1 failing (exit code 1)
+  expected:
+    behavior: >
+      Agent's primary action is to diagnose the failure, fix the code
+      (not the test), and re-run the exact same Verify command. It does
+      NOT immediately mark the task as Complete — it keeps status In Progress
+      and only marks Complete after a successful re-run (exit code 0).
+      Mentioning that Complete will be set after re-run passes is acceptable
+      as a conditional follow-up step, as long as the agent does not treat
+      the task as done right now.
+    reasoning: >
+      "Exit code non-zero -> verification failed: diagnose, fix, re-run."
+      "A task stays In Progress until verification passes. Never mark
+      Complete on a failing verify."
+      Constraints MUST NOT: "Mark a task as Complete without exit code 0."
+  anti_patterns:
+    - Marking the task as Complete right now despite exit code 1
+    - Saying "most tests pass" and moving on without fixing
+    - Modifying the test to make it pass instead of fixing the code
+  tags: [verification]
+
+- id: broken_verify_command
+  description: Agent identifies broken Verify command and asks user before fixing
+  user_query: "The verify command failed with 'file not found'."
+  context: |
+    We are running /spec-impl payment-flow. T-3 is In Progress.
+    The Verify command is: `pytest tests/auth/test_lockout.py -v`
+    Running it produces: "ERROR: file not found: tests/auth/test_lockout.py"
+    The test file we created is actually at tests/auth/test_account_lockout.py.
+  expected:
+    behavior: >
+      Agent identifies this as a command failure (not a code failure) —
+      the Verify command references a wrong path. It informs the user
+      that the command appears incorrect, explains the mismatch, and
+      suggests a corrected command. It does NOT silently update tasks.md
+      or loop trying to fix code.
+    reasoning: >
+      "Command failure: the Verify command itself is likely wrong.
+      Inform the user that the command appears incorrect, explain
+      what's wrong, and suggest a corrected command. Do not silently
+      update the Verify field — get user confirmation first."
+  anti_patterns:
+    - Silently updating the Verify command without asking user
+    - Trying to fix the code when the command path is wrong
+    - Looping on the same broken command multiple times
+  tags: [verification]
+
+# ============================================================
+# Task completion
+# ============================================================
+
+- id: complete_with_result_field
+  description: Agent updates Status to Complete and appends Result field
+  user_query: "Verification passed with exit code 0. Wrap up the task."
+  context: |
+    We are running /spec-impl payment-flow. T-3 (Implement account lockout)
+    is In Progress. The Verify command just returned exit code 0 with output:
+      ✓ locks after 5 failures
+      ✓ auto-unlocks after 30 minutes
+      ✓ resets on successful login
+      3 passing (exit code 0)
+  expected:
+    behavior: >
+      Agent sets Status to Complete in tasks.md, appends a Result field
+      summarizing what was implemented and the test outcome (e.g.
+      "Lockout logic — 3 passing tests"). It informs the user that the
+      task is ready for review and commit. It does NOT modify other
+      fields in the task entry.
+    reasoning: >
+      "Set Status: Complete. Append a Result field — state what was
+      implemented and the test outcome in one line."
+      "Inform the user that the task is ready for review and commit."
+  anti_patterns:
+    - Marking Complete without a Result field
+    - Modifying Refs, Files, or other fields in the task entry
+    - Not informing the user for review
+  tags: [completion]
+
+# ============================================================
+# Unlisted work
+# ============================================================
+
+- id: no_unlisted_work
+  description: Agent asks user before working on discovered bugs
+  user_query: "I noticed a bug in the user model validation while implementing T-3. Should I fix it?"
+  context: |
+    We are running /spec-impl payment-flow. T-3 is In Progress.
+    While implementing T-3, a bug was discovered in src/models/user.ts
+    (email regex allows invalid formats). This bug is not related to T-3
+    and is not listed in tasks.md.
+  expected:
+    behavior: >
+      Agent does NOT fix the bug immediately. It asks the user to confirm
+      whether to add a new task (e.g. T-7) to tasks.md for tracking, then
+      only works on it after user confirmation and after it is added to
+      tasks.md. Untracked work breaks traceability.
+    reasoning: >
+      "New work discovered during implementation -> Ask user to confirm,
+      then add to tasks.md — never work on unlisted tasks."
+      Constraints MUST NOT: "Work on tasks not listed in tasks.md."
+  anti_patterns:
+    - Fixing the bug immediately without adding it to tasks.md
+    - Working on the bug without user confirmation
+    - Ignoring the bug entirely without informing the user
+  tags: [unlisted-work]
+
+# ============================================================
+# Edge cases
+# ============================================================
+
+- id: all_tasks_complete
+  description: Agent informs user when all tasks are done
+  user_query: "/spec-impl payment-flow"
+  context: |
+    The directory docs/features/payment-flow/ exists with all 3 files.
+    tasks.md shows all tasks as Status: Complete:
+      T-1 -> Status: Complete, Result: Types defined — tsc passes
+      T-2 -> Status: Complete, Result: AuthService — 6 passing tests
+      T-3 -> Status: Complete, Result: Lockout logic — 3 passing tests
+  expected:
+    behavior: >
+      Agent detects all tasks are Complete. It informs the user and
+      summarizes what was implemented. It asks if the user wants to
+      add new tasks or review. It does NOT re-implement completed tasks.
+    reasoning: >
+      "All tasks already Complete -> Inform user, ask if they want
+      to add new tasks or review."
+  anti_patterns:
+    - Re-implementing already completed tasks
+    - Silently doing nothing
+    - Starting a new spec without asking
+  tags: [edge-cases]
+
+- id: blocked_task_skip
+  description: Agent skips blocked task and informs user
+  user_query: "Pick the next task."
+  context: |
+    We are running /spec-impl payment-flow. Spec files are loaded.
+    tasks.md contains:
+      T-1 -> Status: Complete
+      T-2 (Blocked by T-3) -> Status: Not Started
+      T-3 (Blocked by T-4) -> Status: Not Started
+      T-4 (Blocked by T-1) -> Status: Not Started
+  expected:
+    behavior: >
+      Agent checks dependencies: T-2 is blocked (T-3 not done), T-3 is
+      blocked (T-4 not done), T-4 is unblocked (T-1 is Complete). Agent
+      picks T-4 as the only unblocked task. It informs the user that T-2
+      and T-3 are blocked and explains why.
+    reasoning: >
+      "Task blocked by unresolved dependency -> Skip to next unblocked
+      task, inform user."
+      "Select the first unblocked task (by document order) with status
+      Not Started or In Progress."
+  anti_patterns:
+    - Picking T-2 or T-3 despite being blocked
+    - Not informing the user about blocked tasks
+    - Starting T-2 because it's first in document order without checking deps
+  tags: [task-picking, edge-cases]

@@ -1,0 +1,384 @@
+# Golden examples for spec-create skill behavioral testing.
+#
+# Each scenario defines a user request and the expected agent behavior
+# when the SKILL.md is loaded. Used with eval.sh (LLM-as-judge).
+#
+# Schema: see skills/skill-testing/references/golden-examples-schema.md
+#
+# Judging rules:
+#   - PASS = agent's PRIMARY response follows the spec-create workflow
+#   - FAIL = agent skips phases, proceeds without approval, or violates constraints
+
+# ============================================================
+# Phase sequencing: no skipping
+# ============================================================
+
+- id: sequential_phases
+  description: Agent must follow Requirements -> Design -> Tasks order
+  user_query: "/spec-create user-auth Add authentication to the app"
+  expected:
+    behavior: >
+      Agent starts with Phase 0 (initialization: normalize name, check existing files)
+      then proceeds to Phase 1 (requirements). It does NOT jump to design or tasks.
+      It mentions it will wait for approval before moving to the next phase.
+    reasoning: >
+      "Sequential phases: Requirements -> Design -> Tasks -- no skipping."
+      "User approval gates: Each phase requires explicit approval before proceeding."
+  anti_patterns:
+    - Starting with design or tasks before writing requirements
+    - Writing all three documents at once
+    - Proceeding to Phase 2 without mentioning approval
+  tags: [sequencing]
+
+- id: phase_4_summary
+  description: Agent produces completion summary after all phases approved
+  user_query: "Tasks are approved. Wrap up the specification."
+  context: |
+    We are working on /spec-create payment-flow. All 3 phases are complete and approved.
+    Phase 1 produced requirements.md with US-1, US-2, US-3, BR-1, BR-2.
+    Phase 2 produced design.md with TD-1, TD-2.
+    Phase 3 produced tasks.md with T-1, T-2, T-3, T-4, T-5.
+    The user has just approved Phase 3 (tasks).
+  expected:
+    behavior: >
+      Agent produces a completion summary listing the 3 file paths created
+      (docs/features/payment-flow/requirements.md, design.md, tasks.md),
+      shows counts (3 user stories, 2 business rules, 5 tasks),
+      and suggests /spec-impl payment-flow as the next step.
+    reasoning: >
+      "Phase 4: Summary — List all 3 file paths created, show user story count,
+      business rule count, and task count. Suggest /spec-impl <feature-name> as next step."
+  anti_patterns:
+    - Starting a new phase or writing more content
+    - Omitting the /spec-impl suggestion
+    - Not listing the file paths
+  tags: [sequencing, summary]
+
+- id: refuse_skip_phase
+  description: Agent must refuse when user asks to skip requirements
+  user_query: "I already know what I want, just write the design and tasks directly."
+  context: "We are starting /spec-create payment-flow. Phase 0 (initialization) is complete."
+  expected:
+    behavior: >
+      Agent refuses to skip the requirements phase. It explains that phases
+      are sequential and each builds on the previous. It offers to make the
+      requirements phase quick but does not skip it.
+    reasoning: >
+      "User wants to skip a phase -> Refuse -- explain phases are sequential."
+      Constraints MUST NOT: "Skip phases or proceed without approval."
+  anti_patterns:
+    - Agreeing to skip requirements
+    - Starting with design.md directly
+    - Saying "sure, we can skip requirements"
+  tags: [sequencing, constraints]
+
+# ============================================================
+# Approval gates
+# ============================================================
+
+- id: wait_for_approval
+  description: Agent must explicitly wait for user approval between phases
+  user_query: "I've reviewed the requirements. What happens next?"
+  context: |
+    We are working on /spec-create payment-flow.
+    Phase 1 is complete: requirements.md has been written and presented to the user.
+    The user has NOT yet said "approved" or "looks good".
+  expected:
+    behavior: >
+      Agent asks for explicit approval of the requirements before proceeding.
+      It does NOT start writing design.md. It explains that it needs the user
+      to approve before moving to Phase 2.
+    reasoning: >
+      "Wait for explicit user approval before proceeding."
+      Approval criteria: "yes", "approved", "looks good", "lgtm", etc.
+  anti_patterns:
+    - Starting Phase 2 without receiving approval
+    - Saying "now I'll write the design" without asking for approval
+    - Treating "I've reviewed" as implicit approval
+  tags: [approval]
+
+- id: partial_approval_is_not_approval
+  description: Agent must revise when user gives partial approval
+  user_query: "Looks good except US-3 needs to be split into two stories."
+  context: "Agent has presented requirements.md for approval."
+  expected:
+    behavior: >
+      Agent treats this as NOT approved. It revises US-3 as requested,
+      keeps other approved items stable, and re-presents the full document
+      for approval. It does NOT proceed to design.
+    reasoning: >
+      "Never proceed on partial approval ('looks good except for US-3' = not approved)."
+      "On partial feedback, revise only the flagged items, keep approved items stable."
+  anti_patterns:
+    - Treating "looks good except" as approval and proceeding to design
+    - Rewriting the entire document instead of just US-3
+    - Proceeding to Phase 2 without re-presenting for approval
+  tags: [approval]
+
+# ============================================================
+# Initialization and edge cases
+# ============================================================
+
+- id: normalize_feature_name
+  description: Agent normalizes feature name to kebab-case
+  user_query: "/spec-create User Auth Flow"
+  expected:
+    behavior: >
+      Agent normalizes "User Auth Flow" to "user-auth-flow" (kebab-case).
+      It creates or checks for `docs/features/user-auth-flow/`.
+    reasoning: >
+      "feature-name: required -- auto-normalized to kebab-case
+      (strip spaces, lowercase, replace non-alphanum with hyphens)."
+  anti_patterns:
+    - Using "User Auth Flow" as-is for the directory name
+    - Using underscores instead of hyphens
+    - Using camelCase
+  tags: [initialization]
+
+- id: detect_existing_partial_spec
+  description: Agent detects existing files and asks to resume or start fresh
+  user_query: "/spec-create payment-flow"
+  context: "The directory docs/features/payment-flow/ already exists with requirements.md only."
+  expected:
+    behavior: >
+      Agent detects the existing requirements.md, reads it for context,
+      and asks the user whether to resume from Phase 2 (design) or start fresh.
+      It does NOT silently overwrite the existing file.
+    reasoning: >
+      "Partial spec exists -> Detect existing files, ask user: resume from
+      next phase or start fresh?"
+      Resume protocol: "read existing files to restore context."
+  anti_patterns:
+    - Overwriting requirements.md without asking
+    - Starting from Phase 1 without acknowledging existing files
+    - Ignoring the existing directory entirely
+  tags: [initialization, edge-cases]
+
+# ============================================================
+# Cross-reference and traceability
+# ============================================================
+
+- id: tasks_reference_stories
+  description: Tasks must reference user stories and technical decisions
+  user_query: "Design is approved. Proceed to tasks."
+  context: |
+    We are working on /spec-create payment-flow. Phase 2 (design) has been approved.
+    The approved requirements include US-1 (initiate payment), US-2 (payment confirmation), BR-1 (max amount 10000).
+    The approved design includes TD-1 (Stripe integration), TD-2 (idempotency keys).
+    We are entering Phase 3 (tasks).
+  expected:
+    behavior: >
+      Agent describes writing tasks with T-X IDs. Each task has a Refs field
+      (containing US-X and TD-X) and a separate Rules field (containing BR-X).
+      BR-X must NOT appear in Refs. Each task includes a runnable Verify command.
+    reasoning: >
+      "Each task references US-X (stories) and TD-X (decisions) in its Refs field,
+      and BR-X (rules) in a separate Rules field."
+      "Each task specifies a runnable verification command."
+  anti_patterns:
+    - Writing tasks without US-X references
+    - Writing tasks without verification commands
+    - Putting BR-X in Refs alongside US-X and TD-X instead of a separate Rules field
+    - Listing BR-X and US-X and TD-X together without field separation
+  tags: [traceability]
+
+- id: nfr_not_in_task_refs
+  description: NFRs must NOT be referenced in task Refs
+  user_query: "Create a task for implementing the rate limiter."
+  context: |
+    Phase 3 in progress. Requirements include NFR-1 (response time < 200ms)
+    and US-5 (rate limiting). Design includes TD-3 (token bucket algorithm).
+  expected:
+    behavior: >
+      Agent creates the task referencing US-5 and TD-3 in Refs.
+      It does NOT put NFR-1 in the Refs field. NFRs are cross-cutting
+      constraints validated at integration/review time.
+    reasoning: >
+      "NFR-X IDs are not referenced in tasks -- they are cross-cutting constraints
+      validated at integration/review time, not per-task references."
+      "No T-X has NFR-X in its Refs field."
+  anti_patterns:
+    - Including NFR-1 in the task's Refs field
+    - Treating NFR as a per-task reference
+  tags: [traceability]
+
+# ============================================================
+# Requirements format
+# ============================================================
+
+- id: when_the_format
+  description: User stories must use WHEN/THE format
+  user_query: "Write the first user story for the file upload feature."
+  context: |
+    We are in Phase 1 (requirements) for /spec-create file-upload.
+    The feature allows users to upload files to the app.
+    Write the first user story.
+  expected:
+    behavior: >
+      Agent describes writing the user story in WHEN/THE format, where WHEN
+      describes the trigger and THE describes the system response. It does NOT
+      mention using "As a user, I want" or "SYSTEM SHALL" format. The agent
+      may list steps or write the story directly — either is acceptable as long
+      as WHEN/THE is the chosen format.
+    reasoning: >
+      "Write user stories in WHEN/THE format: WHEN describes the trigger,
+      THE describes the system response (do not use 'SYSTEM SHALL')."
+  anti_patterns:
+    - Using or mentioning "As a user, I want..." as the chosen format
+    - Using or mentioning "The system shall..." as the chosen format
+    - Not mentioning WHEN/THE format at all
+  tags: [requirements]
+
+# ============================================================
+# Design requirements
+# ============================================================
+
+- id: design_includes_diagrams
+  description: Design must include Mermaid diagrams
+  user_query: "Requirements are approved. Proceed to design."
+  context: |
+    We are working on /spec-create payment-flow. Phase 1 is approved.
+    Requirements include US-1 (initiate payment), US-2 (payment confirmation).
+    Moving to Phase 2 (design).
+  expected:
+    behavior: >
+      Agent describes writing design.md with a usage flow (Mermaid flowchart),
+      a component diagram (Mermaid graph), technical decisions with TD-X IDs,
+      and a File Inventory table.
+    reasoning: >
+      "Usage flow: Mermaid flowchart showing user journey."
+      "Component diagram: Mermaid diagram showing system structure."
+      "File Inventory: table of files to create/modify with purpose."
+  anti_patterns:
+    - Writing design without mentioning diagrams
+    - Omitting the File Inventory table
+    - Writing technical decisions without TD-X IDs
+  tags: [design]
+
+# ============================================================
+# Constraints
+# ============================================================
+
+- id: codebase_analysis_first
+  description: Agent must analyze existing codebase before each phase
+  user_query: "/spec-create notifications Add push notifications"
+  expected:
+    behavior: >
+      Agent analyzes the existing codebase for relevant code, patterns,
+      and conventions before writing the requirements. It does NOT write
+      requirements purely from the description without checking existing code.
+    reasoning: >
+      "Codebase-first: Analyze existing code before starting any phase."
+      Constraints MUST DO: "Analyze existing codebase before each phase."
+  anti_patterns:
+    - Writing requirements without mentioning codebase analysis
+    - Jumping directly to writing user stories
+    - Ignoring existing code patterns
+  tags: [constraints]
+
+- id: no_duplicate_specs
+  description: Agent must not create duplicate specs for similar features
+  user_query: "/spec-create user-authentication"
+  context: "A directory docs/features/auth-flow/ already exists with all 3 files."
+  expected:
+    behavior: >
+      Agent detects the similar existing feature "auth-flow" and asks the
+      user if "user-authentication" is the same feature or a distinct one.
+      It does NOT silently create a duplicate specification.
+    reasoning: >
+      "Similar feature name detected -> List similar dirs under docs/features/,
+      ask if it's the same or distinct."
+      Constraints MUST NOT: "Create duplicate specifications for similar features."
+  anti_patterns:
+    - Creating a new spec without acknowledging the similar existing one
+    - Assuming it's the same feature without asking
+    - Assuming it's a different feature without asking
+  tags: [constraints, edge-cases]
+
+- id: load_reference_templates
+  description: Agent must load reference templates before writing phase documents
+  user_query: "Requirements approved. Proceed to design."
+  context: |
+    We are working on /spec-create payment-flow. Phase 1 (requirements) is approved.
+    Requirements include US-1 (initiate payment), US-2 (payment confirmation), BR-1 (max amount).
+    We are entering Phase 2 (design).
+  expected:
+    behavior: >
+      Agent mentions loading or reading the design reference template
+      (references/design-template.md) before writing design.md. It does NOT
+      jump straight to writing the design document without referencing templates.
+    reasoning: >
+      Constraints MUST DO: "Load reference templates before writing each phase document."
+      Reference Guide: "Design document structure -> references/design-template.md -> Load when Writing design (Phase 2)."
+  anti_patterns:
+    - Writing design.md without mentioning loading or consulting the reference template
+    - Skipping the reference loading step entirely
+  tags: [constraints]
+
+# ============================================================
+# Requirements format (additional)
+# ============================================================
+
+- id: clarify_ambiguous_description
+  description: Agent asks clarifying questions for vague feature descriptions
+  user_query: "/spec-create improve-performance"
+  expected:
+    behavior: >
+      Agent asks clarifying questions about what "improve-performance" means
+      (which system, which endpoints, what metrics, what is the current baseline)
+      before writing user stories. It does NOT immediately generate requirements
+      from the vague description alone.
+    reasoning: >
+      "Use AskUserQuestion to clarify ambiguities."
+      "Codebase-first: Analyze existing code before starting any phase."
+      A feature named "improve-performance" with no description is ambiguous
+      and requires clarification.
+  anti_patterns:
+    - Writing user stories immediately without asking any clarifying questions
+    - Assuming specific performance targets without asking
+    - Generating a full requirements.md from the vague name alone
+  tags: [requirements, constraints]
+
+- id: acceptance_criteria_ids
+  description: User stories must include AC-X.Y acceptance criteria
+  user_query: "Write user stories for file upload: upload a file, download a file, delete a file."
+  context: |
+    We are in Phase 1 (requirements) for /spec-create file-upload.
+    The feature allows users to upload, download, and delete files.
+  expected:
+    behavior: >
+      Agent writes user stories (US-1, US-2, US-3) each with acceptance
+      criteria using AC-X.Y IDs (e.g. AC-1.1, AC-1.2 for US-1). Each story
+      uses WHEN/THE format and has at least one acceptance criterion.
+    reasoning: >
+      "Include acceptance criteria per user story with AC-X.Y IDs."
+      Cross-Reference Scheme: "AC-X.Y -> requirements.md -> AC-1.1, AC-2.3 (story X, criterion Y)."
+  anti_patterns:
+    - Writing user stories without acceptance criteria
+    - Using unnumbered or free-text acceptance criteria without AC-X.Y IDs
+    - Omitting the AC prefix from criteria IDs
+  tags: [requirements, traceability]
+
+# ============================================================
+# Initialization and edge cases (additional)
+# ============================================================
+
+- id: all_files_exist
+  description: Agent offers to update when all 3 spec files already exist
+  user_query: "/spec-create payment-flow"
+  context: |
+    The directory docs/features/payment-flow/ already exists with all 3 files:
+    requirements.md, design.md, and tasks.md.
+  expected:
+    behavior: >
+      Agent detects that all 3 specification files already exist and offers
+      to update the existing spec instead of creating new files. It does NOT
+      silently overwrite or start from scratch without asking.
+    reasoning: >
+      "Feature dir exists with all 3 files -> Offer to update existing spec
+      instead of creating new."
+  anti_patterns:
+    - Overwriting existing files without asking
+    - Starting Phase 1 from scratch as if no files exist
+    - Ignoring the existing complete specification
+  tags: [initialization, edge-cases]
