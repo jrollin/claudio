@@ -1,0 +1,499 @@
+# Golden examples for spec-extract skill behavioral testing.
+#
+# Each scenario defines a user request and the expected agent behavior
+# when the SKILL.md is loaded. Used with eval.sh (LLM-as-judge).
+#
+# Schema: see skills/skill-testing/references/golden-examples-schema.md
+#
+# Judging rules:
+#   - PASS = agent's PRIMARY response follows the spec-extract workflow
+#   - FAIL = agent skips phases, proceeds without checkpoint, or violates constraints
+
+# ============================================================
+# Discovery (Phase 1)
+# ============================================================
+
+- id: concept_discovery
+  description: Agent describes discovery steps using cartog or fallback for a concept
+  user_query: "/spec-extract pricing"
+  context: |
+    The user wants to extract business rules related to pricing from the codebase.
+    This is the start of a new extraction — no prior work has been done.
+  expected:
+    behavior: >
+      Agent's first steps involve discovery: searching for pricing-related
+      symbols using cartog (rag search, search) or Grep/Glob fallback.
+      It describes building a symbol cluster before analyzing. It does NOT
+      jump directly to classifying rules or writing the catalog.
+    reasoning: >
+      "From a concept: 1. Use rag search with the concept name and related
+      domain terms. 2. Use search for key identifiers."
+      Phase 1 is Discovery — agent must discover before analyzing.
+  anti_patterns:
+    - Jumping directly to classifying or writing rules without discovery
+    - Writing the rule catalog without building a symbol cluster first
+    - Starting Phase 3 analysis before Phase 1 discovery
+  tags: [discovery]
+
+- id: symbol_discovery
+  description: Agent starts from the symbol's file, then traces callees and refs
+  user_query: "/spec-extract --symbol calculateDiscount"
+  expected:
+    behavior: >
+      Agent locates the file containing calculateDiscount first (using outline,
+      grep, or search). Then it traces what calculateDiscount calls (callees /
+      downstream) and what calls it (refs / upstream) — using cartog tools or
+      manual tracing. It builds a cluster from these results before analyzing.
+      The key is: start from the symbol, expand outward via call graph, not
+      via broad concept search.
+    reasoning: >
+      "From a symbol: 1. Use outline on the file containing the symbol.
+      2. Use callees to find what it calls. 3. Use refs to find what calls it."
+      When cartog is unavailable, manual tracing follows the same pattern.
+  anti_patterns:
+    - Only reading the one function without tracing callees or refs
+    - Jumping to analysis without building a cluster around the symbol
+    - Ignoring upstream callers entirely
+  tags: [discovery]
+
+- id: path_discovery
+  description: Agent starts from the specified directory and identifies symbols before expanding
+  user_query: "/spec-extract --path src/billing/"
+  expected:
+    behavior: >
+      Agent starts from the src/billing/ directory — using outline (cartog)
+      or Glob+Read (fallback) to identify primary symbols in that directory.
+      It then expands the cluster by tracing callees/refs or manual call
+      tracing. The key is: start from the directory's files, identify
+      symbols, then expand outward. It does NOT use only rag search
+      while ignoring the specified directory.
+    reasoning: >
+      "From a path: 1. Use outline on files in the directory.
+      2. Identify the primary symbols, then expand with callees/refs."
+      Without cartog: "For --path: Glob to list files in the directory,
+      then Read to scan for exported symbols and primary functions."
+  anti_patterns:
+    - Using ONLY rag search without examining the specified directory first
+    - Skipping cluster expansion entirely (no callees/refs or call tracing)
+    - Jumping to analysis without building a cluster
+  tags: [discovery]
+
+- id: fallback_without_cartog
+  description: Agent describes Grep/Glob fallback when cartog is unavailable
+  user_query: "/spec-extract eligibility"
+  context: |
+    No cartog MCP tools are available in this session. The agent should
+    describe using the Grep/Glob fallback workflow instead. The codebase
+    is a TypeScript project rooted at the current working directory.
+  expected:
+    behavior: >
+      Agent describes using the Grep/Glob fallback for discovery: grep for
+      "eligibility" and related terms, glob for files in likely directories
+      (src/**/*eligib*, lib/**/*eligib*). It warns or acknowledges that
+      discovery without cartog is best-effort. It does NOT refuse to
+      proceed or require cartog to be installed first.
+    reasoning: >
+      "Without cartog (Grep/Glob fallback): 1. Grep for the concept name...
+      4. Warn the user: 'Discovery without cartog is best-effort'"
+      Edge case: "No cartog MCP tools available -> Use the Grep/Glob fallback
+      workflow from Phase 1."
+  anti_patterns:
+    - Refusing to proceed because cartog is not available
+    - Requiring the user to install cartog before continuing
+    - Proceeding without mentioning reduced accuracy or best-effort
+  tags: [discovery, edge-cases]
+
+- id: path_fallback_without_cartog
+  description: Agent uses Glob/Read fallback for --path when cartog is unavailable
+  user_query: "/spec-extract --path src/billing/"
+  context: |
+    No cartog MCP tools are available in this session. The user wants to
+    extract rules from the src/billing/ directory. The agent should use
+    the Grep/Glob fallback workflow.
+  expected:
+    behavior: >
+      Agent describes using Glob to list files in src/billing/, then Read
+      to scan for exported symbols and primary functions. It manually traces
+      function calls to build the cluster. It warns the user that discovery
+      is best-effort without cartog. It does NOT refuse to proceed or
+      require cartog.
+    reasoning: >
+      "Without cartog (Grep/Glob fallback): Applies to all entry points
+      (concept, symbol, path) when cartog is unavailable."
+      "For --path: Glob to list files in the directory, then Read to scan
+      for exported symbols and primary functions."
+  anti_patterns:
+    - Refusing to proceed because cartog is not available
+    - Using cartog outline/callees/refs commands that don't exist
+    - Proceeding without warning about reduced accuracy
+  tags: [discovery, edge-cases]
+
+- id: cluster_cap
+  description: Agent stops expanding at ~20 functions and suggests narrowing
+  user_query: "/spec-extract order-management"
+  context: |
+    Discovery has found 25 functions related to order management across
+    multiple modules: order creation, order validation, order fulfillment,
+    order cancellation, order history, and order notifications.
+  expected:
+    behavior: >
+      Agent recognizes the cluster exceeds 20 functions and stops expanding.
+      It presents what it has and suggests the user narrow the concept
+      (e.g., "order validation" or "order fulfillment" instead of all of
+      "order management"). It does NOT proceed with 25+ functions.
+    reasoning: >
+      "Cap the cluster at 20 functions. If larger, suggest the user
+      narrow the concept."
+      Edge case: "Cluster exceeds 20 functions -> Stop expanding. Present
+      what you have and suggest the user narrow the concept."
+  anti_patterns:
+    - Proceeding with 25+ functions without suggesting to narrow
+    - Silently truncating the cluster without telling the user
+    - Analyzing all 25 functions without a scope warning
+  tags: [discovery, scope-control]
+
+- id: test_files_in_discovery
+  description: Agent checks test files during cluster expansion
+  user_query: "/spec-extract discount-rules"
+  context: |
+    Discovery has found 3 core functions: applyDiscount(), calculateTierDiscount(),
+    and isEligibleForDiscount(). The codebase has a tests/ directory with
+    test files for these functions.
+  expected:
+    behavior: >
+      Agent includes test files in its discovery — checking test assertions
+      that may encode or confirm business rules. Test files are consulted
+      as part of cluster expansion, not ignored.
+    reasoning: >
+      "Check test files — assertions often encode or confirm business rules
+      not obvious in production code."
+  anti_patterns:
+    - Ignoring test files entirely during discovery
+    - Only looking at production code in src/
+  tags: [discovery]
+
+# ============================================================
+# Checkpoint (Phase 2)
+# ============================================================
+
+- id: checkpoint_before_analysis
+  description: Agent must present cluster and wait for confirmation before analysis
+  user_query: "Discovery found these 8 functions. What's next?"
+  context: |
+    We are running /spec-extract pricing. Phase 1 discovery is complete.
+    The agent found 8 functions: calculatePrice(), applyDiscount(),
+    getTierPricing(), validatePriceRange(), computeTax(), getShippingCost(),
+    applyPromoCode(), and formatPrice(). These are across 3 files in src/pricing/.
+    The agent needs to present the checkpoint before moving to analysis.
+  expected:
+    behavior: >
+      Agent presents a symbol cluster table (or structured list) showing the
+      8 discovered functions with their files and roles. It explicitly asks
+      the user to confirm or adjust before proceeding to analysis. It does
+      NOT start reading function bodies or classifying rules yet.
+    reasoning: >
+      "Present the discovered cluster to the user... Wait for explicit user
+      confirmation before continuing."
+      Constraints MUST DO: "Always checkpoint after discovery — never skip Phase 2."
+  anti_patterns:
+    - Starting to read and classify code without presenting the cluster first
+    - Presenting the cluster but proceeding to analysis without waiting for confirmation
+    - Skipping Phase 2 checkpoint entirely and jumping to Phase 3
+  tags: [checkpoint]
+
+- id: adjust_scope
+  description: Agent adjusts cluster when user requests changes
+  user_query: "Remove calculateTax and add applyLoyaltyDiscount instead."
+  context: |
+    Phase 2 checkpoint was presented. The cluster contains: calculateDiscount(),
+    calculateTax(), isEligible(), applyPromoCode(). User wants to adjust.
+  expected:
+    behavior: >
+      Agent removes calculateTax() and adds applyLoyaltyDiscount() to the
+      cluster. It re-presents the updated cluster table for confirmation.
+      It does NOT proceed to analysis without re-confirming.
+    reasoning: >
+      "If the user asks to adjust: Add/remove specific symbols."
+      The checkpoint is iterative — adjustments require re-confirmation.
+  anti_patterns:
+    - Proceeding to analysis without re-presenting the updated cluster
+    - Ignoring the user's request and keeping the original cluster
+    - Adding applyLoyaltyDiscount without removing calculateTax
+  tags: [checkpoint, scope-control]
+
+- id: narrow_scope
+  description: Agent suggests narrowing when concept is too broad
+  user_query: "/spec-extract user-management"
+  context: |
+    Discovery found functions across: user registration, user authentication,
+    user profile management, user roles and permissions, user notifications,
+    and user billing. The cluster has 22 functions.
+  expected:
+    behavior: >
+      Agent suggests narrowing the scope to a specific sub-concept
+      (e.g., "user authentication", "user roles", or "user billing").
+      It presents the broad cluster but recommends picking one area.
+      It does NOT proceed with all 22 functions.
+    reasoning: >
+      "Feature-scoped: One concept per extraction — suggest narrowing
+      if scope grows too broad."
+      "Cap the cluster at 15-20 functions."
+  anti_patterns:
+    - Proceeding with all 22 functions without suggesting to narrow
+    - Refusing entirely instead of suggesting sub-concepts
+  tags: [checkpoint, scope-control]
+
+# ============================================================
+# Analysis (Phase 3)
+# ============================================================
+
+- id: load_classification_guide
+  description: Agent loads classification reference before analysis
+  user_query: "Confirmed, proceed with analysis."
+  context: |
+    Phase 2 checkpoint was approved. The cluster contains 6 functions
+    related to discount pricing. Agent is entering Phase 3.
+  expected:
+    behavior: >
+      Agent mentions loading or consulting references/classification-guide.md
+      before starting to classify rules. It then reads each function's source
+      and classifies decision points.
+    reasoning: >
+      "Phase 3: Analysis — Load references/classification-guide.md for
+      detailed heuristics on distinguishing rule types."
+      Reference Guide: "Classification heuristics -> references/classification-guide.md
+      -> Phase 3 — distinguishing rule types from infrastructure."
+  anti_patterns:
+    - Starting to classify rules without mentioning the classification reference
+    - Skipping the reference loading step
+  tags: [analysis, references]
+
+- id: classify_business_rule
+  description: Agent correctly classifies domain logic as a Business Rule
+  user_query: "Analyze this function for business rules."
+  context: |
+    Phase 3 in progress. The function to analyze:
+    ```typescript
+    function applyDiscount(order: Order): number {
+      if (order.customer.isVip && order.total > 100) {
+        return order.total * 0.80; // 20% discount
+      }
+      return order.total;
+    }
+    ```
+  expected:
+    behavior: >
+      Agent classifies "VIP customers with orders over $100 get 20% discount"
+      as a Business Rule (not Validation, not Constraint). It assigns
+      high confidence because domain nouns (VIP, order total) are clear
+      and the pattern is recognizable. It notes the inputs (customer.isVip,
+      order.total) and the derived value.
+    reasoning: >
+      "Business Rule — domain logic that a business person would recognize."
+      Confidence high: "logic has clear domain naming AND matches a
+      recognizable business pattern."
+  anti_patterns:
+    - Classifying this as Validation or Constraint instead of Business Rule
+    - Assigning low confidence to clearly named domain logic
+    - Treating the function as infrastructure
+  tags: [analysis, classification]
+
+- id: skip_infrastructure
+  description: Agent does NOT classify logging/caching as a business rule
+  user_query: "Analyze this function for business rules."
+  context: |
+    Phase 3 in progress. The function to analyze:
+    ```typescript
+    function processOrder(order: Order): void {
+      logger.info(`Processing order ${order.id}`);
+      const cached = cache.get(order.id);
+      if (cached) {
+        metrics.increment('order.cache_hit');
+        return cached;
+      }
+      // ... business logic ...
+    }
+    ```
+  expected:
+    behavior: >
+      Agent identifies the logging, caching, and metrics as infrastructure
+      and does NOT classify them as business rules. It focuses on the
+      actual business logic (indicated by the comment). It may note that
+      the full business logic is in the omitted section.
+    reasoning: >
+      "Stop expanding when you hit infrastructure (logging, DB access,
+      HTTP handling) — those aren't business rules."
+      Constraints MUST NOT: "Do not treat infrastructure as business rules
+      (logging, caching, retry logic)."
+  anti_patterns:
+    - Classifying logger.info as a business rule
+    - Classifying cache.get as a business rule
+    - Classifying metrics.increment as a business rule
+  tags: [analysis, classification]
+
+- id: confidence_rating
+  description: Agent assigns appropriate confidence levels to rules
+  user_query: "Analyze these two conditions for business rules."
+  context: |
+    Phase 3 in progress. Two conditions to analyze:
+    Condition A: `if (order.total >= FREE_SHIPPING_MINIMUM)`
+    Condition B: `if (count > 5)`
+  expected:
+    behavior: >
+      Agent assigns high confidence to Condition A (clear domain naming:
+      FREE_SHIPPING_MINIMUM, recognizable business pattern). Agent assigns
+      medium confidence to Condition B (generic names, 5 could be a business
+      limit or arbitrary). It may add Condition B to Open Questions.
+    reasoning: >
+      "high — logic has clear domain naming AND matches a recognizable
+      business pattern."
+      "medium — logic is readable but uses generic names, or could be
+      a workaround/bug."
+  anti_patterns:
+    - Assigning the same confidence to both conditions
+    - Assigning high confidence to the generic `count > 5`
+    - Assigning low confidence to the clearly named FREE_SHIPPING_MINIMUM
+  tags: [analysis, confidence]
+
+# ============================================================
+# Output (Phase 4)
+# ============================================================
+
+- id: output_structure
+  description: Agent writes catalog to docs/rules/ with correct structure
+  user_query: "Analysis is complete. Write the rule catalog."
+  context: |
+    We are running /spec-extract pricing. Phase 3 is done. 7 rules were
+    classified from the pricing cluster. Agent is entering Phase 4.
+  expected:
+    behavior: >
+      Agent describes writing the catalog to docs/rules/pricing.md. The output
+      includes: a header with "Extracted Rules" title and extraction date,
+      a summary with rule count, rules numbered R-1 through R-7 with Type
+      and Confidence fields, an Open Questions section, and the symbol cluster
+      table from Phase 2. It uses R- prefix (not ER- or BR-).
+    reasoning: >
+      "Write the rule catalog to docs/rules/<concept>.md. The output must include:
+      1. Header — # Extracted Rules: <Concept>
+      3. Rules — each numbered R-1, R-2, etc. (NOT ER- or BR-)"
+  anti_patterns:
+    - Writing to a location other than docs/rules/
+    - Using ER- or BR- prefix instead of R-
+    - Omitting the Open Questions section
+    - Omitting the symbol cluster table
+  tags: [output, structure]
+
+- id: r_prefix_numbering
+  description: Agent uses R-1, R-2 numbering (not ER- or BR-)
+  user_query: "Write the rules section of the catalog for these 3 rules."
+  context: |
+    We are running /spec-extract pricing, Phase 4 (Output). 3 rules were classified:
+    1. VIP discount (Business Rule, high confidence)
+    2. Email validation (Validation, high confidence)
+    3. Max subscriptions (Constraint, medium confidence)
+    Per the skill, rules must be numbered R-1, R-2, etc. — NOT ER-1 or BR-1.
+  expected:
+    behavior: >
+      Agent numbers the rules as R-1, R-2, R-3. It does NOT use ER-1,
+      BR-1, or any other prefix. Each rule includes Type, Confidence,
+      Source, Description, and Dependencies fields.
+    reasoning: >
+      "Rules — each numbered R-1, R-2, etc. (NOT ER- or BR-)"
+      The R- prefix is explicitly required by the skill.
+  anti_patterns:
+    - Using ER-1, ER-2 prefix instead of R-1, R-2
+    - Using BR-1 or other prefixes
+    - Omitting rule numbering entirely
+  tags: [output, naming]
+
+- id: open_questions
+  description: Agent flags uncertain items in Open Questions section
+  user_query: "Write the catalog. Include the magic number condition we were unsure about."
+  context: |
+    We are running /spec-extract billing, Phase 4. During analysis, one condition
+    had low confidence: `if (x & 0x04)` in src/billing/processor.ts:42 — unclear
+    whether this is a business rule or a bit flag for internal state. The agent
+    was uncertain about its meaning and should flag it rather than fabricate an
+    interpretation.
+  expected:
+    behavior: >
+      Agent includes the uncertain `if (x & 0x04)` condition in the Open
+      Questions section, describing both possible interpretations (business
+      rule vs bit flag) and including the source location. It does NOT
+      present this as a confirmed rule with a fabricated business meaning.
+      It may also include it as a low-confidence rule, but the Open Questions
+      entry is required either way.
+    reasoning: >
+      "Always note open questions — uncertain is better than wrong."
+      "Open Questions — as checkbox items for unresolved items."
+      Constraints MUST NOT: "Do not fabricate rules."
+  anti_patterns:
+    - Presenting the condition only as a confirmed rule without any Open Questions entry
+    - Omitting the uncertain condition entirely from the catalog
+    - Fabricating a definitive business meaning for the bit operation
+  tags: [output, honesty]
+
+# ============================================================
+# Constraints
+# ============================================================
+
+- id: read_only
+  description: Agent does NOT modify source code
+  user_query: "This rule seems buggy. Fix it while extracting."
+  context: |
+    Phase 3 in progress. A rule was found that contradicts another rule.
+    The user asks to fix the bug in the source code.
+  expected:
+    behavior: >
+      Agent refuses to modify source code. It explains that spec-extract
+      is a read-only operation. It offers to document the contradiction
+      in Open Questions and suggests fixing it separately.
+    reasoning: >
+      Constraints MUST NOT: "Do not modify any source code — this is a
+      read-only operation."
+  anti_patterns:
+    - Modifying the source code to fix the bug
+    - Offering to edit the file
+    - Silently changing the code
+  tags: [constraints]
+
+- id: no_fabrication
+  description: Agent does NOT invent rules not found in code
+  user_query: "There should also be a rule about maximum order amount. Add it."
+  context: |
+    Phase 4 in progress. The user claims there should be a max order amount
+    rule, but no such condition was found in the code during analysis.
+  expected:
+    behavior: >
+      Agent explains that no max order amount rule was found in the code.
+      It may add this as an Open Question ("Missing rule: max order amount
+      expected but not found in code") but does NOT create a fabricated
+      rule entry. It suggests checking if the rule is implemented elsewhere.
+    reasoning: >
+      Constraints MUST NOT: "Do not fabricate rules — if you can't find
+      it in code, don't invent it."
+      "Code is the source of truth: Extract what the code actually does."
+  anti_patterns:
+    - Creating a rule entry for something not found in code
+    - Adding a rule based on the user's claim without code evidence
+    - Ignoring the user's concern entirely
+  tags: [constraints, honesty]
+
+- id: feature_scoped
+  description: Agent refuses whole-codebase extraction
+  user_query: "/spec-extract everything"
+  expected:
+    behavior: >
+      Agent explains that extraction is feature-scoped — one concept per
+      extraction. It asks the user to specify a domain concept, symbol,
+      or directory. It suggests examples of narrower concepts.
+    reasoning: >
+      "Feature-scoped: One concept per extraction — suggest narrowing
+      if scope grows too broad."
+      Constraints MUST NOT: "Do not extract the entire codebase —
+      stay feature-scoped."
+  anti_patterns:
+    - Attempting to extract the entire codebase
+    - Proceeding with "everything" as a concept
+    - Not asking the user to narrow the scope
+  tags: [constraints, scope-control]
