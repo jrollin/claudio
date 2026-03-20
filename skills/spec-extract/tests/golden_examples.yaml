@@ -497,3 +497,278 @@
     - Proceeding with "everything" as a concept
     - Not asking the user to narrow the scope
   tags: [constraints, scope-control]
+
+# ============================================================
+# Legacy-Aware Discovery (Phase 1 — Cross-Cutting)
+# ============================================================
+
+- id: cross_cutting_middleware
+  description: Agent checks middleware/interceptors during legacy-aware discovery
+  user_query: "/spec-extract order-validation"
+  context: |
+    Discovery found 5 core functions in src/orders/. The codebase is a Rails app
+    with before_action filters in controllers and a middleware stack in config/application.rb.
+    The agent should check for rules hidden in middleware, not just the call graph.
+  expected:
+    behavior: >
+      Agent searches route definitions and controllers for before-filters,
+      middleware, or decorators that enforce constraints on order-related
+      endpoints (e.g., authentication, rate limiting, quota checks). Any
+      middleware-enforced rules are added to the cluster as Core Logic,
+      not dismissed as infrastructure.
+    reasoning: >
+      "Cross-cutting discovery (legacy-aware): 1. Middleware/interceptors —
+      search route definitions for before-filters, decorators, AOP aspects
+      that enforce constraints before the main logic runs."
+      "Rules hidden in middleware or DB constraints go in Core Logic, not Boundary."
+  anti_patterns:
+    - Skipping middleware/interceptor search entirely
+    - Finding middleware rules but classifying them as Boundary/infrastructure
+    - Only tracing the call graph without checking cross-cutting concerns
+  tags: [discovery, legacy, cross-cutting]
+
+- id: cross_cutting_db_constraints
+  description: Agent checks database migrations for hidden constraints
+  user_query: "/spec-extract user-registration"
+  context: |
+    Discovery found registration-related functions. The codebase has a
+    db/migrate/ directory with migration files. The users table likely
+    has constraints (NOT NULL, UNIQUE, CHECK) that enforce business rules
+    not visible in application code.
+  expected:
+    behavior: >
+      Agent reads migration files or schema related to the users table
+      to find database-level constraints (UNIQUE on email, NOT NULL on
+      required fields, CHECK constraints on status values). These are
+      documented as rules, noting they are enforced at the DB level.
+    reasoning: >
+      "Cross-cutting discovery: 2. Database constraints — read migration
+      files and schema for CHECK constraints, UNIQUE indexes, NOT NULL,
+      triggers on tables related to the concept."
+  anti_patterns:
+    - Ignoring migration files entirely
+    - Finding DB constraints but not documenting them as rules
+    - Only looking at application-level validations
+  tags: [discovery, legacy, cross-cutting]
+
+- id: cross_cutting_config_rules
+  description: Agent searches for config/environment-driven rules
+  user_query: "/spec-extract pricing"
+  context: |
+    Discovery found pricing functions. The codebase uses environment
+    variables for thresholds (FREE_SHIPPING_THRESHOLD, MAX_DISCOUNT_PCT)
+    and has a config/pricing.yml file with tier definitions.
+  expected:
+    behavior: >
+      Agent searches for ENV/process.env/config references related to
+      pricing. It identifies config-driven rules and documents them with
+      the config key as the value, noting that actual values must be
+      checked in deployment config. Config files with domain-meaningful
+      keys are treated as rule sources.
+    reasoning: >
+      "Cross-cutting discovery: 3. Config/environment rules — search for
+      ENV, process.env, Settings., config YAML/JSON with keys related
+      to the concept."
+  anti_patterns:
+    - Ignoring environment variables and config files
+    - Treating config values as infrastructure rather than rule parameters
+    - Fabricating actual values instead of documenting the config key
+  tags: [discovery, legacy, cross-cutting]
+
+- id: temporal_strata
+  description: Agent detects duplicate implementations across code generations
+  user_query: "/spec-extract billing"
+  context: |
+    The codebase has both lib/legacy/billing/ and src/billing/ directories.
+    Both contain billing calculation functions. Routing suggests the legacy
+    version is still active for API v1 clients.
+  expected:
+    behavior: >
+      Agent detects both implementations and traces routing to determine
+      which is active. It flags the duplication and documents which version
+      serves which code path. It does NOT silently pick one and ignore
+      the other.
+    reasoning: >
+      "Cross-cutting discovery: 4. Temporal strata — search for the concept
+      name in legacy/, v2/, old/ directories to detect duplicate
+      implementations. Trace routing to determine which is active."
+  anti_patterns:
+    - Only discovering one of the two implementations
+    - Picking the newer version without checking if it's actually active
+    - Ignoring the legacy directory entirely
+  tags: [discovery, legacy, cross-cutting]
+
+# ============================================================
+# Inter-Function Analysis (Phase 3 — Emergent Rules)
+# ============================================================
+
+- id: emergent_ordering_rule
+  description: Agent identifies execution ordering as an explicit rule
+  user_query: "Confirmed, proceed with analysis."
+  context: |
+    Phase 2 approved. The cluster contains: validateOrder(), checkInventory(),
+    calculateTotal(), applyDiscount(). The orchestrator calls them in this
+    exact sequence. Discount depends on total, total depends on inventory check.
+  expected:
+    behavior: >
+      Agent identifies the execution ordering as a rule: inventory must
+      be checked before total is calculated, and total must be calculated
+      before discount is applied. This ordering constraint is documented
+      as an explicit rule, not just implied by the code structure.
+    reasoning: >
+      "Inter-function analysis: 6. Execution ordering — does the order
+      in which functions are called encode a rule?"
+  anti_patterns:
+    - Analyzing each function in isolation without noting ordering dependencies
+    - Treating execution order as implementation detail rather than a rule
+  tags: [analysis, emergent-rules]
+
+- id: emergent_combined_constraint
+  description: Agent identifies implicit constraints from combining independent rules
+  user_query: "Confirmed, proceed with analysis."
+  context: |
+    Phase 2 approved. The cluster contains two independent validations:
+    maxItemsPerOrder() enforces max 5 items, and minItemPrice() enforces
+    min $10 per item. Combined, they create an implicit $50 minimum order.
+  expected:
+    behavior: >
+      Agent identifies both individual rules AND the emergent combined
+      constraint: the combination of max 5 items and min $10/item creates
+      an implicit minimum order of $50. This is documented as a separate
+      emergent rule noting it is not localized in a single function.
+    reasoning: >
+      "Inter-function analysis: 8. Combined constraints — do two independent
+      validations, when combined, create an implicit constraint not
+      documented anywhere?"
+  anti_patterns:
+    - Only documenting the two individual rules without the emergent constraint
+    - Treating the combined effect as obvious and not worth documenting
+  tags: [analysis, emergent-rules]
+
+# ============================================================
+# Provenance and Risk Signals (Phase 3)
+# ============================================================
+
+- id: provenance_git_blame
+  description: Agent checks git blame for medium/low confidence rules
+  user_query: "Confirmed, proceed with analysis."
+  context: |
+    Phase 2 approved. The cluster contains a function with a magic number
+    `if (count > 5)` — medium confidence. The agent should check git blame
+    to understand the origin of this condition.
+  expected:
+    behavior: >
+      Agent runs git blame on the line containing the magic number to
+      determine when it was added, by whom, and what the commit message
+      says. This provenance information is recorded in the Origin field
+      of the rule. Panic commit signals (weekend, 2am, terse message)
+      are flagged.
+    reasoning: >
+      "1b. Check provenance — for medium/low confidence rules, run git blame
+      on the decision lines. Record the date, author, and commit message."
+  anti_patterns:
+    - Skipping git blame for medium/low confidence rules
+    - Running git blame but not recording findings in the Origin field
+    - Only checking provenance for high confidence rules (where it's optional)
+  tags: [analysis, provenance]
+
+- id: test_coverage_check
+  description: Agent notes test coverage status for each rule
+  user_query: "Confirmed, proceed with analysis."
+  context: |
+    Phase 2 approved. The cluster contains calculateDiscount() which has
+    a test file tests/pricing/discount.test.ts, and applyTax() which has
+    no test coverage at all.
+  expected:
+    behavior: >
+      Agent notes that calculateDiscount has test coverage (linking to
+      the test file) and that applyTax has no test coverage. Both are
+      recorded in the Test coverage field of their respective rules.
+      Absence of tests is flagged as a risk signal.
+    reasoning: >
+      "1d. Check test coverage — search for test files that exercise this
+      function. Note if tests exist, are partial, or absent."
+  anti_patterns:
+    - Not checking for test files at all
+    - Only noting test coverage when tests exist, ignoring absence
+  tags: [analysis, risk-signals]
+
+# ============================================================
+# Broad Mode
+# ============================================================
+
+- id: broad_mode_lightweight_index
+  description: Agent produces lightweight index in broad mode
+  user_query: "/spec-extract --broad order-management"
+  context: |
+    The user wants an initial map of a large legacy concept before
+    narrowing. The cluster has 35 functions across multiple sub-domains.
+  expected:
+    behavior: >
+      Agent uses the raised cap of 40 functions. It produces a lightweight
+      index (rule name, type, confidence, source — no full descriptions
+      or code snippets) written to docs/rules/order-management-index.md.
+      It skips Phase 5 verification. It suggests sub-concepts the user
+      can extract in full.
+    reasoning: >
+      "--broad: raises cluster cap to 40 functions and produces a lightweight
+      index first (rule name + type + confidence only, no full descriptions)."
+      "Broad mode: Skip Phase 5 verification — it's a scouting pass."
+  anti_patterns:
+    - Using the default 20-function cap instead of 40
+    - Writing full descriptions and code snippets in broad mode
+    - Running Phase 5 verification in broad mode
+    - Not suggesting sub-concepts for full extraction
+  tags: [broad-mode, scope-control]
+
+# ============================================================
+# Verification (Phase 5)
+# ============================================================
+
+- id: verification_catches_stale_reference
+  description: Agent detects and fixes stale line references during verification
+  user_query: "Catalog written. Proceeding to verification."
+  context: |
+    Phase 4 complete. The catalog contains R-1 with Source: src/pricing/discount.ts:45
+    but the actual code at line 45 has shifted to line 52 due to earlier additions.
+    The code snippet is correct but the line number is wrong.
+  expected:
+    behavior: >
+      Agent reads the source file at the referenced line, detects the
+      mismatch, finds the correct line, updates the catalog in-place,
+      and records the rule as "adjusted" in the Verification table with
+      a note about the line number change.
+    reasoning: >
+      "Phase 5: For each rule R-N, verify: Source exists — Read the file:line
+      referenced. Confirm the file exists and the line range contains
+      the cited code."
+      "adjusted — rule was correct but needed minor fixes (stale line number)."
+  anti_patterns:
+    - Skipping verification entirely
+    - Marking the rule as verified despite the wrong line number
+    - Rejecting the rule instead of adjusting it
+  tags: [verification]
+
+- id: verification_rejects_fabricated_rule
+  description: Agent rejects a rule whose source cannot be found
+  user_query: "Catalog written. Proceeding to verification."
+  context: |
+    Phase 4 complete. The catalog contains R-3 with Source: src/billing/tax.ts:90
+    but the file only has 75 lines. The code snippet in the rule does not
+    appear anywhere in the file.
+  expected:
+    behavior: >
+      Agent reads the source file, discovers the line doesn't exist and
+      the snippet isn't found in the file. It marks R-3 as rejected,
+      removes it from the catalog, updates the rule count in Summary,
+      and records the rejection in the Verification table.
+    reasoning: >
+      "Phase 5: Source exists — Confirm the file exists and the line range
+      contains the cited code."
+      "rejected — rule is fabricated, misattributed, or fundamentally wrong.
+      Remove it from the catalog."
+  anti_patterns:
+    - Keeping the rule despite missing source
+    - Marking it as adjusted instead of rejected
+    - Not updating the rule count after removal
+  tags: [verification]

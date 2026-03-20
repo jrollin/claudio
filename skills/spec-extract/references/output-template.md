@@ -20,6 +20,14 @@ Copy this template when writing `docs/rules/<concept>.md`. Replace all `<placeho
 **Extraction scope:** <concept | symbol name | directory path>
 **Rules found:** <N> (high confidence: <X>, medium: <Y>, low: <Z>)
 
+## Rule Index
+
+| Rule | Name | Type | Confidence | Test | Callers |
+|------|------|------|------------|------|---------|
+| [R-1](#r-1-rule-name) | <Rule name> | <Type> | <high\|medium\|low> | <yes\|no\|partial> | <N> |
+| [R-2](#r-2-rule-name) | <Rule name> | <Type> | <high\|medium\|low> | <yes\|no\|partial> | <N> |
+| ... | ... | ... | ... | ... | ... |
+
 ## Rules
 
 ### R-<N>: <Rule Name — plain English, verb phrase>
@@ -27,6 +35,9 @@ Copy this template when writing `docs/rules/<concept>.md`. Replace all `<placeho
 - **Type:** <Business Rule | Validation | Derived Value | State Transition | Constraint | Fallback>
 - **Confidence:** <high | medium | low>
 - **Source:** `<path/to/file.ext:line>`
+- **Origin:** <git blame date, author, commit message summary — required for medium/low confidence, optional for high>
+- **Test coverage:** <yes (link to test) | no | partial>
+- **Callers:** <N upstream functions depend on this rule — "1 (isolated)" or "12 (load-bearing)">
 - **Description:** <One sentence: what this rule does in domain language, not code language>
 - **Inputs:** <What data this rule examines — entity fields, parameters, config values>
 - **Output/Effect:** <What changes — return value, state change, side effect>
@@ -43,17 +54,41 @@ Copy this template when writing `docs/rules/<concept>.md`. Replace all `<placeho
 - [ ] <Missing rule: behavior implied by other rules but not implemented>
 - [ ] <Contradiction between R-X and R-Y — which is authoritative?>
 
+## Verification
+
+> Rules were cross-checked against the codebase on <YYYY-MM-DD>.
+
+| Rule | Verdict | Notes |
+|------|---------|-------|
+| R-1  | ✅ verified | — |
+| R-2  | ⚠️ adjusted | <what changed> |
+| ...  | ... | ... |
+
+**Verified:** <X> / **Adjusted:** <Y> / **Rejected:** <Z>
+
 ## Symbol Cluster
 
-<Paste the table from Phase 2 checkpoint>
+<Paste the layered tables from Phase 2 checkpoint, grouped by layer: Entry, Orchestration, Core Logic, Support, Boundary (excluded)>
 
-| # | Symbol | File | Role |
-|---|--------|------|------|
+### Entry
+| # | Symbol | File | Why included |
+|---|--------|------|-------------|
 | 1 | ... | ... | ... |
 
-**Cluster size:** <N> functions
-**Entry points:** <list>
-**Leaf nodes:** <list>
+### Core Logic
+| # | Symbol | File | Why included |
+|---|--------|------|-------------|
+| 2 | ... | ... | ... |
+
+<... other layers as applicable ...>
+
+### Boundary (excluded from rule extraction)
+| # | Symbol | File | Why excluded |
+|---|--------|------|-------------|
+| — | ... | ... | ... |
+
+**Cluster size:** <N> functions (+ <M> boundary, excluded)
+**Call flow:** <entry → orchestration → core logic → support>
 ```
 
 ---
@@ -85,6 +120,38 @@ Descriptions should answer: **what happens, under what conditions, and why it ma
 - If the rule spans multiple functions, show the key branch and note "continues in R-X"
 - Add `// ← this line` annotations only when the relevant line isn't obvious
 - Max ~10 lines per snippet. If longer, extract the core condition
+
+## Writing Good Origin Fields
+
+The Origin field provides provenance — when, by whom, and why a rule was introduced. Required for medium/low confidence rules, optional for high.
+
+| Bad | Good |
+|-----|------|
+| "Unknown" | "Added 2019-03-15 by jsmith in commit `a1b2c3d` — 'fix billing edge case'" |
+| "Git blame" | "Introduced 2021-08-22 (Sunday 2am) by devops in `hotfix: patch discount calc` — likely a panic fix" |
+
+Signals to flag:
+- **Weekend/late-night commits**: suggest hotfixes under pressure
+- **Terse commit messages** ("fix", "update", "wip"): suggest the change wasn't well-understood
+- **Very old commits with no subsequent changes**: rule may be fossilized — still active but nobody remembers why
+
+## Writing Good Test Coverage and Callers Fields
+
+**Test coverage** answers: "How fragile is this rule to change?"
+
+| Value | Meaning |
+|-------|---------|
+| `yes (tests/pricing/discount.test.ts:15)` | Tests exist and exercise this rule — safer to modify |
+| `partial` | Tests exist for the function but don't cover this specific branch |
+| `no` | No tests found — changing this rule is high-risk |
+
+**Callers** answers: "How load-bearing is this rule?"
+
+| Value | Meaning |
+|-------|---------|
+| `1 (isolated)` | Only one upstream depends on it — low blast radius |
+| `8 (load-bearing)` | Many upstreams depend on it — changes ripple widely |
+| `0 (dead code?)` | No callers found — may be dead code, flag in Open Questions |
 
 ## Dependencies Between Rules
 
