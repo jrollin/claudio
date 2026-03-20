@@ -184,21 +184,27 @@
     The agent found 8 functions: calculatePrice(), applyDiscount(),
     getTierPricing(), validatePriceRange(), computeTax(), getShippingCost(),
     applyPromoCode(), and formatPrice(). These are across 3 files in src/pricing/.
-    The agent needs to present the checkpoint before moving to analysis.
+    The agent needs to present the Phase 2 checkpoint now — not plan how to do it.
   expected:
     behavior: >
-      Agent presents a symbol cluster table (or structured list) showing the
-      8 discovered functions with their files and roles. It explicitly asks
-      the user to confirm or adjust before proceeding to analysis. It does
-      NOT start reading function bodies or classifying rules yet.
+      Agent produces the Phase 2 checkpoint output: a summary narrative
+      explaining what the pricing cluster does, a layered symbol table
+      grouping the 8 functions by role (Entry / Orchestration / Core Logic /
+      Support / Boundary), and actionable questions asking the user to
+      confirm or adjust. It waits for confirmation before proceeding to
+      Phase 3 analysis. It does NOT just list steps for how it would create
+      the checkpoint — it actually presents the checkpoint content.
     reasoning: >
       "Present the discovered cluster to the user... Wait for explicit user
       confirmation before continuing."
       Constraints MUST DO: "Always checkpoint after discovery — never skip Phase 2."
+      The context states Phase 1 is complete, so the agent should produce
+      Phase 2 output, not describe how it would produce it.
   anti_patterns:
     - Starting to read and classify code without presenting the cluster first
     - Presenting the cluster but proceeding to analysis without waiting for confirmation
     - Skipping Phase 2 checkpoint entirely and jumping to Phase 3
+    - Listing procedural steps for creating the checkpoint instead of actually presenting it
   tags: [checkpoint]
 
 - id: adjust_scope
@@ -338,21 +344,27 @@
     Phase 3 in progress. Two conditions to analyze:
     Condition A: `if (order.total >= FREE_SHIPPING_MINIMUM)`
     Condition B: `if (count > 5)`
+    The agent should classify these conditions now, not describe how it would classify them.
   expected:
     behavior: >
-      Agent assigns high confidence to Condition A (clear domain naming:
-      FREE_SHIPPING_MINIMUM, recognizable business pattern). Agent assigns
-      medium confidence to Condition B (generic names, 5 could be a business
-      limit or arbitrary). It may add Condition B to Open Questions.
+      Agent actually classifies both conditions, assigning high confidence
+      to Condition A (clear domain naming: FREE_SHIPPING_MINIMUM, recognizable
+      business pattern) and medium confidence to Condition B (generic names,
+      5 could be a business limit or arbitrary). It may add Condition B to
+      Open Questions. The response should contain the actual classifications,
+      not a list of steps for how to analyze them.
     reasoning: >
       "high — logic has clear domain naming AND matches a recognizable
       business pattern."
       "medium — logic is readable but uses generic names, or could be
       a workaround/bug."
+      The context places the agent mid-Phase-3, so it should produce
+      analytical output, not a plan.
   anti_patterns:
     - Assigning the same confidence to both conditions
     - Assigning high confidence to the generic `count > 5`
     - Assigning low confidence to the clearly named FREE_SHIPPING_MINIMUM
+    - Listing procedural steps for how to analyze instead of actually classifying
   tags: [analysis, confidence]
 
 # ============================================================
@@ -557,22 +569,28 @@
   context: |
     Discovery found pricing functions. The codebase uses environment
     variables for thresholds (FREE_SHIPPING_THRESHOLD, MAX_DISCOUNT_PCT)
-    and has a config/pricing.yml file with tier definitions.
+    and has a config/pricing.yml file with tier definitions. The agent
+    should specifically address these config sources in its discovery plan.
   expected:
     behavior: >
-      Agent searches for ENV/process.env/config references related to
-      pricing. It identifies config-driven rules and documents them with
-      the config key as the value, noting that actual values must be
-      checked in deployment config. Config files with domain-meaningful
-      keys are treated as rule sources.
+      Agent's discovery steps explicitly include searching for ENV/process.env/config
+      references related to pricing — specifically mentioning environment variables
+      like FREE_SHIPPING_THRESHOLD and MAX_DISCOUNT_PCT, and config files like
+      config/pricing.yml. Config-driven thresholds are treated as rule parameters
+      (documenting the config key, not fabricating values). The agent does not
+      treat config values as pure infrastructure to skip.
     reasoning: >
       "Cross-cutting discovery: 3. Config/environment rules — search for
       ENV, process.env, Settings., config YAML/JSON with keys related
       to the concept."
+      The context explicitly mentions these config sources, so the agent
+      should address them specifically, not just generically mention
+      checking config files.
   anti_patterns:
     - Ignoring environment variables and config files
     - Treating config values as infrastructure rather than rule parameters
     - Fabricating actual values instead of documenting the config key
+    - Only mentioning config/ENV generically without addressing the specific sources from context
   tags: [discovery, legacy, cross-cutting]
 
 - id: temporal_strata

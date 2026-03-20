@@ -46,7 +46,7 @@ EVAL_BACKEND_VAR="SPEC_EXTRACT_EVAL_BACKEND"
 EVAL_MODEL_VAR="SPEC_EXTRACT_EVAL_MODEL"
 
 # Agent instruction — tells the agent how to format its response.
-AGENT_INSTRUCTION="Based on this skill, respond to the user's request by listing the steps you would take in order. List each step on its own line prefixed with a number. Be concise — one sentence per step. Do not write code. Do not use tools."
+AGENT_INSTRUCTION="Based on this skill, respond to the user's request. If the context places you at the START of a workflow or phase, list the steps you would take in order (one sentence per step, prefixed with a number). If the context places you MID-WORKFLOW where a phase is complete and you need to present output (e.g., a checkpoint table, a classification, an analysis), produce the actual output the skill requires — tables, classifications, confidence ratings — not a plan of how you would produce them. Do not write code. Do not use tools."
 
 # ============================================================================
 # SHARED HARNESS — do not modify below this line
