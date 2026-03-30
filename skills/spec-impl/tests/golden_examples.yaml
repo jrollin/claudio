@@ -428,3 +428,105 @@
     - Not informing the user about blocked tasks
     - Starting T-2 because it's first in document order without checking deps
   tags: [task-picking, edge-cases]
+
+# ============================================================
+# spec-create v2 compatibility
+# ============================================================
+
+- id: feature_dependency_check
+  description: Agent checks depends_on in tasks.md frontmatter before starting
+  user_query: "/spec-impl payment-flow"
+  context: |
+    The directory docs/features/payment-flow/ exists with all 3 files.
+    tasks.md has YAML frontmatter:
+      ---
+      feature: payment-flow
+      spec_version: 1
+      total_tasks: 4
+      phases:
+        - name: "Core"
+          tasks: [T-1, T-2, T-3, T-4]
+      depends_on: [user-auth]
+      ---
+    docs/features/user-auth/tasks.md exists with T-1 Status: Complete,
+    T-2 Status: In Progress (not all complete).
+  expected:
+    behavior: >
+      Agent reads the tasks.md frontmatter, detects depends_on: [user-auth],
+      checks user-auth tasks.md and finds T-2 is still In Progress.
+      Agent informs the user that payment-flow depends on user-auth which
+      is not yet complete, and stops until the dependency is resolved.
+    reasoning: >
+      "If tasks.md has a depends_on frontmatter field, verify those features
+      are complete before proceeding. If incomplete, inform user and stop."
+  anti_patterns:
+    - Ignoring the depends_on field and starting implementation
+    - Not checking the dependent feature's task statuses
+    - Proceeding with T-1 despite feature dependency being incomplete
+  tags: [initialization, spec-create-v2]
+
+- id: related_features_in_restate
+  description: Agent includes cross-feature risk in restate when task touches shared state
+  user_query: "Implement T-3."
+  context: |
+    We are running /spec-impl payment-flow. Spec files are loaded.
+    T-3 is next unblocked task:
+      ### T-3: Implement account lockout
+      - **Refs**: US-3, TD-2
+      - **Files**: `src/auth/lockout.ts` (new), `tests/auth/lockout.test.ts` (new)
+      - **Verify**: `npm test -- --grep "lockout"`
+      - **Rules**: BR-2, BR-3
+      - **Status**: Not Started
+    tasks.md Related Features section:
+      ## Related Features
+      - **password-reset**: Shares lockout state
+        - **Shared state**: `users.failed_login_count`, `users.locked_until`
+        - **Risk**: Modifying lockout logic (BR-2, BR-3) without updating password-reset
+  expected:
+    behavior: >
+      Agent restates T-3's goal, files, rules, and verify command. It also
+      notes the cross-feature risk: this task modifies lockout state shared
+      with password-reset feature, and changes to BR-2/BR-3 logic could
+      affect password-reset. Agent proceeds with implementation but is
+      aware of the shared state.
+    reasoning: >
+      "Cross-feature risk: if tasks.md has a Related Features section
+      mentioning shared state relevant to this task, note it."
+  anti_patterns:
+    - Restating task without mentioning the cross-feature risk
+    - Ignoring the Related Features section entirely
+    - Refusing to implement because of cross-feature risk (awareness is enough)
+  tags: [restate, spec-create-v2]
+
+- id: nfr_awareness_in_design_check
+  description: Agent considers NFRs from design.md during implementation
+  user_query: "Implement T-5."
+  context: |
+    We are running /spec-impl payment-flow. Spec files are loaded.
+    T-5 creates the login endpoint:
+      ### T-5: Create /auth/login endpoint
+      - **Refs**: US-1, TD-1
+      - **Files**: `src/routes/auth.ts` (new), `tests/auth/routes.test.ts` (new)
+      - **Verify**: `npm test -- --grep "POST /auth/login"`
+      - **Status**: Not Started
+    design.md includes:
+      ## Non-Functional Requirements
+      - **NFR-1** (Performance): Login endpoint responds in under 200ms (p95)
+      - **NFR-2** (Security): Passwords must never be stored in plaintext
+  expected:
+    behavior: >
+      Agent checks design sufficiency for T-5. During the check, it notes
+      the relevant NFRs from design.md: NFR-1 (performance constraint on
+      login endpoint) and NFR-2 (security constraint on passwords). Agent
+      keeps these constraints in mind during implementation — e.g., avoiding
+      expensive synchronous operations in the login path, using hashed
+      password comparison.
+    reasoning: >
+      "Check design.md's Non-Functional Requirements section (NFR-X) for
+      constraints relevant to the current task. NFRs are not referenced
+      per-task but apply cross-cutting."
+  anti_patterns:
+    - Ignoring NFRs entirely during design sufficiency check
+    - Implementing the login endpoint without considering the 200ms constraint
+    - Storing passwords in plaintext despite NFR-2
+  tags: [design-sufficiency, spec-create-v2]

@@ -32,11 +32,12 @@ You are a spec-driven implementer. You execute tasks from a completed specificat
 
 1. Verify `docs/features/<feature-name>/` exists
 2. Read all 3 spec files for full context:
-   - `docs/features/<feature-name>/requirements.md`
-   - `docs/features/<feature-name>/design.md`
-   - `docs/features/<feature-name>/tasks.md`
-3. Load `references/verify-by-language.md` now — identify the project's ecosystem and test runner from project files using the detection table. Do this once at init, not on first verify command encounter.
-4. Handle edge cases (see Edge Cases below)
+   - `docs/features/<feature-name>/requirements.md` — user stories, acceptance criteria, business rules, optional success metrics (KPIs). Uses suffix-style IDs: `{#US-X}`, `*(AC-X.Y)*`, `*(BR-X)*`
+   - `docs/features/<feature-name>/design.md` — architecture, technical decisions, file inventory, non-functional requirements (NFRs)
+   - `docs/features/<feature-name>/tasks.md` — may have YAML frontmatter between `---` fences with `feature`, `total_tasks`, `phases`, and `depends_on` fields
+3. If tasks.md has a `depends_on` frontmatter field listing other feature names, verify those features are complete (all tasks `Complete` in their tasks.md) before proceeding. If a dependency is incomplete, inform the user and stop
+4. Load `references/verify-by-language.md` now — identify the project's ecosystem and test runner from project files using the detection table. Do this once at init, not on first verify command encounter.
+5. Handle edge cases (see Edge Cases below)
 
 ### 2. Pick Next Task
 
@@ -51,9 +52,10 @@ Scan `tasks.md` for the next task to execute:
 ### 3. Restate Before Coding
 
 Before touching any code, restate:
-- **Goal**: what this task achieves (from task title + Refs)
+- **Goal**: what this task achieves (from task title + Refs — look up referenced `US-X` in requirements.md and `TD-X` in design.md for full context)
 - **Key files**: files to create or modify (from `Files` field)
-- **Rules**: business rules this task enforces (from `Rules` field, if any)
+- **Rules**: business rules this task enforces (from `Rules` field, if any — look up `BR-X` in requirements.md)
+- **Cross-feature risk**: if `tasks.md` has a Related Features section mentioning shared state relevant to this task, note it — changes to shared state may affect other features
 - **Verify**: the exact command that will prove completion
 
 Set `**Status**: In Progress` in `tasks.md`.
@@ -63,6 +65,8 @@ Set `**Status**: In Progress` in `tasks.md`.
 Check whether `design.md` provides enough detail for this task. This is required when:
 - The task references a `TD-X` not yet validated by a previous task, or
 - The task creates files in a directory not yet touched by any completed task
+
+Also check `design.md`'s Non-Functional Requirements section (`NFR-X`) for constraints relevant to the current task (e.g., performance budgets, security requirements). NFRs are not referenced per-task but apply cross-cutting — keep them in mind during implementation.
 
 Skip if a previous task already validated the same `TD-X` references and directory.
 
@@ -136,6 +140,8 @@ When all tasks are done:
 | Task needs file not in its Files field | If file is in File Inventory, proceed. If not in File Inventory, inform user |
 | Session interrupted mid-task | On resume, read `tasks.md` to find in-progress task, continue from there |
 | Multiple tasks `In Progress` on resume | Pick the first by document order. Complete it before moving to the next `In Progress` task |
+| Feature dependency incomplete (`depends_on`) | Inform user which dependent feature(s) have incomplete tasks. Stop until resolved |
+| Task touches shared state from Related Features | Note the risk in restate, verify related features still work after implementation if feasible |
 
 ## Test Quality
 
