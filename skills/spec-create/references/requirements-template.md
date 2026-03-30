@@ -14,35 +14,47 @@ Follow this skeleton exactly — every heading must appear in the output. The Ex
 
 [Brief description of the feature, the problem it solves, and who benefits from it]
 
+## Problem Statement
+
+**Who** is affected: [target users/personas]
+**What** problem they face: [current pain point or unmet need]
+**Why** it matters: [business impact — revenue, retention, compliance, efficiency]
+**How** success is measured: [1-2 key metrics or outcomes]
+
 ## User Stories
 
-### US-1 <Story Title>
+### <Story Title> {#US-1}
 
 WHEN [actor] [condition/event]
 THE [expected behavior]
 
 **Acceptance Criteria:**
-- [ ] AC-1.1: [Specific, testable criterion]
-- [ ] AC-1.2: [Another criterion]
+- [ ] [Specific, testable criterion] *(AC-1.1)*
+- [ ] [Another criterion] *(AC-1.2)*
 
-### US-2 <Story Title>
+### <Story Title> {#US-2}
 
 WHEN [actor] [condition/event]
 THE [expected behavior]
 
 **Acceptance Criteria:**
-- [ ] AC-2.1: ...
+- [ ] ... *(AC-2.1)*
 
 ## Business Rules
 
-- **BR-1**: [Rule description — e.g., "Account locks after 5 failed login attempts"]
-- **BR-2**: [Rule description]
+- [Rule description — e.g., "Account locks after 5 failed login attempts"] *(BR-1)*
+- [Rule description] *(BR-2)*
 
-## Non-Functional Requirements
+> Non-functional requirements (performance, security, compatibility) belong in design.md — they are engineering constraints, not product decisions.
 
-- **NFR-1** (Performance): [Response time, throughput constraints]
-- **NFR-2** (Security): [Auth, data protection, input validation]
-- **NFR-3** (Compatibility): [Platforms, versions, dependencies]
+## Success Metrics *(optional)*
+
+Skip for internal tooling, tech debt, or features with no measurable product impact.
+Include for user-facing features where product needs to validate outcomes.
+
+- [Metric description] — [target] *(KPI-1)*
+  - **Baseline**: [current value or N/A for new features]
+  - **Measured by**: [tool, dashboard, or query]
 
 ## Out of Scope
 
@@ -56,7 +68,7 @@ THE [expected behavior]
 
 ## User Story Format
 
-Use `US-X <Title>` with WHEN/THE notation:
+Use `<Title> {#US-X}` with WHEN/THE notation:
 
 ```
 WHEN [actor] [condition/event]
@@ -74,15 +86,15 @@ Each US must have at least one acceptance criterion that is directly testable.
 
 ## Acceptance Criteria IDs
 
-Prefix each criterion with `AC-X.Y` where X is the story number and Y is the criterion number. IDs are assigned once and stay stable — if you insert a criterion between AC-3.2 and AC-3.3, use AC-3.4 (append, don't renumber):
+Suffix each criterion with `*(AC-X.Y)*` where X is the story number and Y is the criterion number. IDs are assigned once and stay stable — if you insert a criterion between AC-3.2 and AC-3.3, use AC-3.4 (append, don't renumber):
 
 ```
-### US-3 Password Reset
+### Password Reset {#US-3}
 
 **Acceptance Criteria:**
-- [ ] AC-3.1: Reset email sent within 5 seconds of request
-- [ ] AC-3.2: Reset link expires after 1 hour
-- [ ] AC-3.3: Using an expired link shows an error message
+- [ ] Reset email sent within 5 seconds of request *(AC-3.1)*
+- [ ] Reset link expires after 1 hour *(AC-3.2)*
+- [ ] Using an expired link shows an error message *(AC-3.3)*
 ```
 
 These IDs provide fine-grained traceability. Tasks reference stories at the `US-X` level; `AC-X.Y` IDs let reviewers verify that all criteria are covered.
@@ -99,10 +111,14 @@ Extract reusable domain rules into the `## Business Rules` section with `BR-X` I
 ```markdown
 ## Business Rules
 
-- **BR-1**: Sessions expire after 24 hours of inactivity
-- **BR-2**: Account locks after 5 consecutive failed login attempts
-- **BR-3**: Locked accounts unlock automatically after 30 minutes
+- Sessions expire after 24 hours of inactivity *(BR-1)*
+- Account locks after 5 consecutive failed login attempts *(BR-2)*
+- Locked accounts unlock automatically after 30 minutes *(BR-3)*
 ```
+
+## Success Metrics
+
+KPIs are product outcomes (adoption, conversion, time-to-task, satisfaction). Engineering constraints (latency, uptime, throughput) are NFRs and belong in design.md.
 
 ## Example
 
@@ -115,5 +131,5 @@ See `references/example-requirements.md` for a full User Authentication requirem
 - **Missing error cases**: Always include what happens when things go wrong (invalid input, network failure, missing files)
 - **Actor ambiguity**: "When data is processed" — specify *who* triggers it and *how*
 - **Scope creep in AC**: Acceptance criteria should validate the US, not introduce new requirements
-- **Inline business rules**: If a rule applies to multiple stories, extract it to `## Business Rules` with a `BR-X` ID
-- **Missing AC IDs**: Every acceptance criterion must have an `AC-X.Y` prefix for task traceability
+- **Inline business rules**: If a rule applies to multiple stories, extract it to `## Business Rules` with a suffix-style `*(BR-X)*` ID
+- **Missing AC IDs**: Every acceptance criterion must have a suffix-style `*(AC-X.Y)*` ID for task traceability

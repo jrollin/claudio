@@ -183,19 +183,19 @@
   tags: [traceability]
 
 - id: nfr_not_in_task_refs
-  description: NFRs must NOT be referenced in task Refs
+  description: NFRs must NOT be referenced in task Refs (NFRs live in design.md)
   user_query: "Create a task for implementing the rate limiter."
   context: |
-    Phase 3 in progress. Requirements include NFR-1 (response time < 200ms)
-    and US-5 (rate limiting). Design includes TD-3 (token bucket algorithm).
+    Phase 3 in progress. Design includes NFR-1 (response time < 200ms)
+    and TD-3 (token bucket algorithm). Requirements include US-5 (rate limiting).
   expected:
     behavior: >
       Agent creates the task referencing US-5 and TD-3 in Refs.
       It does NOT put NFR-1 in the Refs field. NFRs are cross-cutting
-      constraints validated at integration/review time.
+      engineering constraints in design.md, validated at integration/review time.
     reasoning: >
-      "NFR-X IDs are not referenced in tasks -- they are cross-cutting constraints
-      validated at integration/review time, not per-task references."
+      "NFR-X IDs are not referenced in tasks -- they are cross-cutting engineering
+      constraints validated at integration/review time, not per-task references."
       "No T-X has NFR-X in its Refs field."
   anti_patterns:
     - Including NFR-1 in the task's Refs field
@@ -340,23 +340,26 @@
   tags: [requirements, constraints]
 
 - id: acceptance_criteria_ids
-  description: User stories must include AC-X.Y acceptance criteria
+  description: User stories must include suffix-style AC-X.Y acceptance criteria
   user_query: "Write user stories for file upload: upload a file, download a file, delete a file."
   context: |
     We are in Phase 1 (requirements) for /spec-create file-upload.
     The feature allows users to upload, download, and delete files.
   expected:
     behavior: >
-      Agent writes user stories (US-1, US-2, US-3) each with acceptance
-      criteria using AC-X.Y IDs (e.g. AC-1.1, AC-1.2 for US-1). Each story
-      uses WHEN/THE format and has at least one acceptance criterion.
+      Agent writes user stories each with acceptance criteria using suffix-style
+      *(AC-X.Y)* IDs (e.g. *(AC-1.1)*, *(AC-1.2)* for the first story).
+      Story headings use suffix-style {#US-X} anchors. Each story uses WHEN/THE
+      format and has at least one acceptance criterion. Alternatively, the agent
+      may describe the plan to write stories in this format if it needs to
+      gather context first.
     reasoning: >
+      "Use suffix-style IDs for product readability: {#US-X}, *(AC-X.Y)*, *(BR-X)*."
       "Include acceptance criteria per user story with AC-X.Y IDs."
-      Cross-Reference Scheme: "AC-X.Y -> requirements.md -> AC-1.1, AC-2.3 (story X, criterion Y)."
   anti_patterns:
     - Writing user stories without acceptance criteria
     - Using unnumbered or free-text acceptance criteria without AC-X.Y IDs
-    - Omitting the AC prefix from criteria IDs
+    - Using prefix-style IDs like "AC-1.1:" instead of suffix-style "*(AC-1.1)*"
   tags: [requirements, traceability]
 
 # ============================================================
@@ -382,3 +385,182 @@
     - Starting Phase 1 from scratch as if no files exist
     - Ignoring the existing complete specification
   tags: [initialization, edge-cases]
+
+# ============================================================
+# Multi-audience readability
+# ============================================================
+
+- id: problem_statement_required
+  description: Phase 1 must include a Problem Statement section
+  user_query: "Write requirements for a notification system."
+  context: |
+    We are in Phase 1 (requirements) for /spec-create notifications.
+    The feature adds push notifications to the app.
+  expected:
+    behavior: >
+      Agent includes a Problem Statement section with Who/What/Why/How fields
+      before writing user stories. The Problem Statement explains the business
+      context and success criteria in natural language.
+    reasoning: >
+      "Write a Problem Statement section (Who/What/Why/How) before user stories."
+      requirements-template.md defines the Problem Statement as a required section.
+  anti_patterns:
+    - Jumping directly to user stories without a Problem Statement
+    - Writing a vague Overview without Who/What/Why/How structure
+    - Mixing implementation details into the Problem Statement
+  tags: [requirements, multi-audience]
+
+- id: nfr_in_design_not_requirements
+  description: NFRs must go in design.md, not requirements.md
+  user_query: "Include a performance requirement of 200ms response time."
+  context: |
+    Phase 1 (requirements) in progress for /spec-create payment-flow.
+    User wants to add a performance constraint.
+    The spec-create skill explicitly states: "Non-functional requirements
+    (performance, security, compatibility) belong in design.md — they are
+    engineering constraints, not product decisions." NFR-X IDs live in
+    design.md per the cross-reference scheme.
+  expected:
+    behavior: >
+      Agent acknowledges the performance constraint but defers it to
+      design.md (Phase 2) as an NFR, not adding it to requirements.md.
+      Requirements.md is for product-facing content (stories, AC, BR, KPIs).
+      Engineering constraints like response time are NFRs in design.md.
+    reasoning: >
+      "Non-functional requirements (performance, security, compatibility) belong
+      in design.md — they are engineering constraints, not product decisions."
+      Cross-reference scheme shows NFR-X in design.md, not requirements.md.
+  anti_patterns:
+    - Adding NFR-1 or any performance metric to requirements.md
+    - Writing a Non-Functional Requirements section in requirements.md
+    - Treating response time as a Success Metric (KPI) — it's an NFR
+  tags: [requirements, multi-audience]
+
+- id: tasks_frontmatter
+  description: tasks.md must include YAML frontmatter
+  user_query: "Design is approved. Proceed to tasks."
+  context: |
+    We are working on /spec-create payment-flow. Phase 2 (design) has been approved.
+    Requirements include US-1, US-2. Design includes TD-1, TD-2.
+    Entering Phase 3 (tasks).
+  expected:
+    behavior: >
+      Agent describes writing tasks.md with YAML frontmatter containing
+      feature name, spec_version, total_tasks, phases list, and depends_on.
+      The frontmatter appears between --- fences after the H1 title.
+    reasoning: >
+      "Include YAML frontmatter (feature, spec_version, total_tasks, phases, depends_on)."
+      tasks-template.md defines the frontmatter specification.
+  anti_patterns:
+    - Writing tasks.md without YAML frontmatter
+    - Putting frontmatter at the end of the file
+  tags: [tasks, multi-audience]
+
+- id: suffix_style_ids
+  description: Requirements use suffix-style IDs for product readability
+  user_query: "Write user stories for a checkout flow."
+  context: |
+    We are in Phase 1 (requirements) for /spec-create checkout-flow.
+    The feature adds a checkout process for an e-commerce app.
+    Codebase analysis is complete. User has confirmed scope: cart review,
+    address entry, payment, order confirmation.
+  expected:
+    behavior: >
+      Agent either writes or describes writing user story headings with
+      title first and ID as trailing anchor ({#US-X}). If the agent
+      produces actual stories, acceptance criteria use suffix style
+      *(AC-X.Y)* and business rules use *(BR-X)*. If the agent describes
+      the plan, it explicitly mentions using {#US-X} suffix-style IDs
+      and WHEN/THE format.
+    reasoning: >
+      "Use suffix-style IDs for product readability: {#US-X}, *(AC-X.Y)*, *(BR-X)*."
+      requirements-template.md skeleton shows the suffix-style format.
+  anti_patterns:
+    - Using prefix-style IDs like "### US-1 Title"
+    - Using "- [ ] AC-1.1: criterion" instead of "- [ ] criterion *(AC-1.1)*"
+    - Using "- **BR-1**: rule" instead of "- rule *(BR-1)*"
+    - Not mentioning suffix-style IDs at all
+  tags: [requirements, multi-audience]
+
+- id: large_feature_decomposition
+  description: Agent suggests decomposition for large features
+  user_query: "/spec-create enterprise-platform"
+  context: |
+    Description: Build an enterprise platform with user authentication,
+    billing/payments, notifications, reporting dashboard, and admin panel.
+  expected:
+    behavior: >
+      Agent identifies that this feature spans multiple unrelated domains
+      (auth, billing, notifications, reporting, admin) and suggests decomposing
+      into smaller features. It does NOT attempt to write requirements for
+      all domains in a single specification.
+    reasoning: >
+      "Feature too large (>8 stories or >12 tasks) -> Suggest decomposition."
+      Feature Decomposition: "Stories span unrelated domains -> decompose."
+  anti_patterns:
+    - Writing a single requirements.md covering all 5 domains
+    - Not mentioning decomposition at all
+    - Proceeding with 20+ user stories in one spec
+  tags: [constraints, decomposition]
+
+- id: kpi_not_nfr
+  description: Success Metrics must be product outcomes, not engineering constraints
+  user_query: "Add success metrics for the payment feature."
+  context: |
+    Phase 1 (requirements) in progress for /spec-create payment-flow.
+    User wants to add KPIs to the Success Metrics section.
+  expected:
+    behavior: >
+      Agent writes KPIs as product outcomes (e.g., conversion rate, checkout
+      completion rate, user satisfaction) not engineering constraints (e.g.,
+      response time, uptime, throughput). If the user suggests an engineering
+      metric, agent redirects it to NFR in design.md.
+    reasoning: >
+      "KPIs are product outcomes (adoption, conversion, time-to-task, satisfaction).
+      Engineering constraints (latency, uptime, throughput) are NFRs and belong in design.md."
+  anti_patterns:
+    - Writing "Response time < 200ms" as a KPI
+    - Mixing engineering constraints with product outcomes
+    - Putting NFR-style metrics in the Success Metrics section
+  tags: [requirements, multi-audience]
+
+- id: no_duplicate_ids
+  description: No two items share the same ID within a document
+  user_query: "Add another business rule for minimum payment amount."
+  context: |
+    Phase 1 in progress. Requirements already contain BR-1 (max amount 10000)
+    and BR-2 (currency must be supported). User wants to add a new rule.
+  expected:
+    behavior: >
+      Agent assigns BR-3 to the new rule (next available ID). It does NOT
+      reuse BR-1 or BR-2. IDs are unique and incremental within each document.
+    reasoning: >
+      "Each US-X, AC-X.Y, BR-X, TD-X, T-X, NFR-X, KPI-X is unique within its document."
+      "Deleted IDs are retired, not reassigned (append, don't renumber)."
+  anti_patterns:
+    - Reusing BR-1 or BR-2 for the new rule
+    - Assigning a non-sequential ID like BR-5 when BR-3 is available
+  tags: [traceability, constraints]
+
+- id: every_br_has_task
+  description: Every business rule must be referenced by at least one task
+  user_query: "Tasks are ready for review."
+  context: |
+    Phase 3 in progress for /spec-create payment-flow.
+    Requirements include BR-1 (max amount), BR-2 (supported currencies), BR-3 (minimum amount).
+    Agent has written tasks T-1 through T-4.
+    T-1 Rules: BR-1. T-2 Rules: BR-2. T-3 and T-4 have no Rules field.
+    BR-3 is not referenced by any task.
+  expected:
+    behavior: >
+      Agent detects that BR-3 is not referenced by any task's Rules field.
+      It either adds BR-3 to an existing task or creates a new task that
+      enforces BR-3. No business rule should be left unenforced.
+    reasoning: >
+      "Every BR-X in requirements is referenced by >= 1 T-X Rules field.
+      No business rule left unenforced."
+  anti_patterns:
+    - Presenting tasks for approval with BR-3 orphaned
+    - Ignoring the missing BR-3 reference
+    - Removing BR-3 from requirements instead of adding it to a task
+  tags: [traceability, constraints]

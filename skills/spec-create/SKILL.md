@@ -44,11 +44,14 @@ All three documents use a shared ID system for traceability:
 | `US-X` | requirements.md | US-1, US-2 |
 | `AC-X.Y` | requirements.md | AC-1.1, AC-2.3 (story X, criterion Y) |
 | `BR-X` | requirements.md | BR-1, BR-2 |
-| `NFR-X` | requirements.md | NFR-1, NFR-2 |
+| `KPI-X` | requirements.md | KPI-1, KPI-2 (optional — product outcomes) |
 | `TD-X` | design.md | TD-1, TD-2 |
+| `NFR-X` | design.md | NFR-1, NFR-2 (engineering constraints) |
 | `T-X` | tasks.md | T-1, T-2 |
 
-Traceability: each `T-X` references `US-X` (stories it implements), `TD-X` (decisions it follows), and `BR-X` (rules it enforces). `NFR-X` IDs are not referenced in tasks — they are cross-cutting constraints validated at integration/review time, not per-task.
+Traceability: each `T-X` references `US-X` (stories it implements), `TD-X` (decisions it follows), and `BR-X` (rules it enforces). `NFR-X` IDs are not referenced in tasks — they are cross-cutting engineering constraints validated at integration/review time, not per-task. `KPI-X` IDs are product outcomes, not referenced in tasks.
+
+ID format: requirements.md uses suffix-style IDs for product readability (`{#US-1}`, `*(AC-1.1)*`, `*(BR-1)*`, `*(KPI-1)*`). Tasks.md Refs field uses plain IDs (`US-1, TD-2, BR-1`).
 
 ## Workflow
 
@@ -65,9 +68,12 @@ Create `docs/features/<feature-name>/requirements.md`.
 
 - Analyze existing codebase for context
 - Use `AskUserQuestion` to clarify ambiguities
+- Write a Problem Statement section (Who/What/Why/How) before user stories
 - Write user stories in WHEN/THE format: WHEN describes the trigger, THE describes the system response (do not use "SYSTEM SHALL")
+- Use suffix-style IDs for product readability: `{#US-X}`, `*(AC-X.Y)*`, `*(BR-X)*`
 - Include acceptance criteria per user story with `AC-X.Y` IDs
 - Extract business rules as `BR-X` in a dedicated section
+- Optionally include Success Metrics (KPI-X) for user-facing features — product outcomes only, not engineering constraints
 - **Wait for explicit user approval** before proceeding
 
 ### Phase 2: Design
@@ -81,19 +87,21 @@ Create `docs/features/<feature-name>/design.md`.
 - Implementation considerations (performance, security)
 - Sequence diagrams for critical multi-component flows (Mermaid)
 - File Inventory: table of files to create/modify with purpose
+- Non-Functional Requirements (`NFR-X`) — engineering constraints moved here from requirements
 - **Wait for explicit user approval** before proceeding
 
 ### Phase 3: Tasks
 
 Create `docs/features/<feature-name>/tasks.md`.
 
+- Include YAML frontmatter (feature, spec_version, total_tasks, phases, depends_on)
 - Use `T-X` IDs for every task (heading-based entries, not tables)
 - Group tasks by implementation phase
 - Each task references `US-X` (stories) and `TD-X` (decisions) in its `Refs` field, and `BR-X` (rules) in a separate `Rules` field
 - Each task lists files to create/modify (must match File Inventory)
 - Each task specifies a runnable verification command
 - Note dependencies between tasks using `T-X` IDs
-- Note cross-feature impact when tasks touch shared state
+- Note cross-feature impact when tasks touch shared state with structured Related Features
 - Tests must target business rules and edge cases, not just happy paths
 - No flaky tests — deterministic, no timing dependencies
 - **Wait for explicit user approval** before proceeding
@@ -132,6 +140,7 @@ Generate a completion summary (cross-reference consistency is validated by the P
 | User wants to skip a phase | Refuse — phases are sequential |
 | `docs/features/` doesn't exist | Create it silently |
 | Feature name not kebab-case | Normalize automatically |
+| Feature too large (>8 stories or >12 tasks) | Suggest decomposition — see Feature Decomposition in phase-workflow.md |
 | Session interrupted mid-phase | On resume, detect partial state from existing files and continue |
 
 ## Constraints
@@ -164,14 +173,17 @@ Each file follows a **fixed structure** defined in the reference templates. The 
 
 ### requirements.md
 
-Sections (all required):
+Primary audience: **Product, QA**
+
+Sections (all required unless marked optional):
 
 ```
 # <Feature Name> — Requirements
 ## Overview
-## User Stories          ← US-X with WHEN/THE + AC-X.Y criteria
-## Business Rules        ← BR-X extracted rules
-## Non-Functional Requirements
+## Problem Statement    ← Who/What/Why/How
+## User Stories          ← {#US-X} with WHEN/THE + *(AC-X.Y)* criteria
+## Business Rules        ← *(BR-X)* extracted rules
+## Success Metrics       ← *(KPI-X)* product outcomes (optional)
 ## Out of Scope
 ## Open Questions
 ```
@@ -179,22 +191,31 @@ Sections (all required):
 Example snippet:
 
 ```markdown
-### US-1 User login
+## Problem Statement
+
+**Who** is affected: All application users
+**What** problem they face: No way to authenticate — all endpoints are public
+**Why** it matters: User data is exposed; required for compliance
+**How** success is measured: 100% of protected endpoints require valid session
+
+### User login {#US-1}
 
 WHEN a user submits valid email and password to the login endpoint
 THE system creates a session and returns an auth token
 
 **Acceptance Criteria:**
-- [ ] AC-1.1: POST /auth/login with valid credentials returns 200 + token
-- [ ] AC-1.2: Token contains user ID and expiration timestamp
+- [ ] POST /auth/login with valid credentials returns 200 + token *(AC-1.1)*
+- [ ] Token contains user ID and expiration timestamp *(AC-1.2)*
 
 ## Business Rules
 
-- **BR-1**: Session expires after 24 hours of inactivity
-- **BR-2**: Account locks after 5 consecutive failed login attempts
+- Session expires after 24 hours of inactivity *(BR-1)*
+- Account locks after 5 consecutive failed login attempts *(BR-2)*
 ```
 
 ### design.md
+
+Primary audience: **Dev, Architects**
 
 Sections (all required):
 
@@ -207,6 +228,7 @@ Sections (all required):
 ## Implementation Considerations
 ## Sequence Diagrams     ← Mermaid (multi-component flows only)
 ## File Inventory        ← table: File | Action | Purpose
+## Non-Functional Requirements ← NFR-X engineering constraints
 ```
 
 Example snippet:
@@ -230,10 +252,13 @@ Example snippet:
 
 ### tasks.md
 
+Primary audience: **Dev, LLM agents**
+
 Sections (all required):
 
 ```
 # <Feature Name> — Tasks
+--- (YAML frontmatter: feature, spec_version, total_tasks, phases, depends_on) ---
 ## Phase N: <Title>      ← group by implementation phase
 ### T-X: <Task title>    ← heading-based entries, not tables
   - Refs                 ← US-X, TD-X
@@ -242,7 +267,7 @@ Sections (all required):
   - Blocked by           ← T-X (omit if none)
   - Rules                ← BR-X (omit if none)
   - Status
-## Related Features
+## Related Features      ← structured: Shared state + Risk per feature
 ```
 
 Example snippet:

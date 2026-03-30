@@ -10,6 +10,18 @@ Follow this skeleton exactly — every heading must appear in the output. The Ex
 ```markdown
 # <Feature Name> — Tasks
 
+---
+feature: <feature-name>
+spec_version: 1
+total_tasks: <N>
+phases:
+  - name: "<Phase 1 Title>"
+    tasks: [T-1, T-2, T-3]
+  - name: "<Phase 2 Title>"
+    tasks: [T-4, T-5]
+depends_on: []  # cross-feature dependencies (feature dir names)
+---
+
 ## Phase 1: <Phase Title>
 
 ### T-1: <Task title>
@@ -34,8 +46,20 @@ Follow this skeleton exactly — every heading must appear in the output. The Ex
 
 ## Related Features
 
-- **<feature-name>**: [What shared state or business rules overlap — informational, not parsed by agents]
+- **<feature-name>**: [what overlaps]
+  - **Shared state**: [specific fields, tables, or state]
+  - **Risk**: [what could break if this feature changes independently]
 ```
+
+## Frontmatter
+
+Tasks files include YAML frontmatter between `---` fences for machine parseability:
+
+- **feature**: Feature directory name (kebab-case), must match `docs/features/<feature-name>/`
+- **spec_version**: Schema version for forward compatibility — currently `1`
+- **total_tasks**: Count of T-X entries in the document — must match actual count
+- **phases**: Ordered list of phase names and their task IDs — must match actual groupings
+- **depends_on**: List of other feature directory names this feature depends on — empty list if none. Names must match directories under `docs/features/`
 
 ## Field Definitions
 

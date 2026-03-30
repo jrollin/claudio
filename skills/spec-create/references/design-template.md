@@ -85,6 +85,14 @@ graph LR
 | `tests/auth/service.test.ts` | new | Unit tests for auth service |
 
 [Complete list of files to create or modify. This is the primary input for spec-impl.]
+
+## Non-Functional Requirements
+
+Engineering constraints that apply across the feature. These are validated at integration and review time, not per-task.
+
+- **NFR-1** (Performance): [Response time, throughput constraints]
+- **NFR-2** (Security): [Auth, data protection, input validation]
+- **NFR-3** (Compatibility): [Platforms, versions, dependencies]
 ````
 
 ## Guidelines
@@ -168,8 +176,9 @@ This table is the primary input for spec-impl — it tells the implementing agen
 | *How* to build it | *What* to build | *When* to build it |
 | Component structure | User stories | Implementation order |
 | Technology choices | Acceptance criteria | Status tracking |
-| Data model | Non-functional requirements | Dependencies |
-| API contracts | Out of scope | Verification method |
+| Data model | Business rules | Dependencies |
+| API contracts | Problem statement | Verification method |
+| Non-functional requirements | Success metrics (KPIs) | |
 
 ## Example
 

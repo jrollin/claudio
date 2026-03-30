@@ -181,6 +181,36 @@ Components:
 
 ---
 
+## Non-Functional Requirements
+
+### Vague vs measurable NFRs
+
+### Bad: NFR as vague aspiration
+
+```markdown
+## Non-Functional Requirements
+
+- **NFR-1** (Performance): The system should be fast
+- **NFR-2** (Security): The system should be secure
+```
+
+**Why it's wrong:** Vague NFRs can't be verified. "Fast" and "secure" mean different things to different people and give an implementing agent zero guidance on what to actually enforce.
+
+### Good: NFR with measurable constraint
+
+```markdown
+## Non-Functional Requirements
+
+- **NFR-1** (Performance): Login endpoint responds in under 200ms (p95)
+- **NFR-2** (Security): Passwords must never be stored in plaintext; bcrypt with cost factor ≥ 12
+```
+
+**Why it's right:** Each NFR has a concrete, testable threshold. An agent or reviewer can verify compliance without ambiguity.
+
+> **Note:** NFRs are engineering constraints that live in design.md, not requirements.md. They are validated at integration/review time, not per-task. KPIs (product outcomes like adoption rate, user satisfaction) belong in requirements.md.
+
+---
+
 ## Quick Checklist
 
 Before presenting design for approval:
@@ -194,3 +224,5 @@ Before presenting design for approval:
 - [ ] Architecture Overview describes components and relationships — no schema or library details
 - [ ] Usage Flow diagram is a flowchart (user journey), not a sequence diagram
 - [ ] Component Diagram shows structural relationships between system components
+- [ ] NFR section present with measurable constraints
+- [ ] NFRs are engineering constraints, not product KPIs

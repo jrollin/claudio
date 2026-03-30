@@ -12,6 +12,18 @@ All three example files use the same feature so you can trace `US-X` → `TD-X` 
 ```markdown
 # User Authentication — Tasks
 
+---
+feature: user-authentication
+spec_version: 1
+total_tasks: 6
+phases:
+  - name: "Core Auth Service"
+    tasks: [T-1, T-2, T-3, T-4]
+  - name: "API Integration"
+    tasks: [T-5, T-6]
+depends_on: []
+---
+
 ## Phase 1: Core Auth Service
 
 ### T-1: Set up database schema
@@ -62,6 +74,11 @@ All three example files use the same feature so you can trace `US-X` → `TD-X` 
 
 ## Related Features
 
-- **password-reset**: Shares lockout state — resetting password must clear lockout counter (BR-2, BR-3)
+- **password-reset**: Shares lockout state — resetting password must clear lockout counter
+  - **Shared state**: `users.failed_login_count`, `users.locked_until`
+  - **Risk**: Modifying lockout logic (BR-2, BR-3) without updating password-reset
+
 - **user-profile**: Login creates session used by profile endpoints
+  - **Shared state**: `sessions` table
+  - **Risk**: Changing session schema breaks profile endpoint auth checks
 ```

@@ -135,4 +135,9 @@ sequenceDiagram
 | `tests/auth/service.test.ts` | new | AuthService unit tests |
 | `tests/auth/lockout.test.ts` | new | Lockout logic unit tests |
 | `tests/auth/routes.test.ts` | new | Auth route integration tests |
+
+## Non-Functional Requirements
+
+- **NFR-1** (Performance): Login endpoint responds in under 200ms (p95)
+- **NFR-2** (Security): Passwords must never be stored in plaintext
 ````

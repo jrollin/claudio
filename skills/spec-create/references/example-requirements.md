@@ -17,47 +17,55 @@ All three example files use the same feature so you can trace `US-X` → `TD-X` 
 Session-based authentication for a web API, allowing users to log in with
 email/password and access protected endpoints.
 
+## Problem Statement
+
+**Who** is affected: All application users
+**What** problem they face: No way to authenticate — all endpoints are public
+**Why** it matters: User data is exposed without access control; required for compliance
+**How** success is measured: 100% of protected endpoints require valid session; zero plaintext password storage
+
 ## User Stories
 
-### US-1 User login
+### User login {#US-1}
 
 WHEN a user submits valid email and password to the login endpoint
 THE system creates a session and returns an auth token
 
 **Acceptance Criteria:**
-- [ ] AC-1.1: POST /auth/login with valid credentials returns 200 + token
-- [ ] AC-1.2: Token contains user ID and expiration timestamp
-- [ ] AC-1.3: Password is verified against stored hash, never compared in plaintext
+- [ ] POST /auth/login with valid credentials returns 200 + token *(AC-1.1)*
+- [ ] Token contains user ID and expiration timestamp *(AC-1.2)*
+- [ ] Password is verified against stored hash, never compared in plaintext *(AC-1.3)*
 
-### US-2 User logout
+### User logout {#US-2}
 
 WHEN an authenticated user calls the logout endpoint
 THE system invalidates the session token
 
 **Acceptance Criteria:**
-- [ ] AC-2.1: POST /auth/logout returns 200 and invalidates the token
-- [ ] AC-2.2: Subsequent requests with the invalidated token return 401
+- [ ] POST /auth/logout returns 200 and invalidates the token *(AC-2.1)*
+- [ ] Subsequent requests with the invalidated token return 401 *(AC-2.2)*
 
-### US-3 Account lockout on failed attempts
+### Account lockout on failed attempts {#US-3}
 
 WHEN a user fails to log in 5 consecutive times
 THE system locks the account and rejects further login attempts
 
 **Acceptance Criteria:**
-- [ ] AC-3.1: 6th login attempt returns 423 Locked
-- [ ] AC-3.2: Lockout counter resets after a successful login
-- [ ] AC-3.3: Locked account unlocks automatically after 30 minutes (BR-3)
+- [ ] 6th login attempt returns 423 Locked *(AC-3.1)*
+- [ ] Lockout counter resets after a successful login *(AC-3.2)*
+- [ ] Locked account unlocks automatically after 30 minutes (BR-3) *(AC-3.3)*
 
 ## Business Rules
 
-- **BR-1**: Sessions expire after 24 hours of inactivity
-- **BR-2**: Account locks after 5 consecutive failed login attempts
-- **BR-3**: Locked accounts unlock automatically after 30 minutes
+- Sessions expire after 24 hours of inactivity *(BR-1)*
+- Account locks after 5 consecutive failed login attempts *(BR-2)*
+- Locked accounts unlock automatically after 30 minutes *(BR-3)*
 
-## Non-Functional Requirements
+## Success Metrics *(optional)*
 
-- **NFR-1** (Performance): Login endpoint responds in under 200ms (p95)
-- **NFR-2** (Security): Passwords must never be stored in plaintext
+- 95% of users complete login on first attempt within first week of launch *(KPI-1)*
+  - **Baseline**: N/A (new feature)
+  - **Measured by**: Application analytics dashboard
 
 ## Out of Scope
 

@@ -48,6 +48,42 @@ One task covers 3 user stories, 7 files, and all business rules. Impossible to v
 
 ---
 
+## YAML Frontmatter
+
+### Bad: Missing frontmatter
+
+```markdown
+# Payment Flow — Tasks
+
+## Phase 1: Core Payment Logic
+```
+
+**Why it's wrong:** No structured metadata for LLM agents to parse. They must infer phase groupings and task counts from markdown structure.
+
+### Good: Frontmatter with metadata
+
+```markdown
+# Payment Flow — Tasks
+
+---
+feature: payment-flow
+spec_version: 1
+total_tasks: 5
+phases:
+  - name: "Core Payment Logic"
+    tasks: [T-1, T-2, T-3]
+  - name: "API Integration"
+    tasks: [T-4, T-5]
+depends_on: []
+---
+
+## Phase 1: Core Payment Logic
+```
+
+**Why it's right:** Frontmatter gives LLM agents structured metadata without markdown parsing. `total_tasks` must match actual T-X count; `phases` must match actual groupings.
+
+---
+
 ## Task Sizing (opposite extreme)
 
 ### Bad: Micro-tasks
@@ -242,14 +278,30 @@ One task covers 3 user stories, 7 files, and all business rules. Impossible to v
 
 No `## Related Features` section, even though lockout state is shared with password-reset.
 
-### Good: Documents shared state and overlapping rules
+### Bad: Unstructured free text
 
 ```markdown
 ## Related Features
 
-- **password-reset**: Shares lockout state — resetting password must clear lockout counter (BR-2, BR-3)
-- **user-profile**: Login creates session used by profile endpoints
+- **password-reset**: Related to lockout stuff
 ```
+
+**Why it's wrong:** No actionable detail. An agent cannot determine what state is shared or what the risk of modification is.
+
+### Good: Structured with shared state and risk
+
+```markdown
+## Related Features
+
+- **password-reset**: Shares lockout state
+  - **Shared state**: `users.failed_login_count`, `users.locked_until`
+  - **Risk**: Modifying lockout logic (BR-2, BR-3) without updating password-reset
+- **user-profile**: Login creates session used by profile endpoints
+  - **Shared state**: `sessions` table
+  - **Risk**: Changing session schema without updating profile read path
+```
+
+**Why it's right:** Each related feature declares the exact shared state and the risk of uncoordinated changes. Agents and reviewers can trace cross-feature impact.
 
 ---
 
@@ -257,6 +309,8 @@ No `## Related Features` section, even though lockout state is shared with passw
 
 Before finalizing tasks.md, verify:
 
+- [ ] YAML frontmatter present with correct `total_tasks`?
+- [ ] Related Features have `Shared state` + `Risk`?
 - [ ] Every `US-X` from requirements maps to at least one `T-X`
 - [ ] Every file in design's File Inventory appears in at least one task
 - [ ] Every `Verify` command exits 0 on success, non-zero on failure
