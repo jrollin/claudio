@@ -13,6 +13,15 @@ Claude Code plugin for spec-driven development and TDD.
 | `event-modeling-spec` | Design systems with Event Modeling methodology (commands/events/views blueprints) |
 | `event-modeling-tasks` | Translate a completed event model into implementation tasks |
 
+## Agents
+
+| Agent | Description |
+|-------|-------------|
+| `doc-vs-code-review` | Review whether documentation matches the current code (README, ADRs, CLAUDE.md, feature docs). Optional path argument. |
+| `spec-review` | Review a feature spec (`requirements.md`, `design.md`, `tasks.md`) for completeness, traceability, and readiness for `spec-impl`. Optional spec folder path. |
+
+Invoke explicitly with `@agent-claudio:doc-vs-code-review` or `@agent-claudio:spec-review`, or describe the task and let Claude auto-delegate.
+
 ## Install
 
 ### From Git repository
@@ -50,3 +59,15 @@ Typical workflow:
 For existing codebases, use `/claudio:spec-extract pricing` to reverse-engineer business rules into `docs/rules/pricing.md`. Supports `--symbol`, `--path`, and `--broad` options for different entry points.
 
 The `tdd` skill activates automatically when implementing features or bugfixes, enforcing the red-green-refactor cycle.
+
+Run a spec review before implementation:
+
+```
+@agent-claudio:spec-review docs/features/my-feature/
+```
+
+Run a docs vs. code review after a refactor:
+
+```
+@agent-claudio:doc-vs-code-review
+```
