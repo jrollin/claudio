@@ -1,15 +1,33 @@
 {
   "name": "claudio-power",
-  "description": "Spec-driven development skills for Claude Code",
+  "description": "Spec-driven development, engineering craft, and tooling skills for Claude Code",
+  "version": "2.0.0",
   "owner": {
     "name": "Julien Rollin"
   },
   "plugins": [
     {
-      "name": "claudio",
+      "name": "claudio-spec",
       "source": {
-        "source": "github",
-        "repo": "jrollin/claudio"
+        "source": "git-subdir",
+        "url": "jrollin/claudio",
+        "path": "plugins/claudio-spec"
+      }
+    },
+    {
+      "name": "claudio-craft",
+      "source": {
+        "source": "git-subdir",
+        "url": "jrollin/claudio",
+        "path": "plugins/claudio-craft"
+      }
+    },
+    {
+      "name": "claudio-tools",
+      "source": {
+        "source": "git-subdir",
+        "url": "jrollin/claudio",
+        "path": "plugins/claudio-tools"
       }
     }
   ]

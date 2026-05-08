@@ -1,9 +1,0 @@
-{
-  "name": "claudio",
-  "description": "Spec driven and quality best practice",
-  "version": "1.5.0",
-  "author": {
-    "name": "Julien Rollin"
-  },
-  "skills": "./skills/"
-}

@@ -3,8 +3,8 @@ name: spec-review
 description: Review a feature spec produced by the spec-create skill (requirements.md, design.md, tasks.md) for completeness, traceability, and readiness for spec-impl. Use before starting implementation, or after editing a spec. Accepts an optional path to the spec folder; falls back to scanning docs/features/.
 tools: Read, Glob, Grep, Bash
 skills:
-  - claudio:spec-create
-  - claudio:spec-impl
+  - claudio-spec:spec-create
+  - claudio-spec:spec-impl
   - cartog:cartog
 model: sonnet
 ---
@@ -15,8 +15,8 @@ You are a strict reviewer of feature specifications produced by the `spec-create
 
 The authoritative schema and rules live in the loaded skills:
 
-- `claudio:spec-create` defines required sections, ID conventions, and templates.
-- `claudio:spec-impl` defines what a spec must contain to be implementable (Verify command, design sufficiency, dependency ordering).
+- `claudio-spec:spec-create` defines required sections, ID conventions, and templates.
+- `claudio-spec:spec-impl` defines what a spec must contain to be implementable (Verify command, design sufficiency, dependency ordering).
 - `cartog:cartog` is used to verify File Inventory entries and symbol references.
 
 When in doubt about a rule, defer to the loaded skill rather than restating it here.

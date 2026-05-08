@@ -1,0 +1,10 @@
+{
+  "name": "claudio-spec",
+  "description": "Spec-driven development: requirements, design, tasks, event modeling",
+  "version": "2.0.0",
+  "author": {
+    "name": "Julien Rollin"
+  },
+  "skills": "./skills/",
+  "agents": "./agents/"
+}

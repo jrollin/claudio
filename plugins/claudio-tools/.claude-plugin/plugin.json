@@ -1,0 +1,9 @@
+{
+  "name": "claudio-tools",
+  "description": "Operational tools for Claude Code workflows",
+  "version": "2.0.0",
+  "author": {
+    "name": "Julien Rollin"
+  },
+  "skills": "./skills/"
+}
