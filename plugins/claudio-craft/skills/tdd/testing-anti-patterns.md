@@ -36,7 +36,7 @@ test('renders sidebar', () => {
 - Test passes when mock is present, fails when it's not
 - Tells you nothing about real behavior
 
-**your human partner's correction:** "Are we testing the behavior of a mock?"
+**Reviewer correction:** "Are we testing the behavior of a mock?"
 
 **The fix:**
 
@@ -238,32 +238,6 @@ BEFORE creating mock responses:
   If uncertain: Include all documented fields
 ```
 
-## Anti-Pattern 5: Integration Tests as Afterthought
-
-**The violation:**
-
-```
-✅ Implementation complete
-❌ No tests written
-"Ready for testing"
-```
-
-**Why this is wrong:**
-
-- Testing is part of implementation, not optional follow-up
-- TDD would have caught this
-- Can't claim complete without tests
-
-**The fix:**
-
-```
-TDD cycle:
-1. Write failing test
-2. Implement to pass
-3. Refactor
-4. THEN claim complete
-```
-
 ## When Mocks Become Too Complex
 
 **Warning signs:**
@@ -273,7 +247,7 @@ TDD cycle:
 - Mocks missing methods real components have
 - Test breaks when mock changes
 
-**your human partner's question:** "Do we need to be using a mock here?"
+**Reviewer question:** "Do we need to be using a mock here?"
 
 **Consider:** Integration tests with real components often simpler than complex mocks
 
@@ -296,7 +270,6 @@ TDD cycle:
 | Test-only methods in production | Move to test utilities                        |
 | Mock without understanding      | Understand dependencies first, mock minimally |
 | Incomplete mocks                | Mirror real API completely                    |
-| Tests as afterthought           | TDD - tests first                             |
 | Over-complex mocks              | Consider integration tests                    |
 
 ## Red Flags

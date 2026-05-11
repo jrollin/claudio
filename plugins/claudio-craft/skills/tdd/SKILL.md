@@ -26,7 +26,7 @@ Write the test first. Watch it fail. Write minimal code to pass.
 - Refactoring
 - Behavior changes
 
-**Exceptions (ask your human partner):**
+**Exceptions (ask the user):**
 
 Use this checklist to decide — if uncertain, default to TDD:
 
@@ -37,6 +37,8 @@ Use this checklist to decide — if uncertain, default to TDD:
 | Does the file contain only values and no logic (env vars, JSON config, Dockerfile)? | Configuration file |
 
 If none of the above apply, follow TDD. "It feels too simple" is not an exception.
+
+For files with no logic (configuration, JSON, env vars, Dockerfiles, lockfiles): proceed without a test and note the exception briefly. No need to ask.
 
 Thinking "skip TDD just this once"? Stop. That's rationalization.
 
@@ -191,7 +193,7 @@ Can't check all boxes? You skipped TDD. Start over.
 
 | Problem                | Solution                                                             |
 | ---------------------- | -------------------------------------------------------------------- |
-| Don't know how to test | Write wished-for API. Write assertion first. Ask your human partner. |
+| Don't know how to test | Write wished-for API. Write assertion first. Ask the user. |
 | Test too complicated   | Design too complicated. Simplify interface.                          |
 | Must mock everything   | Code too coupled. Use dependency injection.                          |
 | Test setup huge        | Extract helpers. Still complex? Simplify design.                     |
@@ -211,4 +213,4 @@ Production code → test exists and failed first
 Otherwise → not TDD
 ```
 
-No exceptions without your human partner's permission.
+No exceptions without the user's permission.
