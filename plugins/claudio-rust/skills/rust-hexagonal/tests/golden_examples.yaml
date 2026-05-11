@@ -1,0 +1,288 @@
+# Behavioral evals for rust-hexagonal skill.
+# Each scenario tests one decision the skill should drive.
+
+# ============================================================
+# Category: Layering (domain depends on nothing infrastructural)
+# ============================================================
+
+- id: domain_has_no_sqlx_dep
+  description: Adding persistence — sqlx must not appear in the domain crate
+  user_query: >
+    I need to persist users to Postgres. Where do I add the sqlx dependency
+    in my workspace, and how do I expose database access to my use cases?
+  context: |
+    I have a Cargo workspace with `crates/domain/`, `crates/driven/postgres/`,
+    and `crates/bootstrap/`. The domain currently has no infrastructure deps.
+  expected:
+    behavior: >
+      Agent puts sqlx ONLY in the driven/postgres crate. The domain crate's
+      Cargo.toml stays free of sqlx. The use case receives a repository through
+      a trait defined in the domain, not a PgPool. The agent must mention
+      defining a port trait (e.g. UserRepository) in the domain and implementing
+      it in the postgres adapter.
+    reasoning: >
+      Iron rule 1: "Domain depends on nothing infrastructural. No sqlx, reqwest,
+      tokio::fs, axum, clap types in the domain crate or module."
+  anti_patterns:
+    - Adding sqlx to the domain crate's Cargo.toml
+    - Passing PgPool directly into a use case
+    - Putting the UserRepository trait in the postgres adapter crate
+  tags: [layering, ports]
+
+- id: trait_belongs_in_domain
+  description: Where to define a port trait
+  user_query: >
+    I want to abstract user storage so my use case doesn't depend on Postgres
+    directly. Which crate should the UserRepository trait live in?
+  context: |
+    Workspace has crates/domain, crates/driven/postgres, crates/bootstrap.
+  expected:
+    behavior: >
+      Agent says the UserRepository trait lives in the domain crate, and the
+      postgres adapter implements it. The agent must NOT put the trait in the
+      postgres adapter and have the domain depend on it (that's inverted
+      dependency direction).
+    reasoning: >
+      Iron rule 2: "Ports are traits, defined in the domain. Adapters live
+      outside the domain and implement those traits."
+  anti_patterns:
+    - Defining the trait in the postgres adapter and importing it from the domain
+    - Putting the trait in a shared "interfaces" crate that both domain and adapter depend on
+  tags: [layering, ports]
+
+- id: composition_in_lib_rs
+  description: Where adapters get wired to use cases
+  user_query: >
+    Where do I construct my PostgresUserRepository and inject it into my
+    RegisterUser use case?
+  expected:
+    behavior: >
+      Agent says wiring happens in `lib.rs` (inside a `build_app()` or `run()`
+      function), not directly inside `main.rs`. The `main.rs` is described as
+      a thin shim that calls `build_app()` and serves it. The agent must NOT
+      suggest constructing the repository inside the use case or inside a
+      domain entity.
+    reasoning: >
+      Iron rule 4: "Composition root is lib.rs, not main.rs. Wire concrete
+      adapters into use cases inside a pub fn build_app(...) (or run()) in
+      lib.rs. main.rs is a thin shim... This is required for integration tests
+      to reach the wired application."
+  anti_patterns:
+    - Putting wiring logic inside main.rs directly
+    - Constructing PostgresUserRepository inside the use case
+    - Using a global static / singleton instead of explicit injection
+  tags: [layering, composition]
+
+# ============================================================
+# Category: Errors (one type per layer, conversions at boundary)
+# ============================================================
+
+- id: convert_sqlx_error_to_domain
+  description: sqlx::Error must not leak past the adapter
+  user_query: >
+    My PostgresUserRepository's find_by_id method calls sqlx and gets a
+    sqlx::Error. The trait signature returns Result<Option<User>, DomainError>.
+    How do I handle the sqlx::Error?
+  expected:
+    behavior: >
+      Agent converts sqlx::Error into DomainError inside the adapter, typically
+      via `impl From<sqlx::Error> for DomainError` or `.map_err(DomainError::from)`.
+      The agent must say sqlx::Error stays inside the adapter and never appears
+      in domain or use case signatures.
+    reasoning: >
+      Iron rule 6: "Errors cross layers explicitly. Each layer has its own
+      error type; adapters convert their errors into domain errors via From or
+      map_err."
+  anti_patterns:
+    - Returning Result<T, Box<dyn Error>> from the trait method
+    - Changing the trait signature to return sqlx::Error
+    - Using .unwrap() on the sqlx call
+  tags: [errors]
+
+- id: no_unwrap_in_use_case
+  description: No unwrap() in domain or adapter code
+  user_query: >
+    My use case calls self.users.find_by_email(&email).await and I want the
+    happy-path code to be short. Can I just unwrap() the Result since the
+    repository should always succeed?
+  expected:
+    behavior: >
+      Agent refuses and propagates the error with `?`. The agent says unwrap()
+      is forbidden outside main.rs startup and tests. The error should propagate
+      to the caller via `?` so the HTTP/CLI adapter can map it to a response.
+    reasoning: >
+      Iron rule 5: "No unwrap() / expect() in domain or adapter code. Only
+      acceptable in main.rs for startup failures and in tests."
+  anti_patterns:
+    - Suggesting .unwrap() is fine in a use case
+    - Suggesting .expect() with a message instead of propagation
+  tags: [errors, idiomatic-rust]
+
+# ============================================================
+# Category: Ports (small, business-named, return domain types)
+# ============================================================
+
+- id: split_god_trait
+  description: A trait with many unrelated methods should be split
+  user_query: >
+    I have one trait `UserStore` with 15 methods covering reads, writes,
+    audit log entries, password hashing, and email sending. Is this fine?
+  expected:
+    behavior: >
+      Agent says no — split into multiple small traits, one per responsibility.
+      The agent names at least two of: a UserRepository (reads/writes), a
+      PasswordHasher, an EmailNotifier, an AuditLog. Each trait stays focused
+      on one concern.
+    reasoning: >
+      Port rule: "Keep them small. One trait per responsibility. A trait with
+      20 methods is two traits."
+  anti_patterns:
+    - Saying a 15-method trait is acceptable
+    - Suggesting all 15 methods stay together if there are sub-modules
+  tags: [ports]
+
+- id: port_returns_domain_type
+  description: Port methods must return domain types, not infra types
+  user_query: >
+    My UserRepository::find_by_id currently returns Result<Option<sqlx::PgRow>,
+    sqlx::Error>. Is this OK as long as the caller handles it?
+  expected:
+    behavior: >
+      Agent says no — the trait must return domain types and domain errors.
+      Change the signature to Result<Option<User>, DomainError>. Mapping from
+      sqlx::PgRow to User happens inside the adapter, not at the call site.
+    reasoning: >
+      Port rule: "Return domain types. Never sqlx::Row or serde_json::Value.
+      Return domain errors. Not sqlx::Error."
+  anti_patterns:
+    - Saying it's fine because callers can map at the call site
+    - Adding a Trait<Row = sqlx::PgRow> associated type to keep sqlx in the signature
+  tags: [ports]
+
+# ============================================================
+# Category: Idiomatic Rust (types, ownership)
+# ============================================================
+
+- id: newtype_for_id
+  description: Domain IDs are newtypes, not raw primitives
+  user_query: >
+    I'm modeling a User. Should `id` be a `Uuid` or something else?
+  expected:
+    behavior: >
+      Agent recommends a newtype like `pub struct UserId(uuid::Uuid)`. The
+      agent must NOT recommend exposing the raw Uuid directly across the
+      domain API.
+    reasoning: >
+      Idiomatic types rule: "Newtype for domain values. pub struct UserId(uuid::Uuid);
+      — not raw Uuid."
+  anti_patterns:
+    - Recommending `pub id: Uuid` on the entity
+    - Recommending a type alias `type UserId = Uuid;` (alias is not a newtype)
+  tags: [idiomatic-rust]
+
+- id: enum_over_boolean_flags
+  description: Multi-state lifecycle should be enum, not booleans
+  user_query: >
+    My Account struct has `is_active: bool`, `is_suspended: bool`,
+    `is_closed: bool`. Is this OK?
+  expected:
+    behavior: >
+      Agent says no — replace the booleans with an enum like
+      `enum AccountStatus { Active, Suspended, Closed }`. The agent must
+      mention making illegal states unrepresentable as the reason.
+    reasoning: >
+      Idiomatic types rule: "Enums over booleans for state. Make illegal
+      states unrepresentable. If two fields can never both be Some, that's
+      an enum."
+  anti_patterns:
+    - Keeping the three booleans and adding a validation method
+    - Suggesting a fourth boolean is_pending instead of an enum
+  tags: [idiomatic-rust]
+
+# ============================================================
+# Category: Testing (in-memory ports for use cases)
+# ============================================================
+
+- id: test_use_case_with_in_memory_port
+  description: Unit-testing a use case uses an in-memory adapter
+  user_query: >
+    I want to unit-test my RegisterUser use case. The use case calls
+    self.users.save() where users is a UserRepository. How should I write
+    the test?
+  expected:
+    behavior: >
+      Agent says implement an in-memory UserRepository (HashMap or Vec wrapped
+      in a Mutex) inside the test module and inject it into the use case. The
+      agent must NOT mock sqlx internals. The agent must NOT spin up a real
+      Postgres for a unit test (that's an integration test for the adapter).
+    reasoning: >
+      Testing rule: "In-memory adapters for unit tests. Implement the port
+      trait with a HashMap or Vec and inject it." Plus: "testcontainers for
+      integration tests" — meaning real Postgres belongs at the adapter test
+      level, not the use case level.
+  anti_patterns:
+    - Mocking sqlx queries to test the use case
+    - Spinning up a real Postgres container to test the use case
+    - Suggesting the use case can't be tested without a database
+  tags: [testing]
+
+- id: adapter_tests_use_real_infra
+  description: Adapter integration tests use real Postgres, not mocks
+  user_query: >
+    How should I test that my PostgresUserRepository actually persists users
+    correctly?
+  expected:
+    behavior: >
+      Agent recommends an integration test using a real Postgres instance, via
+      testcontainers (or equivalent: ephemeral DB, docker-compose). The test
+      runs migrations, exercises the repository, and asserts on real query
+      results. The agent must NOT recommend mocking sqlx.
+    reasoning: >
+      Testing rule: "testcontainers for integration tests. Real Postgres in a
+      container beats mocking SQL."
+  anti_patterns:
+    - Mocking sqlx::PgPool / sqlx::query results
+    - Skipping integration tests because "the trait is unit-tested elsewhere"
+  tags: [testing]
+
+# ============================================================
+# Category: Review mode (detecting violations)
+# ============================================================
+
+- id: review_detects_pgpool_in_use_case
+  description: Review mode flags PgPool reaching the use case
+  user_query: >
+    Review this snippet: my RegisterUser use case has a field `pool: PgPool`
+    and calls sqlx::query directly inside execute(). Is that a problem?
+  expected:
+    behavior: >
+      Agent flags this as a layering violation. The use case must not import
+      sqlx or hold a PgPool. The fix is to define a UserRepository trait in the
+      domain, implement it in the postgres adapter, and inject it into the use
+      case instead of the PgPool.
+    reasoning: >
+      Red flag: "A use case that takes a PgPool directly." Plus iron rule 1:
+      domain depends on nothing infrastructural.
+  anti_patterns:
+    - Saying the snippet is acceptable
+    - Suggesting only a code-style cleanup without addressing the layering issue
+  tags: [review, layering]
+
+- id: review_detects_active_record
+  description: Review mode flags save() method on entity
+  user_query: >
+    Review: my User entity has a method `pub async fn save(&self, pool: &PgPool)
+    -> Result<(), sqlx::Error>`. Is this idiomatic?
+  expected:
+    behavior: >
+      Agent flags this as active-record pattern leaking into the domain. The
+      entity must not know about persistence. Move persistence to a
+      UserRepository port implemented by a postgres adapter; the entity stays
+      a plain data + invariants struct.
+    reasoning: >
+      Red flag: "A domain entity with a `pub fn save(&self, pool: &PgPool)`
+      method (active record creeping in)."
+  anti_patterns:
+    - Approving the save() method on the entity
+    - Suggesting only renaming or making it pub(crate)
+  tags: [review, layering]

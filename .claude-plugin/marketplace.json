@@ -29,6 +29,14 @@
         "url": "jrollin/claudio",
         "path": "plugins/claudio-tools"
       }
+    },
+    {
+      "name": "claudio-rust",
+      "source": {
+        "source": "git-subdir",
+        "url": "jrollin/claudio",
+        "path": "plugins/claudio-rust"
+      }
     }
   ]
 }
