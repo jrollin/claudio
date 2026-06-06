@@ -13,6 +13,7 @@ This repository hosts three plugins, each shipped independently from the `claudi
 | `spec-create` | Create feature specifications (Requirements → Design → Tasks) |
 | `spec-impl` | Implement tasks from a completed specification |
 | `spec-extract` | Extract business rules and domain logic from existing codebases |
+| `spec-grill` | Interview you relentlessly to pressure-test a plan before implementation |
 | `event-modeling-spec` | Design systems with Event Modeling methodology |
 | `event-modeling-tasks` | Translate a completed event model into implementation tasks |
 | `@agent-claudio-spec:spec-review` | Review a feature spec for completeness and readiness for `spec-impl` |
