@@ -1,0 +1,236 @@
+# Behavioral evals for rust-decompose skill.
+# Each scenario tests one decomposition decision the skill should drive.
+
+# ============================================================
+# Category: File → directory module
+# ============================================================
+
+- id: god_file_becomes_directory
+  description: A file mixing several concerns becomes a directory module
+  user_query: >
+    My config.rs is 1800 lines and holds the config struct definitions, the
+    TOML loading from disk, and the runtime conversion to internal types. How
+    should I structure this?
+  expected:
+    behavior: >
+      Agent promotes config.rs to a config/ directory with one submodule per
+      concern (e.g. schema, load, convert) and a tiny mod.rs that only declares
+      submodules and re-exports. The agent must say mod.rs carries no logic. The
+      agent must NOT suggest leaving it as one file or splitting purely by line
+      count without regard to concern.
+    reasoning: >
+      Iron rule 1: "One file, one concern. A file that mixes >1 concern AND is
+      large enough that finding code is slow becomes a directory module." Plus
+      rule 3: "mod.rs / lib.rs carry no logic."
+  anti_patterns:
+    - Keeping config.rs as a single file with section comments
+    - Putting logic or re-implementations in mod.rs
+    - Splitting by arbitrary line ranges instead of by concern
+  tags: [file-split, module]
+
+- id: mod_rs_stays_thin
+  description: mod.rs must not accumulate logic
+  user_query: >
+    I have a foo/ module directory. Is it fine to put the shared helper
+    functions and the main entry logic directly in foo/mod.rs since everything
+    imports from there anyway?
+  expected:
+    behavior: >
+      Agent says no — mod.rs holds only module declarations, re-exports, and
+      test wiring. Shared helpers go in a dedicated submodule (or a tests/mod.rs
+      for test-only helpers) and are re-exported. The agent must NOT endorse
+      putting entry logic in mod.rs.
+    reasoning: >
+      Iron rule 3: "mod.rs / lib.rs carry no logic. Aggregator files hold mod
+      declarations + pub use re-exports + test wiring only."
+  anti_patterns:
+    - Saying it's fine to keep logic in mod.rs for convenience
+    - Suggesting mod.rs is the natural home for shared helpers
+  tags: [file-split, module]
+
+# ============================================================
+# Category: Function → orchestrator + phase functions
+# ============================================================
+
+- id: long_function_becomes_phases
+  description: A long function with named phases is split into orchestrator + phases
+  user_query: >
+    I have a 400-line index_directory function that walks a tree, parses files
+    in parallel, writes them to the DB, then resolves cross-references — all
+    inline. How should I break it up?
+  expected:
+    behavior: >
+      Agent extracts each phase (walk, parse, store, resolve) into its own
+      function and turns index_directory into a thin orchestrator that calls
+      them in order. The agent must mention keeping each phase single-purpose.
+      The agent must NOT suggest leaving it as one function or splitting by
+      arbitrary line count.
+    reasoning: >
+      Iron rule 2: "One function, one operation. A function with distinct named
+      sequential phases becomes an orchestrator + one function per phase."
+  anti_patterns:
+    - Leaving the function inline with comments separating the phases
+    - Splitting at arbitrary line boundaries that cut a phase in half
+  tags: [function-split, orchestrator]
+
+- id: transaction_stays_in_orchestrator
+  description: The owned transaction must not be passed into a phase function
+  user_query: >
+    I'm splitting index_directory into phase functions. The whole thing runs
+    inside one SQLite transaction. Should I pass the owned transaction guard
+    into store_file() and resolve_edges() so they can write?
+  expected:
+    behavior: >
+      Agent says no — the transaction guard stays owned by the orchestrator and
+      must not cross the function boundary. The phase functions should take a
+      &Database (a borrow) and write via *_in_tx-style helpers that join the
+      caller's open transaction. The agent must explain this preserves the
+      all-or-nothing rollback invariant by construction (a crash before commit
+      rolls back every phase). The agent must NOT suggest each phase open its
+      own transaction.
+    reasoning: >
+      Iron rule 4: "Owned resources stay in the orchestrator. A transaction
+      guard, lock, or &mut accumulator that spans the whole operation does NOT
+      cross a function boundary — phase functions take a reference and operate
+      within it."
+  anti_patterns:
+    - Passing the owned transaction guard into each phase function
+    - Having each phase function open and commit its own transaction
+    - Splitting the single transaction into per-phase transactions
+  tags: [function-split, invariant, owned-resource]
+
+- id: pure_phase_takes_no_db_handle
+  description: Pure/CPU phases take immutable inputs and return owned data
+  user_query: >
+    My parse phase just reads file contents and produces parsed symbols — no DB
+    involved. Should I pass it the &Database connection too, to keep all the
+    phase signatures uniform?
+  expected:
+    behavior: >
+      Agent says no — a pure/CPU phase should take immutable inputs and return
+      owned data, with no DB handle threaded in. Keeping it DB-free is what
+      makes it unit-testable in isolation and safe to run on a worker pool. The
+      agent must NOT recommend passing the connection just for signature
+      uniformity.
+    reasoning: >
+      Iron rule 4 corollary: "Pure / CPU phases take immutable inputs and return
+      owned data; only the orchestrator mutates shared state."
+  anti_patterns:
+    - Passing &Database into a phase that does not touch the DB
+    - Prioritizing uniform signatures over keeping pure phases pure
+  tags: [function-split, testing]
+
+# ============================================================
+# Category: Move-only discipline
+# ============================================================
+
+- id: move_only_preserves_names
+  description: A move-only split changes no public name or caller
+  user_query: >
+    While splitting my module I'd also like to rename the public function
+    process() to run_pipeline() since I'm touching it anyway. Good idea to do
+    both in this change?
+  expected:
+    behavior: >
+      Agent says no — a move-only split should preserve public names and
+      signatures so no caller changes; a rename is a separate change. The agent
+      must recommend doing the move first, then the rename as a distinct change.
+    reasoning: >
+      Iron rule 5: "Moves preserve public names and signatures. A move-only
+      split changes no caller. A rename is a separate change."
+  anti_patterns:
+    - Endorsing combining the rename with the move
+    - Treating "I'm touching it anyway" as justification to bundle changes
+  tags: [move-only, discipline]
+
+- id: refactor_must_not_edit_assertions
+  description: A pure decomposition leaves the test suite green with no edits
+  user_query: >
+    After splitting a function into phases, three test assertions started
+    failing. Should I update those assertions to match the new behavior so the
+    suite goes green?
+  expected:
+    behavior: >
+      Agent says no — a move-only split must leave the suite green with NO test
+      edits. Failing assertions mean behavior changed, so it is no longer a pure
+      decomposition. The agent must say to investigate and restore the original
+      behavior rather than edit the assertions to pass.
+    reasoning: >
+      Iron rule 6 + move-only discipline: "A move-only split must leave the
+      existing suite green with no test edits. Edited assertions mean behavior
+      changed — that's no longer a pure decomposition."
+  anti_patterns:
+    - Updating the assertions to make the suite pass
+    - Treating the behavior change as acceptable collateral of a refactor
+  tags: [move-only, testing]
+
+# ============================================================
+# Category: Test the seam
+# ============================================================
+
+- id: seam_test_for_accumulator
+  description: A &mut accumulator threaded through a loop needs a folding test
+  user_query: >
+    My split threads a &mut HashSet accumulator through a loop that calls
+    store_file() once per file. Do I need a new test, since the logic didn't
+    change — I only moved it into a function?
+  expected:
+    behavior: >
+      Agent says yes — the accumulator now crosses a function boundary inside a
+      loop, so add a test proving it folds across ALL iterations (e.g. two files
+      each contributing a distinct entry, assert both end up in the set). The
+      agent must NOT say a move needs no test when it threads shared mutable
+      state across a new boundary.
+    reasoning: >
+      Iron rule 6: "Test the seam. When a split threads a shared resource across
+      a boundary, the invariant that boundary could break gets a test." The
+      accumulator could be dropped or overwritten between per-iteration calls.
+  anti_patterns:
+    - Saying no test is needed because it's "just a move"
+    - Testing only a single iteration (misses the accumulation invariant)
+  tags: [seam-test, testing, invariant]
+
+# ============================================================
+# Category: Review mode
+# ============================================================
+
+- id: review_flags_logic_in_mod_rs
+  description: Review mode flags logic living in mod.rs
+  user_query: >
+    Review this: my src/commands/mod.rs is 2300 lines and contains all the
+    command-dispatch logic plus the implementations. Is the structure ok?
+  expected:
+    behavior: >
+      Agent flags this as a structure violation — mod.rs must carry only
+      declarations and re-exports, not logic. The fix is to move each command's
+      implementation into its own submodule and reduce mod.rs to mod
+      declarations + pub use. The agent must NOT approve a 2300-line mod.rs.
+    reasoning: >
+      Iron rule 3: "mod.rs / lib.rs carry no logic." Review red flag: "A mod.rs
+      / lib.rs carrying real logic instead of declarations + re-exports."
+  anti_patterns:
+    - Approving the 2300-line mod.rs
+    - Suggesting only cosmetic cleanup without moving logic out
+  tags: [review, file-split]
+
+- id: review_flags_owned_resource_crossing_boundary
+  description: Review mode flags a lock guard owned across a helper call
+  user_query: >
+    Review: my orchestrator creates a MutexGuard, then calls
+    apply_changes(guard, items) which takes the guard by value and holds it for
+    the whole call. Is that fine?
+  expected:
+    behavior: >
+      Agent flags this — the owned guard should not be moved into the helper.
+      The orchestrator should keep ownership and pass a reference (&mut to the
+      guarded data, or operate within the lock), so the lock scope stays
+      controlled at the orchestration level. The agent must NOT approve passing
+      the owned guard by value into the helper.
+    reasoning: >
+      Iron rule 4 + review red flag: "A transaction guard, lock, or &mut
+      accumulator passed into a helper that owns it across the call (owner must
+      stay in the orchestrator)."
+  anti_patterns:
+    - Approving moving the owned guard into the helper
+    - Ignoring the lock-scope implication
+  tags: [review, invariant, owned-resource]

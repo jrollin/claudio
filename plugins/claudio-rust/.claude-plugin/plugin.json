@@ -1,7 +1,7 @@
 {
   "name": "claudio-rust",
-  "description": "Rust-specific skills: hexagonal architecture, idiomatic patterns",
-  "version": "2.0.0",
+  "description": "Rust-specific skills: hexagonal architecture, code decomposition, idiomatic patterns",
+  "version": "2.1.0",
   "author": {
     "name": "Julien Rollin"
   },

@@ -5,7 +5,7 @@ description: Design or review Rust services using hexagonal (ports and adapters)
 
 # Rust + Hexagonal Architecture
 
-This skill teaches and enforces hexagonal (ports and adapters) architecture in Rust, using idiomatic patterns. It is self-contained: it does not depend on other Rust skills.
+This skill teaches and enforces hexagonal (ports and adapters) architecture in Rust, using idiomatic patterns. It is self-contained on layering; for how to split a module or long function internally it points to the separate `rust-decompose` skill.
 
 Two modes:
 
@@ -13,6 +13,8 @@ Two modes:
 - **Review** — audit existing Rust code against the rules below
 
 After reading this file, the agent should produce: port traits in the domain, adapter implementations outside it, and a composition root that wires them. In review mode, the output is a layered report citing iron-rule violations with file paths and line numbers.
+
+This skill covers the **boundaries** (where code goes across the domain/adapter line). How a module or long function is **internally decomposed** — file→directory splits, orchestrator + phase functions, keeping an owned resource out of extracted helpers — is the separate, non-hexagonal `rust-decompose` skill. Apply both when writing a feature.
 
 Worked examples live in `references/`. Pick one after reading this file (see "Picking a worked example" at the end).
 
@@ -192,6 +194,8 @@ Full error type + From impls + HTTP/CLI mapping: `references/generic-crud.md` an
 7. **Wire it up in `lib.rs` (`build_app`).** Build concrete adapters, inject into the use case, expose via a driving adapter. Keep `main.rs` as a 5-line shim that calls `build_app()`.
 
 If you're tempted to skip step 5 (the use case) because "it's just a CRUD pass-through," you still need it. The use case is where invariants live. A bare repository call is fine only when there are genuinely zero rules — and that's rarer than it looks.
+
+As each piece grows past one concern or one named phase, decompose it as you write (see the `rust-decompose` skill) — don't let a use case, adapter, or module accrete into a god-file you'll split later.
 
 ## Review mode
 
