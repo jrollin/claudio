@@ -74,6 +74,13 @@ impl User {
         Self { id: UserId::new(), email }
     }
 
+    /// Reconstruct a `User` from storage with its persisted id.
+    /// For persistence adapters only — application code uses `User::new`.
+    #[doc(hidden)]
+    pub fn new_with_id(id: UserId, email: Email) -> Self {
+        Self { id, email }
+    }
+
     pub fn id(&self) -> UserId {
         self.id
     }
@@ -88,6 +95,7 @@ Notes:
 
 - `UserId` and `Email` are newtypes. Raw `Uuid` and `String` never escape into use case signatures.
 - `Email::parse` is the only constructor. It is impossible to build an invalid `Email`.
+- `User::new` generates a fresh id; `User::new_with_id` rebuilds an entity from a stored id. The Postgres adapter (a separate crate) needs the latter, so it is `pub` + `#[doc(hidden)]` rather than `pub(crate)` — see the adapter note below.
 
 ## Domain: error
 
@@ -271,11 +279,13 @@ Notes:
 
 - `sqlx` lives only in this crate. Domain has zero knowledge of it.
 - `From<sqlx::Error> for DomainError` converts at the boundary. The trait signature returns `DomainError`, not `sqlx::Error`.
-- A real codebase needs a `User::new_with_id` reconstructor to rebuild entities from storage without going through the public `User::new` constructor that generates a fresh ID. Since the postgres adapter lives in a separate crate, this constructor must be `pub` (not `pub(crate)`). Mark it `#[doc(hidden)]` and document that it is for persistence adapters only.
+- The adapter rebuilds entities via `User::new_with_id` (defined in the entities section) rather than `User::new`, so the stored id is preserved instead of regenerated. Because this adapter is a separate crate, that constructor is `pub` + `#[doc(hidden)]` — not `pub(crate)`.
 
 ## Bootstrap
 
 Split into a library function (`run`) and a thin binary shim. The library is what integration tests call; the binary is what Cargo runs.
+
+This minimal example has no driving adapter, so `run()` collapses two roles that a real app keeps separate: it both **composes** (builds adapters, injects them into the use case) and **invokes** (reads input, calls `execute`, prints). Iron rule 4 is about the composition half. In a service with an HTTP or CLI driving adapter, the composition root is a `build_app(...) -> Router` that only wires and returns — invocation moves into the driving adapter. See `references/http-service.md` for that shape.
 
 ```rust
 // crates/bootstrap/src/lib.rs

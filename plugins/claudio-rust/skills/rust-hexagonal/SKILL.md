@@ -174,7 +174,7 @@ Full error type + From impls + HTTP/CLI mapping: `references/generic-crud.md` an
 ### Async
 
 - **`Send + Sync` on port traits that cross tasks.**
-- **Use `#[async_trait]` when you need `dyn Trait` for a port.** Native `async fn` in traits is fine when callers use generics (`impl Trait`), but it does not yet support dyn dispatch on stable.
+- **Use `#[async_trait]` when you need `dyn Trait` for a port.** Native `async fn` in traits (stable since Rust 1.75) is fine when callers use generics (`impl Trait`); as of Rust 1.x it still has no built-in `dyn` dispatch, so reach for `#[async_trait]` or the `trait-variant` crate when a port must be stored behind `Arc<dyn Trait>`. Recheck this when bumping the toolchain.
 - **Don't `block_on` inside async code.** Restructure.
 
 ### Testing
