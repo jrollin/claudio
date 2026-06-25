@@ -16,6 +16,7 @@ This repository hosts three plugins, each shipped independently from the `claudi
 | `spec-grill` | Interview you relentlessly to pressure-test a plan before implementation |
 | `event-modeling-spec` | Design systems with Event Modeling methodology |
 | `event-modeling-tasks` | Translate a completed event model into implementation tasks |
+| `doc-diataxis` | Structure and write user docs with the Diátaxis framework (tutorials, how-to, reference, explanation) |
 | `@agent-claudio-spec:spec-review` | Review a feature spec for completeness and readiness for `spec-impl` |
 
 ### `claudio-craft` — Engineering craft
@@ -60,6 +61,7 @@ claude --plugin-dir /path/to/claudio/plugins/claudio-spec
 /claudio-spec:spec-extract <concept>
 /claudio-spec:event-modeling-spec <system-name> [description]
 /claudio-spec:event-modeling-tasks <system-name>
+/claudio-spec:doc-diataxis <content-or-topic>   # or --audit [path]
 
 /claudio-craft:tdd
 /claudio-craft:skill-testing

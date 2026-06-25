@@ -1,0 +1,273 @@
+# Golden examples for doc-diataxis skill behavioral testing.
+#
+# Each scenario defines a user request and the expected agent behavior
+# when SKILL.md is loaded. Used with eval.sh (LLM-as-judge).
+#
+# Schema: see skills/skill-testing/references/golden-examples-schema.md
+#
+# Judging rules:
+#   - PASS = agent diagnoses the user need, picks the correct Diátaxis type,
+#            keeps types separate, and verifies/flags reference facts
+#   - FAIL = agent merges types, mistypes content, fabricates facts, or writes
+#            files unprompted
+
+# ============================================================
+# Classification — diagnose the need (Author Step 1)
+# ============================================================
+
+- id: classify_how_to
+  description: Agent classifies a goal-with-action request as a how-to guide
+  user_query: "Document how to reset a user's password"
+  context: |
+    The doc-diataxis skill is active. The user wants to document this content
+    for users. Diagnose the need and classify it into a Diátaxis type.
+  expected:
+    behavior: >
+      Agent diagnoses the reader's need (a user with a specific goal who needs
+      to act) and classifies this as a How-to guide. It does NOT call it a
+      tutorial or a reference. It may note that a reference of password-policy
+      fields could also be warranted, but the primary type is how-to.
+    reasoning: >
+      Compass: "Goal? Yes (working) + Act -> How-to guide."
+      The reader has a concrete goal (reset a password) and needs to act.
+  anti_patterns:
+    - Classifying a goal-oriented task as a tutorial
+    - Classifying it as reference
+    - Skipping diagnosis and writing prose immediately without naming the type
+  tags: [classify, author]
+
+- id: classify_explanation
+  description: Agent classifies a why/understanding request as an explanation
+  user_query: "Explain why we chose write-through caching"
+  context: |
+    The doc-diataxis skill is active. The user wants to document this content
+    for users. Diagnose the need and classify it into a Diátaxis type.
+  expected:
+    behavior: >
+      Agent classifies this as an Explanation — the reader wants understanding
+      (the why, the trade-offs), is studying not working, and is thinking not
+      doing. It does NOT turn it into a reference (parameter list) or a how-to
+      (steps).
+    reasoning: >
+      Compass: "Goal? No (learning) + Think -> Explanation."
+      "Why does..." and rationale/trade-offs are the explanation signal.
+  anti_patterns:
+    - Classifying a why/rationale topic as reference
+    - Turning it into a step-by-step how-to
+    - Producing a parameter dump instead of discursive understanding
+  tags: [classify, author]
+
+- id: classify_tutorial_vs_howto
+  description: Agent distinguishes a learner (tutorial) from a goal-driven user (how-to)
+  user_query: "Write a getting-started doc for a brand-new user making their first API call"
+  context: |
+    The doc-diataxis skill is active. The user wants to document this content
+    for users. Diagnose the need and classify it into a Diátaxis type.
+  expected:
+    behavior: >
+      Agent classifies this as a Tutorial — a beginner with no goal yet,
+      learning by doing, taken through a guaranteed-to-work first success.
+      It frames the doc around a concrete first outcome and a happy path,
+      not around an arbitrary real-world goal (which would be a how-to).
+    reasoning: >
+      Compass: "Goal? No (learning) + Act -> Tutorial."
+      A brand-new user with no goal yet, learning by doing, is the tutorial case.
+  anti_patterns:
+    - Classifying a beginner-learning doc as a how-to guide
+    - Adding exhaustive options/alternatives that overwhelm a learner
+    - Treating it as reference
+  tags: [classify, author]
+
+# ============================================================
+# Topic fan-out — one topic, multiple docs
+# ============================================================
+
+- id: topic_fans_out
+  description: Agent splits a broad topic into multiple typed docs instead of one
+  user_query: "Document the authentication feature"
+  context: |
+    The doc-diataxis skill is active. The user wants to document this broad
+    topic for users. Diagnose what docs are needed and their Diátaxis types.
+  expected:
+    behavior: >
+      Agent recognizes "authentication" is a topic, not a doc type, and that
+      it fans out into multiple docs — typically a how-to (e.g. add login),
+      a reference (endpoints/params/token fields), and possibly a tutorial
+      (first authenticated app) and an explanation (why the token model).
+      It presents a diagnosis listing each doc and its type before writing,
+      rather than producing one catch-all "authentication" page.
+    reasoning: >
+      Core principle: "Diagnose the need, not the topic. The same topic spawns
+      up to four docs." The fan-out is the expected behavior for a broad topic.
+  anti_patterns:
+    - Producing a single combined "Authentication" page covering everything
+    - Picking one type and ignoring that the topic needs several
+    - Not presenting a diagnosis of which docs are needed
+  tags: [classify, author, fan-out]
+
+# ============================================================
+# Hard rule — never merge types
+# ============================================================
+
+- id: refuse_merge
+  description: Agent refuses to merge a tutorial and an API reference into one page
+  user_query: "Just put the tutorial and the full API reference on a single page to keep it simple."
+  context: |
+    The user is running /doc-diataxis on their getting-started docs. They want
+    one combined page instead of separate tutorial and reference docs.
+  expected:
+    behavior: >
+      Agent refuses to merge the two types into one document. It explains that
+      a learner and a looker-upper have conflicting needs and that merging is
+      the exact failure Diátaxis prevents. It offers separate docs (or clearly
+      separated, type-labeled sections under one page) as the alternative.
+    reasoning: >
+      Hard Rules: "Do not merge types into one document... Produce separate
+      docs and explain that the merge is the exact failure Diátaxis prevents."
+  anti_patterns:
+    - Agreeing to produce one merged tutorial+reference page
+    - Blending learning content and exhaustive option lists into one flow
+    - Capitulating to the "keep it simple" pressure
+  tags: [hard-rules, separation]
+
+# ============================================================
+# Hard rule — never fabricate reference facts
+# ============================================================
+
+- id: no_fabricated_reference
+  description: Agent refuses to invent reference facts it cannot verify
+  user_query: "Write the configuration reference for our server. I don't have the code handy, just fill in sensible defaults."
+  context: |
+    The doc-diataxis skill is active. The user wants a Reference doc but cannot
+    provide the source of truth (code/schema) for the config keys.
+  expected:
+    behavior: >
+      Agent declines to invent config keys, defaults, or types from memory.
+      It explains reference facts must trace to a real source (code/schema),
+      marks anything it cannot verify as ‹unverified› or an open question,
+      and asks for the source of truth instead of guessing values.
+    reasoning: >
+      Hard Rules: "Do not fabricate reference facts... If you cannot verify a
+      fact, mark it ‹unverified› and list it as an open question — never guess
+      a default value or a flag name."
+  anti_patterns:
+    - Inventing config keys and plausible default values
+    - Producing a reference table of guessed facts without flagging them
+    - Presenting unverified defaults as authoritative
+  tags: [hard-rules, accuracy]
+
+# ============================================================
+# Authoring conventions per type
+# ============================================================
+
+- id: tutorial_excludes_options
+  description: Agent keeps a tutorial on one happy path, excluding alternatives
+  user_query: "Write the tutorial now."
+  context: |
+    Running doc-diataxis. Diagnosis is done: we are authoring a TUTORIAL that
+    walks a beginner through creating and running their first shell script that
+    prints "Hello" and the current date, using only a standard Unix shell and
+    common built-in commands (no external library or framework). Every command
+    needed is a standard shell built-in, so the steps are fully runnable as
+    written. Produce the actual tutorial content following tutorial conventions,
+    not a plan of how you would write it.
+  expected:
+    behavior: >
+      Agent writes a tutorial with a concrete end product (a working script the
+      learner runs), numbered steps in a continuous runnable sequence, and
+      expected results at checkpoints. It sticks to one happy path and excludes
+      alternatives, exhaustive options, and lengthy why-explanations (linking
+      out for those instead). It produces the actual content, not a procedure
+      for producing it.
+    reasoning: >
+      tutorial.md: "Must exclude: choices and alternatives, exhaustive options,
+      explanation of why." "The tutorial must run end to end as a continuous
+      sequence." The subject uses only standard shell built-ins, so no facts
+      need to be fabricated — the agent should write, not ask for a library.
+  anti_patterns:
+    - Offering "you could also use X" alternatives mid-tutorial
+    - Dumping the full option/flag list into the lesson
+    - Long theoretical digressions instead of doing
+    - Listing steps for how it would write the tutorial instead of writing it
+    - Refusing to write and asking for a library when the subject is self-contained
+  tags: [author, tutorial]
+
+- id: reference_is_descriptive
+  description: Agent writes reference as neutral facts, not instructions
+  user_query: "Write the reference for these three config keys now."
+  context: |
+    Running /doc-diataxis, authoring a REFERENCE. Three verified config keys
+    were provided from the code: `timeout` (int, seconds, default 30),
+    `retries` (int, default 3), `verbose` (bool, default false). The agent
+    should produce the actual reference content following reference conventions.
+  expected:
+    behavior: >
+      Agent produces a reference in a neutral, descriptive, consistently
+      formatted style (each key: type, default, description) optimized for
+      lookup. It describes what each key IS rather than instructing what to DO,
+      and does not editorialize ("we recommend...") or add procedures.
+    reasoning: >
+      reference.md: "Neutral, descriptive, austere. State what is, not what to
+      do." "Must exclude: instructions, teaching, opinions/rationale."
+  anti_patterns:
+    - Writing instructions ("set timeout to a sensible value")
+    - Adding recommendations or rationale into the reference entries
+    - Inconsistent formatting across the three keys
+    - Turning the reference into a how-to
+  tags: [author, reference]
+
+# ============================================================
+# Audit mode
+# ============================================================
+
+- id: audit_flags_mixed_doc
+  description: Agent flags a mixed doc and proposes splitting it
+  user_query: "Audit our docs and tell me how to restructure them."
+  context: |
+    The doc-diataxis skill is active in audit mode for docs/.
+    docs/ contains: getting-started.md (half beginner walkthrough, half
+    exhaustive config table), api.md (parameter listings), deploy.md (steps to
+    deploy to production). The agent should map each to a quadrant and flag
+    problems.
+  expected:
+    behavior: >
+      Agent maps each doc to a quadrant and flags getting-started.md as Mixed
+      (tutorial + reference), proposing it be split into a tutorial and a
+      reference. It maps api.md as Reference and deploy.md as a How-to. It
+      delivers a current-state map, the problem list, and a proposed four-type
+      structure with a migration table. It does NOT rewrite or move files
+      unless asked.
+    reasoning: >
+      audit-guide.md: "Detecting Mixed docs (the highest-value finding)...
+      Split into N docs, one per type." "Apply changes only if the user
+      explicitly asks."
+  anti_patterns:
+    - Missing the mixed tutorial+reference doc
+    - Moving or rewriting files without being asked
+    - Producing prose instead of a map + migration table
+  tags: [audit]
+
+# ============================================================
+# Output discipline — chat-first
+# ============================================================
+
+- id: chat_first_output
+  description: Agent delivers to chat and does not write files unprompted
+  user_query: "Document how to rotate API keys"
+  context: |
+    The doc-diataxis skill is active. The user wants to document this content
+    for users. No output location was specified.
+  expected:
+    behavior: >
+      Agent diagnoses the type (how-to) and delivers the doc to chat. It does
+      NOT write or create files on disk unless the user asked where to write.
+      It may offer to write the file and ask for a location.
+    reasoning: >
+      Core principle: "Chat-first output. Deliver to chat by default. Write
+      files only when the user explicitly asks where."
+      Hard Rules: "Do not write files unless asked."
+  anti_patterns:
+    - Writing a markdown file to docs/ without being asked
+    - Creating the four-type directory tree unprompted
+    - Assuming a file path and saving silently
+  tags: [output]
