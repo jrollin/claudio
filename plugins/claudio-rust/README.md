@@ -14,6 +14,10 @@ Rust-specific skills and agents for Claude Code: hexagonal architecture, paralle
   - `references/openapi-utoipa.md` — axum slice with utoipa-generated OpenAPI 3.1 spec and Swagger UI, all annotations confined to the HTTP adapter.
   - `references/review-checklist.md` — full per-layer audit checklist used in review mode.
 - **`rust-hexagonal-impl`** — Orchestrator that dispatches the hexagonal agents to implement one slice end to end. Sequences: domain core first (serial), driven + driving adapters in parallel (non-overlapping file sets), bootstrap wiring serially, optional review. Defers all rules to `rust-hexagonal`.
+- **`rust-decompose`** — Internal code structure: how a module or function is split into cohesive pieces. Architecture-agnostic and orthogonal to `rust-hexagonal` (the two compose). Two modes (scaffold + review).
+  - `SKILL.md` — file→directory splits, orchestrator + phase functions, keeping an owned resource (transaction, lock, accumulator) from leaking across boundaries.
+  - `references/decomposition.md` — worked decomposition examples.
+  - `references/review-checklist.md` — structure-review checklist.
 
 ### Agents
 
