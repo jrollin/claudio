@@ -1,10 +1,9 @@
 {
   "name": "claudio-rust",
   "description": "Rust-specific skills and agents: hexagonal architecture, parallel slice implementation, code decomposition, idiomatic patterns",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "author": {
     "name": "Julien Rollin"
   },
-  "skills": "./skills/",
-  "agents": "./agents/"
+  "skills": "./skills/"
 }
