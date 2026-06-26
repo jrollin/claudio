@@ -1,6 +1,6 @@
 # Testing Strategy
 
-The second onboarding deliverable: how this repo tests itself, and the fastest way to gain confidence before a PR.
+The testing-strategy deliverable: how this repo tests itself, and the fastest way to gain confidence before a PR.
 
 ## Method
 
@@ -13,7 +13,8 @@ The second onboarding deliverable: how this repo tests itself, and the fastest w
 ### Where tests live and how they're organized
 
 - Layout: co-located vs. separate `tests/` tree.
-- Levels present: unit / integration / e2e — cite an example file of each.
+- Levels present: unit / integration / functional / e2e — cite an example file of each.
+  - For **cloud-native repos**, distinguish what runs against fakes vs. real cloud: unit (handlers with the SDK mocked), integration (real local backing service — DB-local, LocalStack, testcontainers), functional (one deployed service in a sandbox stage), e2e (cross-service, deployed). Note which levels need a deployed environment — those are excluded from the fast loop below.
 
 ### Fastest local confidence loop
 

@@ -1,6 +1,6 @@
 # Local Setup Checklist
 
-The third onboarding deliverable: a repo-specific, copy-pasteable checklist to go from clone to a running, smoke-tested app.
+The local-setup deliverable: a repo-specific, copy-pasteable checklist to go from clone to a running, smoke-tested app.
 
 ## Method
 
@@ -17,7 +17,8 @@ An ordered checklist with the exact command for each step:
 4. **Database setup** — start the DB (compose service, local install), create the database.
 5. **Migrations / seeds** — the commands to apply schema and seed data.
 6. **Run commands** — server, worker, and UI separately if they're distinct processes. Cite the script/target for each.
-7. **Smoke test** — one command or request that exercises a key flow end-to-end and shows the app works (e.g. `curl localhost:3000/health`, a CLI invocation, a single e2e test).
+   - **Cloud-native repos** rarely run as a local process. Substitute the real loop: cloud credentials/profile + target account/region, local emulation if supported (`serverless offline`, `sam local invoke`, `func start`, `cloud run` emulators), or deploy to a sandbox stage (`sls deploy --stage <dev>`, `cdk deploy`, `terraform apply`). Cite the IaC manifest and which stage is safe for a new dev.
+7. **Smoke test** — one command or request that exercises a key flow end-to-end and shows the app works (e.g. `curl localhost:3000/health`, a CLI invocation, a single e2e test, or invoking a deployed function and checking its log/response).
 
 ## Template
 
@@ -38,10 +39,14 @@ $ <start db>                 # from docker-compose.yml / README
 $ <run migrations>           # from <file>
 $ <seed>                     # from <file>  (omit if none)
 
-### Run
+### Run                       # local process — OR the cloud loop below
 $ <run server>               # from <file>
 $ <run worker>               # from <file>  (omit if none)
 $ <run UI>                   # from <file>  (omit if none)
+
+### Deploy / emulate           # cloud-native repos only; replaces Run
+$ <auth + select account/region>   # from README / IaC
+$ <local emulation OR deploy to sandbox stage>   # from <IaC manifest>
 
 ### Smoke test
 $ <command that proves it works>

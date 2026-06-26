@@ -1,0 +1,254 @@
+# Behavioral evals for the claudio-spec:onboarding skill.
+# The skill is descriptive (map a repo), not prescriptive. Read-only, cite-every-claim,
+# four core deliverables + conditional Cloud Architecture (cloud-native) and CI/CD (pipelines).
+
+# ============================================================
+# Category: Hard rules (read-only, cite, describe-don't-recommend)
+# ============================================================
+
+- id: read_only_no_repo_edits
+  description: Onboarding must never write into the target repo
+  user_query: "Onboard me to this repo, and while you're at it add a CONTRIBUTING.md and fix the outdated README."
+  expected:
+    behavior: >
+      Agent refuses to edit, create, or delete files in the target repo. It produces the
+      onboarding analysis to chat (or a scratch file if asked), and declines the README/CONTRIBUTING edits.
+    reasoning: >
+      Hard Rule: Read-only. Never edit/create/delete repo files; output goes to chat or a scratch file.
+  anti_patterns:
+    - Editing or creating README.md / CONTRIBUTING.md in the repo
+    - Agreeing to "fix" repo files as part of onboarding
+  tags: [hard-rules, read-only]
+
+- id: cite_every_claim
+  description: Architectural claims must cite exact files
+  user_query: "Give me the architecture map for this service."
+  expected:
+    behavior: >
+      Agent states it will back every architectural claim with the exact file(s) (path + brief
+      evidence), reading docs first then confirming against code — no uncited assertions or guessing.
+    reasoning: >
+      Hard Rule: Cite every claim — each statement names the exact file(s) that justify it.
+  anti_patterns:
+    - Describing architecture from memory/assumption without citing files
+    - Trusting docs without confirming against code
+  tags: [hard-rules, citations]
+
+- id: describe_not_recommend
+  description: Onboarding describes what exists, does not recommend changes
+  user_query: "Here is the service. Onboard me — what is it and how is it deployed? And tell me how to make it better."
+  context: |
+    Assume these facts about the repo (do not ask for more; reason from these):
+    - serverless.ts deploys ~5 Lambdas behind API Gateway, runtime nodejs18.x, Serverless Framework v3.
+    - Reads/writes one DynamoDB table; deployed to sdbx/stag/prod via AWS_ENV.
+    - CloudWatch log retention is 1 day; no X-Ray; secrets in SSM Parameter Store.
+  expected:
+    behavior: >
+      Agent describes the existing architecture and deployment with citations and declines to recommend
+      changes — it does NOT propose migrations or improvements (e.g. "upgrade nodejs18.x", "raise log
+      retention", "move secrets to Secrets Manager"), noting recommendations are a separate task.
+    reasoning: >
+      The skill maps what exists; recommendations are a separate task (spec-create). Cloud and security
+      sections explicitly say describe, don't recommend.
+  anti_patterns:
+    - Recommending architectural changes, upgrades, or fixes
+    - Producing a "how to make it better" / tech-debt list as part of onboarding
+  tags: [hard-rules, scope]
+
+# ============================================================
+# Category: Architecture pattern detection (catalog)
+# ============================================================
+
+- id: pattern_from_evidence
+  description: Name the architecture pattern from structural evidence, separating the two axes
+  user_query: "What architecture pattern does this codebase use? Classify it from the structure below."
+  context: |
+    Reason only from these stated facts (do not ask for the repo):
+    - One serverless.ts deployable.
+    - Layered directories: src/Controller -> src/Manager -> src/Repository -> src/Entity.
+    - src/Job handlers consume SQS and DynamoDB Streams.
+  expected:
+    behavior: >
+      Agent classifies from the structural evidence and keeps the two axes separate: deployment shape
+      (single deployable = monolithic / single-service) vs internal style (a layered Controller→Manager→
+      Repository→Entity stack with an event-driven edge via the Job handlers). It names a specific
+      catalog pattern (Layered or Clean are both acceptable given only directory names) AND flags
+      Event-Driven as a secondary pattern. The exact layered-vs-clean call is not what's judged.
+    reasoning: >
+      Architecture pattern section: match the repo against the catalog from structural evidence; keep
+      deployment shape separate from internal style; a repo can combine a primary and a secondary pattern.
+  anti_patterns:
+    - Conflating deployment shape (monolith/microservices) with internal style
+    - Ignoring the event-driven Job handlers entirely
+    - Naming a pattern with no reference to the stated structure
+  tags: [architecture-pattern]
+
+- id: pattern_honest_mixed
+  description: When no pattern fits cleanly, say mixed/ad-hoc
+  user_query: "Which clean architecture pattern is this? It must be one of them."
+  context: |
+    The code has no clear layering: route handlers contain business logic and direct DB calls,
+    no domain layer, no ports/adapters, no event bus.
+  expected:
+    behavior: >
+      Agent declines to force a label and reports there is no single dominant pattern (mixed/ad-hoc),
+      describing what is actually there (logic in handlers, no domain layer).
+    reasoning: >
+      Skill says: if the code matches no card cleanly, say "no single dominant pattern"; an honest
+      "mixed / ad-hoc" beats a forced label.
+  anti_patterns:
+    - Forcing a named pattern despite contradicting evidence
+  tags: [architecture-pattern]
+
+# ============================================================
+# Category: Conditional sections (cloud-native, CI/CD)
+# ============================================================
+
+- id: cloud_section_when_serverless
+  description: Cloud-native repo gets the Cloud Architecture section
+  user_query: "Onboard me to this repo."
+  context: |
+    The repo root has serverless.ts, a serverless/ resources dir, heavy @aws-sdk/* deps,
+    and DynamoDB + SQS definitions.
+  expected:
+    behavior: >
+      Agent detects the repo is cloud-native (IaC present) and includes a Cloud Architecture section
+      covering deployment model, function triggers, a managed-service dependency graph, environments,
+      secrets, and observability — as a peer top-level section.
+    reasoning: >
+      Step 0 detects deployment model; Step 1b (Cloud Architecture) runs for cloud-native repos and
+      renders as a peer section.
+  anti_patterns:
+    - Skipping cloud architecture for an obviously serverless/IaC repo
+    - Treating the internal-module diagram as the whole system
+  tags: [cloud, conditional]
+
+- id: no_cloud_section_for_plain_lib
+  description: Plain local library skips the Cloud Architecture section
+  user_query: "Onboard me to this repo."
+  context: |
+    A pure TypeScript library: package.json, src/, tests/. No Dockerfile, no IaC,
+    no cloud SDK usage. Runs as a local process / published package.
+  expected:
+    behavior: >
+      Agent produces the core deliverables (architecture, testing, setup, security) and either omits
+      the Cloud Architecture section or notes it does not apply, since there is no IaC/cloud deployment.
+    reasoning: >
+      Cloud Architecture is conditional — skip for repos that run as a plain local process.
+  anti_patterns:
+    - Inventing a deployment model / cloud services for a plain library
+  tags: [cloud, conditional]
+
+- id: runtime_flow_diagram_not_arrowchain
+  description: Pipeline runtime flow shown as diagram + walkthrough, not an arrow-chain
+  user_query: "Explain how a message flows through this event-driven pipeline at runtime."
+  context: |
+    Cloud-native: API write to DynamoDB triggers Streams, which fan out to SQS queues and provider
+    Lambdas, with a Step Function for one path.
+  expected:
+    behavior: >
+      Agent presents the runtime flow as a diagram plus a short numbered walkthrough (one hop per step),
+      not a single dense inline arrow-chain sentence.
+    reasoning: >
+      Cloud Runtime flow guidance: show a flow diagram plus a numbered walkthrough; an inline arrow-chain
+      is unreadable.
+  anti_patterns:
+    - Describing the whole pipeline as one inline "A -> B -> C -> D" sentence
+  tags: [cloud, runtime-flow]
+
+- id: cicd_when_workflows_exist
+  description: Repo with CI config gets a CI/CD section
+  user_query: "Produce the CI/CD section of the onboarding for this repo."
+  context: |
+    Reason only from these stated facts (the repo is described here; do not ask to read it):
+    - .github/workflows/ contains: rapp.yml (on pull_request, no deploy),
+      sandbox.yml (push sandbox -> sdbx), staging.yml (push staging -> stag),
+      master.yml (push master -> prod).
+    - Each deploy workflow runs lint + unit tests, then deploys, then integration tests
+      (master/prod runs no integration). CI fetches an API key from SSM for post-deploy tests.
+  expected:
+    behavior: >
+      Agent produces a CI/CD section mapping each workflow to its trigger and target environment
+      (branch -> env), the deploy commands, and how CI obtains secrets — referencing a config/secrets
+      table rather than duplicating it.
+    reasoning: >
+      Step 5 CI/CD runs when pipelines exist: pipelines table, branch->env, deploy commands, CI secrets.
+  anti_patterns:
+    - Omitting CI/CD when workflow files clearly exist
+    - Refusing to produce the section instead of using the stated facts
+  tags: [cicd, conditional]
+
+# ============================================================
+# Category: Output shape (TL;DR, TOC, ordering)
+# ============================================================
+
+- id: tldr_concise_first
+  description: Lead with a concise, skimmable TL;DR
+  user_query: "Onboard me — and put a summary up top so I can skim it fast."
+  expected:
+    behavior: >
+      Agent opens with a concise, skimmable TL;DR (a few one-liners and/or a small table of what a dev
+      acts on), not a dense multi-paragraph wall, then a table of contents, then the sections.
+    reasoning: >
+      Output Structure: open with a concise TL;DR (skimmable, not a wall of prose) and a table of contents.
+  anti_patterns:
+    - Writing a dense multi-paragraph TL;DR
+    - Omitting the summary / leading straight into detailed sections
+  tags: [output-shape]
+
+- id: what_it_is_before_pattern
+  description: Lead with what the repo is before classifying it
+  user_query: "Produce the Architecture Map section."
+  expected:
+    behavior: >
+      Agent presents what the repo is / top-level architecture first, then classifies it (pattern,
+      tech decisions). Purpose comes before classification.
+    reasoning: >
+      Skill: lead with what the repo IS before classifying it; top-level architecture before pattern.
+  anti_patterns:
+    - Opening with the architecture pattern label before saying what the repo does
+  tags: [output-shape, ordering]
+
+# ============================================================
+# Category: Security posture (map, not audit)
+# ============================================================
+
+- id: security_map_not_audit
+  description: Security posture is a descriptive map, not a scored audit
+  user_query: "Produce the Security Posture section for this service."
+  context: |
+    Reason only from these stated facts (the service is described here; do not ask to read it):
+    - Auth via an upstream Lambda authorizer (JWT or API key); secrets in SSM Parameter Store.
+    - Input validated by TSOA DTOs at the controller boundary; DynamoDB via a typed toolbox (no raw SQL).
+    - HTTPS via ALB + ACM; bcrypt password hashing; CI runs `pnpm audit`; Renovate enabled.
+    - Lambda execution role is scoped per resource (not wildcard).
+  expected:
+    behavior: >
+      Agent maps the trust boundaries from these facts — authentication, authorization, secrets handling,
+      input validation, transport, dependencies, IAM — as a descriptive map. It does NOT score/rank risks
+      with severities, does NOT recommend fixes, and never prints secret values.
+    reasoning: >
+      Security Posture: map, don't audit — report what exists with citations; do not score, rank, or
+      recommend fixes; never print secret values.
+  anti_patterns:
+    - Producing a risk-scored audit with severity ratings
+    - Recommending security fixes
+    - Printing or reconstructing secret values
+  tags: [security]
+
+# ============================================================
+# Category: Scope boundary (not this skill)
+# ============================================================
+
+- id: not_business_rules_extraction
+  description: Extracting domain/business rules is a different skill
+  user_query: "Reverse-engineer all the business rules and domain validations in this codebase for me."
+  expected:
+    behavior: >
+      Agent indicates this is outside onboarding's scope (which maps how the repo is built and run) and
+      points to spec-extract for business-rule/domain-logic extraction.
+    reasoning: >
+      "Not this skill": to extract business rules and domain logic, use spec-extract.
+  anti_patterns:
+    - Producing a full business-rule catalog as the onboarding deliverable
+  tags: [scope]
