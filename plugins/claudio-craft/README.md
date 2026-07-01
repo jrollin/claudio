@@ -1,6 +1,6 @@
 # claudio-craft
 
-Engineering craft plugin for Claude Code: TDD discipline, skill testing, doc/code consistency.
+Engineering craft plugin for Claude Code: TDD discipline, skill testing, doc/code consistency, and a suite of read-only review agents that validate a change against best practices.
 
 ## Components
 
@@ -25,10 +25,54 @@ Engineering craft plugin for Claude Code: TDD discipline, skill testing, doc/cod
 
 ### Agents
 
+All agents are **read-only** by default: they report findings and suggested
+fixes but do not edit code unless explicitly asked. Each takes an optional path
+and otherwise reviews the current diff vs the base branch (or the repo's docs).
+Each uses a severity scale (critical / high / medium / low) and a verdict.
+
 - **`doc-vs-code-review`** — Reviews documentation drift against the current
   codebase. Reports stale references, broken commands, and undocumented
-  behavior. Read-only by default. Triggers on "is the doc still accurate?",
-  "review docs vs code", post-refactor verification.
+  behavior. Triggers on "is the doc still accurate?", "review docs vs code",
+  post-refactor verification.
+
+**Best-practice review agents**: one per engineering dimension. Each carries a
+self-contained checklist (with per-language idiom tables for Rust, TS/JS, Ruby,
+Python, Java, Go), so it is portable across repos and machines. Run them
+individually, or fan them out in parallel for a full-spectrum review.
+
+- **`architecture-review`** — *Code* architecture: layering, dependency
+  direction, coupling, cohesion, and boundary discipline. Reads source
+  (imports, module graph, manifests). Infers the intended pattern (layered,
+  hexagonal, MVC, …) and flags violations. Triggers on "review the
+  architecture", "check layering", "is this coupled?".
+- **`infrastructure-review`** — *Infrastructure* and deployment architecture
+  across any substrate: deployment model, network exposure, access scope,
+  secrets, event/failure wiring, service supervision, config drift, resilience,
+  scaling, and cost. Reads IaC (Terraform, CDK/SAM/CloudFormation, Serverless,
+  Pulumi, K8s/Helm, Docker), config management (Ansible/Chef/Puppet), and
+  self-managed VPS/on-prem (systemd, nginx, firewall, cron), not source.
+  Cloud-native and bare-VPS alike. Triggers on "review the infra architecture",
+  "review the Terraform/serverless.yml/Ansible playbook",
+  "is anything publicly exposed?", "check our IaC".
+- **`observability-review`** — Structured logging, metrics, tracing,
+  correlation IDs, error context, and log hygiene (no secrets/PII in logs).
+  Triggers on "is this observable?", "can we debug this in prod?".
+- **`performance-review`** — N+1 queries, algorithmic complexity, allocations,
+  blocking I/O, missing pagination/indexes. Reasons about complexity and data
+  volume, not micro-benchmarks. Triggers on "review performance",
+  "check for N+1", "will this scale?".
+- **`security-review`** — Injection, secret handling, auth/authorization, input
+  validation at boundaries, and unsafe data flow. Describes risk and fix; never
+  prints exploits. Triggers on "review security", "is this safe?",
+  "audit this endpoint".
+- **`quality-review`** — Code quality and maintainability: dead code, real
+  duplication, function/file size, naming, error-message context, comment
+  discipline, and over-engineering (YAGNI). Triggers on "review code quality",
+  "is this maintainable?", "is this over-engineered?".
+- **`documentation-review`** — Documentation *quality*: completeness, clarity,
+  structure, and coverage of public APIs/config/breaking changes. Complements
+  `doc-vs-code-review` (which checks drift against code). Triggers on
+  "are these docs clear/complete?", "is the README good?".
 
 ## Install
 
@@ -44,6 +88,10 @@ Via the claudio marketplace:
   recognition.
 - Skill testing: ask "create evals for skill X" or "add golden examples to skill Y".
 - Doc review: ask "review docs vs code" or "@doc-vs-code-review docs/architecture.md".
+- Best-practice review: invoke a single dimension (e.g.
+  "@performance-review src/api" or "@security-review") or ask for several at
+  once ("review this change for architecture, security, and performance"). With
+  no path, each agent reviews the current diff vs the base branch.
 
 ## Running TDD evals
 
@@ -69,7 +117,15 @@ Requires `claude` or `opencode` CLI, `python3 + pyyaml`, `jq`.
 ```
 claudio-craft/
   .claude-plugin/plugin.json
-  agents/doc-vs-code-review.md
+  agents/
+    doc-vs-code-review.md
+    architecture-review.md
+    infrastructure-review.md
+    observability-review.md
+    performance-review.md
+    security-review.md
+    quality-review.md
+    documentation-review.md
   skills/
     tdd/
       SKILL.md

@@ -1,7 +1,7 @@
 {
   "name": "claudio-craft",
-  "description": "Engineering craft: TDD, skill testing, doc/code consistency",
-  "version": "2.0.1",
+  "description": "Engineering craft: TDD, skill testing, doc/code consistency, best-practice review agents",
+  "version": "2.1.0",
   "author": {
     "name": "Julien Rollin"
   },
