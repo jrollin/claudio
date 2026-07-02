@@ -48,13 +48,13 @@ Keep this distinct from the managed-service dependency graph below: this is the 
 
 ### Function / service inventory and triggers
 
-For each deployed unit, what invokes it. This is the cloud equivalent of "entry points".
+For each deployed unit, what invokes it and why it exists. This is the cloud equivalent of "entry points".
 
-| Unit | Trigger | Source | Evidence |
-|------|---------|--------|----------|
-| `GetShiftMetrics` | HTTP | API Gateway route | `serverless.ts:42` |
-| `ProcessEvents` | Queue | SQS `events-{stage}` | `serverless.ts:71` |
-| `NightlyRollup` | Schedule | cron `0 2 * * *` | `template.yaml:88` |
+| Unit | Trigger | Source | Purpose | Evidence |
+|------|---------|--------|---------|----------|
+| `GetShiftMetrics` | HTTP | API Gateway route | serve metrics reads | `serverless.ts:42` |
+| `ProcessEvents` | Queue | SQS `events-{stage}` | consume domain events | `serverless.ts:71` |
+| `NightlyRollup` | Schedule | cron `0 2 * * *` | rebuild nightly aggregates | `template.yaml:88` |
 
 Trigger types to look for: **HTTP/API**, **queue** (SQS/Pub-Sub/Service Bus), **stream** (Kinesis/DynamoDB Streams/Kafka), **schedule/cron**, **object event** (S3/GCS), **direct invoke**.
 

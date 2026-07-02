@@ -52,6 +52,18 @@ Produce the deliverables in order. Each is detailed in its reference file — lo
 - Detect the **deployment model**: is there infrastructure-as-code (`serverless.*`, `template.yaml`, `cdk.json`, `*.tf`, `pulumi.*`, `*.bicep`), container/orchestration manifests (`Dockerfile` + `k8s/`/`helm/`), or heavy cloud-SDK use? If so the repo is cloud-native and gets Step 1b; if not, the four core deliverables suffice.
 - Prefer code-navigation tooling over blind grep for the structural sweep (see `references/architecture-map.md` for the navigation method).
 
+### Execution mode: sequential by default, parallel on request
+
+Step 0 always runs first in the main conversation — its detection decides which sections exist. After it, either continue sequentially (the default) or fan out **three parallel read-only research sweeps** and synthesize:
+
+1. **Structure** — Steps 1 + 1b (architecture map, cloud architecture)
+2. **Dev loop** — Steps 2 + 3 (testing strategy, local setup)
+3. **Trust & delivery** — Steps 4 + 5 (security posture, CI/CD)
+
+- **Ask before fanning out** — never spawn parallel agents without the user's confirmation. Offer it when the repo is large enough that sequential reading would be slow; otherwise stay sequential.
+- Each sweep loads its reference file(s) and returns **cited findings only**, not prose sections.
+- Synthesize in the main conversation: assemble the output structure, resolve cross-references (security ↔ cloud IAM, CI/CD ↔ configuration table), dedupe citations, keep numbering sequential.
+
 ### Step 1: Architecture Map
 
 Load `references/architecture-map.md`. Produce (in this order — lead with what the repo *is* before classifying it):
@@ -176,6 +188,13 @@ A bulleted list, **one sub-level only** — H2 sections as bullets, their H3 sub
 ```
 
 Lead with what the repo *is* before classifying it. If the user asks to save it, write to a scratch location they name, never into the repo.
+
+### Style rules (every section)
+
+- **Diagram-first.** Where a section has a diagram (architecture, cloud, flows), lead with the diagram, then explain in short bullets. A table never carries the explanation alone — tables are compact reference, not narrative.
+- **No dense paragraphs.** One idea per bullet; prose paragraphs max 2–3 lines, only for narrative that genuinely flows.
+- **Every reference table has a why column.** Responsibility / Usage / Purpose all count; a what/where table without the why is incomplete onboarding.
+- **Markdown safety.** No raw `<...>` tokens outside code spans — renderers swallow them as HTML; wrap them in backticks. In Mermaid labels use `<br/>` for line breaks, never `\n`, and use `{}` or plain words instead of angle brackets.
 
 ## Related Skills
 

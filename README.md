@@ -17,6 +17,7 @@ This repository hosts three plugins, each shipped independently from the `claudi
 | `event-modeling-spec` | Design systems with Event Modeling methodology |
 | `event-modeling-tasks` | Translate a completed event model into implementation tasks |
 | `doc-diataxis` | Structure and write user docs with the Diátaxis framework (tutorials, how-to, reference, explanation) |
+| `onboarding` | Onboard a developer to an unfamiliar repo: architecture map, testing strategy, local setup, security posture (+ cloud architecture & CI/CD when present) |
 | `@agent-claudio-spec:spec-review` | Review a feature spec for completeness and readiness for `spec-impl` |
 
 ### `claudio-craft` — Engineering craft

@@ -15,12 +15,12 @@ Produce this section when the repo has CI/CD config: `.github/workflows/`, `.git
 ## Required Output
 
 ### Pipelines
-One row per workflow: trigger → what it runs → where it deploys. A table reads best.
+One row per workflow: trigger → what it runs → where it deploys → why it exists. A table reads best.
 
-| Workflow | Trigger | Pipeline (steps) | Deploy → env |
-|----------|---------|------------------|--------------|
-| `ci.yml` | pull_request | lint → test → build | — |
-| `deploy-prod.yml` | push `main` / tag | test → build → deploy | production |
+| Workflow | Trigger | Pipeline (steps) | Deploy → env | Purpose |
+|----------|---------|------------------|--------------|---------|
+| `ci.yml` | pull_request | lint → test → build | — | merge gate |
+| `deploy-prod.yml` | push `main` / tag | test → build → deploy | production | ship to production |
 
 ### Branch → environment mapping
 The promotion path in one glance (e.g. `PR → review app`, `sandbox → sdbx`, `staging → stag`, `main → prod`). Cite the trigger blocks. Note any environment that has **no** automated pipeline (manual deploy).
