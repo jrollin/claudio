@@ -40,7 +40,7 @@ SKILL_NAME="onboarding"
 
 # Files to load into agent context (paths relative to skill dir).
 # First is always SKILL.md. Add supplementary files as needed.
-SKILL_FILES=("SKILL.md" "references/architecture-map.md" "references/cloud-architecture.md" "references/security-posture.md" "references/cicd-pipeline.md")
+SKILL_FILES=("SKILL.md" "references/purpose-context.md" "references/big-picture.md" "references/deploy.md" "references/security-posture.md")
 
 # Env var names for model/backend overrides.
 # Each skill gets its own namespace (e.g. TDD_EVAL_MODEL, CARTOG_EVAL_MODEL).

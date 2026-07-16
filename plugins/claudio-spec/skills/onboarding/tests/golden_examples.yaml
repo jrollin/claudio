@@ -1,6 +1,9 @@
 # Behavioral evals for the claudio-spec:onboarding skill.
 # The skill is descriptive (map a repo), not prescriptive. Read-only, cite-every-claim,
-# four core deliverables + conditional Cloud Architecture (cloud-native) and CI/CD (pipelines).
+# big-picture-first. Narrative order: Purpose/Context -> Big Picture (C4 L1/L2/optional L3 +
+# event-reaction flows) -> Navigating the Code -> Running It Locally -> Deploying It (deployment
+# model, triggers, managed-service graph, envs/secrets, CI/CD) -> Security Posture. Diagrams lead
+# each Big-Picture subsection before any code detail.
 
 # ============================================================
 # Category: Hard rules (read-only, cite, describe-don't-recommend)
@@ -12,9 +15,9 @@
   expected:
     behavior: >
       Agent refuses to edit, create, or delete files in the target repo. It produces the
-      onboarding analysis to chat (or a scratch file if asked), and declines the README/CONTRIBUTING edits.
+      onboarding analysis to chat or a scratch file outside the repo, and declines the README/CONTRIBUTING edits.
     reasoning: >
-      Hard Rule: Read-only. Never edit/create/delete repo files; output goes to chat or a scratch file.
+      Hard Rule: Read-only. Never edit/create/delete repo files; output goes to chat or a scratch file outside the repo.
   anti_patterns:
     - Editing or creating README.md / CONTRIBUTING.md in the repo
     - Agreeing to "fix" repo files as part of onboarding
@@ -101,64 +104,115 @@
   tags: [architecture-pattern]
 
 # ============================================================
-# Category: Conditional sections (cloud-native, CI/CD)
+# Category: Big Picture (C4 diagrams, event flows)
 # ============================================================
 
-- id: cloud_section_when_serverless
-  description: Cloud-native repo gets the Cloud Architecture section
+- id: c4_l1_l2_diagrams
+  description: Big Picture leads with C4 System Context and Container diagrams
+  user_query: "Give me the big picture / architecture of this service."
+  context: |
+    Reason only from these stated facts (do not ask for the repo):
+    - An HTTP API and a set of ingestion functions, backed by one Postgres DB.
+    - Ops users call the API; an upstream service streams events into the ingestion side.
+  expected:
+    behavior: >
+      Agent produces C4 diagrams: an L1 System Context (the service as one box, the Ops-user actor,
+      the upstream service as an external system) and an L2 Container diagram (HTTP API, ingestion
+      functions, Postgres DB and how they interact), leading with the diagrams before prose, with a
+      per-container responsibility table. Nodes are labelled by C4 kind (Person/System/External/Container).
+    reasoning: >
+      Step 2 Big Picture: C4 L1 and L2 always, rendered as Mermaid flowcharts styled as C4, diagrams first.
+  anti_patterns:
+    - Skipping the C4 diagrams and describing architecture in prose only
+    - Leading with a directory/code table instead of the C4 diagrams
+    - Confusing containers (runnable units) with code-level classes/layers
+  tags: [big-picture, c4]
+
+- id: event_flow_per_trigger
+  description: Each async trigger gets its own event-reaction flow diagram
+  user_query: "Onboard me to the big picture of this event-driven service."
+  context: |
+    Reason only from these stated facts (do not ask for the repo):
+    - A Kinesis stream triggers an ingestion Lambda that upserts into Postgres.
+    - An S3 ObjectCreated event triggers a one-off full-load Lambda.
+    - The compute path sends messages to an SQS queue consumed by a pinger.
+  expected:
+    behavior: >
+      Agent renders a separate event-reaction flow diagram per trigger type — one for the Kinesis
+      stream -> ingestion Lambda -> Postgres, one for the S3 object event -> full-load Lambda, one for
+      the SQS producer -> consumer — each captioned with the trigger and its effect, rather than burying
+      "X triggers Y" in prose or collapsing everything into one dense graph.
+    reasoning: >
+      Step 2 event-reaction flows: one diagram per trigger type (stream/queue/schedule/object-event),
+      making async reactions explicit.
+  anti_patterns:
+    - Describing async triggers only in prose, no flow diagram
+    - Collapsing all triggers into a single dense combined graph
+    - Omitting the trigger/effect caption
+  tags: [big-picture, event-flow]
+
+- id: big_picture_before_directory_map
+  description: Purpose and C4 diagrams come before the directory/code map
+  user_query: "Onboard me to this repo."
+  expected:
+    behavior: >
+      Agent orders the output narrative-first: Purpose/Context and the C4 Big-Picture diagrams come
+      before the directory map / code navigation. The dense directory table does not open the document
+      or the architecture material.
+    reasoning: >
+      Output Structure: big picture before code detail; never open the document or architecture material
+      with a dense directory table. Navigating-the-Code (directory map) is Step 3, after Big Picture.
+  anti_patterns:
+    - Opening with a directory/file table before purpose and diagrams
+    - Putting the code map ahead of the C4 diagrams
+  tags: [big-picture, ordering]
+
+# ============================================================
+# Category: Deploying It (cloud detail, CI/CD folded in)
+# ============================================================
+
+- id: cloud_detail_when_serverless
+  description: Cloud-native repo gets deployment model, triggers, and managed-service graph in Deploying It
   user_query: "Onboard me to this repo."
   context: |
     The repo root has serverless.ts, a serverless/ resources dir, heavy @aws-sdk/* deps,
     and DynamoDB + SQS definitions.
   expected:
     behavior: >
-      Agent detects the repo is cloud-native (IaC present) and includes a Cloud Architecture section
-      covering deployment model, function triggers, a managed-service dependency graph, environments,
-      secrets, and observability — as a peer top-level section.
+      Agent detects the repo is cloud-native (IaC present) and, in the Deploying It section, covers the
+      deployment model, function/trigger inventory, a managed-service dependency graph (owned vs external),
+      environments, secrets, and observability. The managed-service graph is treated as part of the system,
+      not omitted in favor of the internal-module view.
     reasoning: >
-      Step 0 detects deployment model; Step 1b (Cloud Architecture) runs for cloud-native repos and
-      renders as a peer section.
+      Step 0 detects deployment model; the cloud subsections of Step 5 (Deploying It) run for cloud-native repos.
   anti_patterns:
-    - Skipping cloud architecture for an obviously serverless/IaC repo
-    - Treating the internal-module diagram as the whole system
-  tags: [cloud, conditional]
+    - Skipping the cloud deployment detail for an obviously serverless/IaC repo
+    - Treating the internal-container diagram as the whole system
+  tags: [cloud, deploy, conditional]
 
-- id: no_cloud_section_for_plain_lib
-  description: Plain local library skips the Cloud Architecture section
+- id: no_cloud_detail_for_plain_lib
+  description: Plain local library skips the cloud deployment detail but still gets C4
   user_query: "Onboard me to this repo."
   context: |
     A pure TypeScript library: package.json, src/, tests/. No Dockerfile, no IaC,
     no cloud SDK usage. Runs as a local process / published package.
   expected:
     behavior: >
-      Agent produces the core deliverables (architecture, testing, setup, security) and either omits
-      the Cloud Architecture section or notes it does not apply, since there is no IaC/cloud deployment.
+      Agent still produces Purpose/Context and Big-Picture C4 diagrams (L1 consumers -> library, L2 internal
+      modules) and the navigate/run/security sections, but the Deploying It section is short — how the package
+      ships (e.g. published to a registry) plus CI/CD — with no invented deployment model, and event flows
+      noted as absent (no async triggers).
     reasoning: >
-      Cloud Architecture is conditional — skip for repos that run as a plain local process.
+      C4 adapts gracefully to non-cloud repos; the cloud deployment detail is conditional — skip it for a
+      repo that runs as a plain local process / published package.
   anti_patterns:
     - Inventing a deployment model / cloud services for a plain library
-  tags: [cloud, conditional]
+    - Dropping the C4 diagrams just because the repo is not cloud-native
+  tags: [cloud, deploy, conditional]
 
-- id: runtime_flow_diagram_not_arrowchain
-  description: Pipeline runtime flow shown as diagram + walkthrough, not an arrow-chain
-  user_query: "Explain how a message flows through this event-driven pipeline at runtime."
-  context: |
-    Cloud-native: API write to DynamoDB triggers Streams, which fan out to SQS queues and provider
-    Lambdas, with a Step Function for one path.
-  expected:
-    behavior: >
-      Agent presents the runtime flow as a diagram plus a short numbered walkthrough (one hop per step),
-      not a single dense inline arrow-chain sentence.
-    reasoning: >
-      Cloud Runtime flow guidance: show a flow diagram plus a numbered walkthrough; an inline arrow-chain
-      is unreadable.
-  anti_patterns:
-    - Describing the whole pipeline as one inline "A -> B -> C -> D" sentence
-  tags: [cloud, runtime-flow]
-
-- id: cicd_when_workflows_exist
-  description: Repo with CI config gets a CI/CD section
-  user_query: "Produce the CI/CD section of the onboarding for this repo."
+- id: cicd_folded_into_deploy
+  description: CI/CD is covered inside Deploying It when CI config exists
+  user_query: "How does this repo ship — how does CI/CD work and where does it deploy?"
   context: |
     Reason only from these stated facts (the repo is described here; do not ask to read it):
     - .github/workflows/ contains: rapp.yml (on pull_request, no deploy),
@@ -168,46 +222,92 @@
       (master/prod runs no integration). CI fetches an API key from SSM for post-deploy tests.
   expected:
     behavior: >
-      Agent produces a CI/CD section mapping each workflow to its trigger and target environment
-      (branch -> env), the deploy commands, and how CI obtains secrets — referencing a config/secrets
-      table rather than duplicating it.
+      Agent covers CI/CD within the Deploying It section: each workflow mapped to its trigger and target
+      environment (branch -> env), the deploy commands, and how CI obtains secrets — referencing the
+      configuration/secrets table rather than duplicating it.
     reasoning: >
-      Step 5 CI/CD runs when pipelines exist: pipelines table, branch->env, deploy commands, CI secrets.
+      Step 5 Deploying It folds in CI/CD when pipelines exist: pipelines table, branch->env, deploy
+      commands, CI secrets (reference the config table).
   anti_patterns:
     - Omitting CI/CD when workflow files clearly exist
+    - Duplicating the full secrets inventory instead of referencing the config table
     - Refusing to produce the section instead of using the stated facts
-  tags: [cicd, conditional]
+  tags: [cicd, deploy, conditional]
 
 # ============================================================
 # Category: Output shape (TL;DR, TOC, ordering)
 # ============================================================
 
-- id: tldr_concise_first
-  description: Lead with a concise, skimmable TL;DR
+- id: asks_output_destination
+  description: Ask up front whether output goes to chat or a Markdown file
+  user_query: "Onboard me to this repo."
+  expected:
+    behavior: >
+      Before producing sections, agent asks where the output should go — rendered in chat (default) or
+      saved to a Markdown file. If a file is chosen it uses a scratch location outside the repo, not inside it.
+      It asks once, up front, not per section.
+    reasoning: >
+      Step 0: ask where the output should go (chat vs Markdown file) before producing anything; a saved
+      file lives outside the repo (Read-only rule).
+  anti_patterns:
+    - Silently writing a Markdown file without asking
+    - Saving the onboarding file inside the target repo
+    - Re-asking the output destination for every section
+  tags: [output-shape]
+
+- id: tldr_concise_bullets
+  description: TL;DR is skimmable bullets, why-first, high-impact only
   user_query: "Onboard me — and put a summary up top so I can skim it fast."
   expected:
     behavior: >
-      Agent opens with a concise, skimmable TL;DR (a few one-liners and/or a small table of what a dev
-      acts on), not a dense multi-paragraph wall, then a table of contents, then the sections.
+      Agent opens with a concise TL;DR in bullet form, leading with WHY the project exists, then only the
+      few high-impact facts a dev acts on (what/pattern, stack, run it, fast PR check, gotchas) — one line
+      each, not a dense multi-paragraph wall and not a detail dump — then a table of contents, then sections.
     reasoning: >
-      Output Structure: open with a concise TL;DR (skimmable, not a wall of prose) and a table of contents.
+      Output Structure: TL;DR is skimmable bullets, leads with why the project exists, high-impact only,
+      no deep detail; each bullet is a pointer into a section.
   anti_patterns:
     - Writing a dense multi-paragraph TL;DR
+    - Dumping detail into the TL;DR instead of pointing to sections
     - Omitting the summary / leading straight into detailed sections
-  tags: [output-shape]
+  tags: [output-shape, tldr]
 
-- id: what_it_is_before_pattern
-  description: Lead with what the repo is before classifying it
-  user_query: "Produce the Architecture Map section."
+- id: why_before_structure
+  description: Lead with why the repo exists before any structural classification
+  user_query: "Onboard me to this repo."
   expected:
     behavior: >
-      Agent presents what the repo is / top-level architecture first, then classifies it (pattern,
-      tech decisions). Purpose comes before classification.
+      Agent presents Purpose/Context (what the repo is and why it exists, in plain language) first, before
+      classifying it (architecture pattern) or drawing diagrams. Purpose comes before classification.
     reasoning: >
-      Skill: lead with what the repo IS before classifying it; top-level architecture before pattern.
+      Skill: lead with why the repo exists (Purpose/Context, Step 1) before the pattern label and diagrams
+      (Big Picture, Step 2).
   anti_patterns:
-    - Opening with the architecture pattern label before saying what the repo does
+    - Opening with the architecture pattern label before saying what the repo does and why
+    - Producing diagrams before the purpose/context narrative
   tags: [output-shape, ordering]
+
+- id: no_emdash_readable_prose
+  description: Output avoids the em-dash character and breathes with paragraphs/blank lines
+  user_query: "Onboard me to this repo, focus on the purpose and big picture."
+  context: |
+    Reason only from these stated facts (do not ask for the repo):
+    - A service that mirrors an upstream system's data and serves it over an HTTP API.
+    - One Postgres DB, ingestion from a Kinesis stream.
+  expected:
+    behavior: >
+      Agent writes the Purpose/Context and Big-Picture prose without ever using the em-dash character,
+      breaking ideas with newlines, commas, colons, parentheses, or periods instead. It lets the output
+      breathe: short paragraphs for narrative, blank lines between subsections and between a diagram and
+      its explanation, rather than cramming everything into one dense bullet list.
+    reasoning: >
+      Style rules: no em-dash in the output (use a newline/comma/colon/parentheses/period); readable, not
+      cramped (short paragraphs, blank lines between subsections and after diagrams).
+  anti_patterns:
+    - Using the em-dash character anywhere in the output
+    - Packing all explanation into one dense bullet list with no paragraphs or blank lines
+    - No blank line between a diagram and the bullets that explain it
+  tags: [output-shape, readability]
 
 # ============================================================
 # Category: Security posture (map, not audit)

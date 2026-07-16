@@ -1,6 +1,6 @@
-# Local Setup Checklist
+# Running It Locally
 
-The local-setup deliverable: a repo-specific, copy-pasteable checklist to go from clone to a running, smoke-tested app.
+The run-it deliverable: a repo-specific, copy-pasteable checklist to go from clone to a running, smoke-tested app, plus the fast pre-PR confidence loop.
 
 ## Method
 
@@ -19,6 +19,17 @@ An ordered checklist with the exact command for each step:
 6. **Run commands** — server, worker, and UI separately if they're distinct processes. Cite the script/target for each.
    - **Cloud-native repos** rarely run as a local process. Substitute the real loop: cloud credentials/profile + target account/region, local emulation if supported (`serverless offline`, `sam local invoke`, `func start`, `cloud run` emulators), or deploy to a sandbox stage (`sls deploy --stage <dev>`, `cdk deploy`, `terraform apply`). Cite the IaC manifest and which stage is safe for a new dev.
 7. **Smoke test** — one command or request that exercises a key flow end-to-end and shows the app works (e.g. `curl localhost:3000/health`, a CLI invocation, a single e2e test, or invoking a deployed function and checking its log/response).
+
+### Fast pre-PR confidence loop
+
+After the run/smoke steps, give the exact commands to run before opening a PR, ordered cheapest-first (lint → typecheck → unit → integration-if-local). Cite where each comes from (`package.json` scripts, `Makefile`, CI). Exclude anything needing a deployed environment. The Navigating-the-Code section describes *how* tests are organized; this is the *commands* to run.
+
+```
+<lint command>
+<typecheck command>
+<unit test command>
+<integration test command>   # only if it runs locally without deployed infra
+```
 
 ## Template
 

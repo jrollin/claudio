@@ -31,7 +31,7 @@ TLS/HTTPS enforcement, encryption at rest (DB/bucket/queue), PII handling and wh
 Lockfile present? Automated vuln scanning or dependency updates in CI (audit step, Dependabot/Renovate, SCA)? Private registry auth required? Cite the CI step or config file.
 
 ### Service-to-service & cloud IAM (cloud repos)
-For cloud-native repos: the execution role's granted actions (least-privilege vs wildcard), network exposure (public endpoint, VPC, security-group egress), and how it authenticates to other internal services (shared key, signed, mTLS). Cite the IaC. Cross-reference `cloud-architecture.md` rather than repeating it.
+For cloud-native repos: the execution role's granted actions (least-privilege vs wildcard), network exposure (public endpoint, VPC, security-group egress), and how it authenticates to other internal services (shared key, signed, mTLS). Cite the IaC. Cross-reference `deploy.md` (the managed-service graph and config/secrets table) rather than repeating it.
 
 ## Rules
 
