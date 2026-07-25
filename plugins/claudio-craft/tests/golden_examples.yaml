@@ -1,0 +1,341 @@
+# Golden examples for claudio-craft agent ROUTING.
+#
+# These do NOT test what an agent concludes once dispatched. They test the
+# dispatch decision itself: given only the agents' frontmatter `description`
+# fields (exactly what a dispatcher sees), does a request route to the right
+# agent(s)?
+#
+# Schema (see skills/skill-testing/references/golden-examples-schema.md):
+#   - id: unique identifier
+#     description: what this tests
+#     user_query: the user's message
+#     context: optional state before the query
+#     expected:
+#       behavior: the agent set that must be selected, and the set that must not
+#       reasoning: which description wording makes this the right route
+#     anti_patterns: routes the dispatcher must NOT take
+#     tags: [single, fanout, disambiguation, negative-routing, boundary]
+#
+# Judging rules:
+#   - The agent under test outputs ONLY a list of agent names to dispatch.
+#   - PASS = the selected SET matches expected (every required agent present,
+#     no forbidden agent present). Ordering does not matter.
+#   - Over-selection IS a failure when the scenario names a forbidden agent:
+#     "route everything to be safe" defeats the point of routing.
+#   - Under-selection on a fan-out scenario is a failure: the compound request
+#     must pull every dimension it names.
+#   - Only the DISPATCH line is scored. The judge is told the WHY sentence is
+#     context only, so never write an expectation that depends on WHY's wording.
+#   - Only set membership is scored. The DISPATCH line has no ordering or
+#     priority marker, so never write "must be the PRIMARY route": say whether a
+#     given agent must be present, must be absent, or is optional.
+#
+# Why `expected.behavior` and not `expected.tool_calls`: the tool_calls judge
+# scores only the FIRST command. Routing is a set-membership question, so the
+# behavioral (set-aware) judge is the correct one.
+
+# ============================================================
+# Single-dimension routing — the baseline. One clear winner.
+# ============================================================
+
+- id: single_performance_n_plus_one
+  description: A concrete N+1 symptom routes to performance-review alone
+  user_query: "This endpoint got slow after I added the author lookup. Check for N+1 queries."
+  expected:
+    behavior: >
+      Selects performance-review, and only performance-review.
+      No other agent may appear in the selection.
+    reasoning: >
+      performance-review's description claims "check for N+1" verbatim and lists
+      "a query inside a loop (N+1)" among its catches. Every sibling explicitly
+      disclaims performance ("NOT for ... runtime cost or latency").
+  anti_patterns:
+    - Selecting quality-review because the code is described as slow
+    - Selecting architecture-review because an endpoint is mentioned
+    - Selecting more than one agent for an unambiguous single-dimension request
+  tags: [single]
+
+- id: single_observability_prod_debug
+  description: Prod-debuggability question routes to observability-review alone
+  user_query: "We just shipped the payout consumer. Will we actually see it if it fails in prod?"
+  expected:
+    behavior: >
+      Selects observability-review, and only observability-review.
+    reasoning: >
+      observability-review claims "can we debug this in prod?" and "will we see
+      this fail?" verbatim, and owns failure visibility (retries/DLQ logged).
+  anti_patterns:
+    - Selecting infrastructure-review because a consumer implies queue infrastructure
+    - Selecting test-review because "fail" is mentioned
+  tags: [single]
+
+- id: single_test_flaky
+  description: Flaky test complaint routes to test-review, not the tdd skill
+  user_query: "Two specs in this suite fail maybe one run in five. Review the tests."
+  expected:
+    behavior: >
+      Selects test-review, and only test-review. No other agent and no skill may
+      appear on the DISPATCH line. Judge the DISPATCH line only, the WHY sentence
+      is not scored.
+    reasoning: >
+      test-review claims "any flaky tests here?" and "review the tests" verbatim,
+      and owns determinism/flakiness. Its description says NOT for writing tests
+      (use the tdd skill), so an existing-suite complaint is squarely test-review
+      and tdd must not be dispatched.
+  anti_patterns:
+    - Routing to the tdd skill to write new tests
+    - Selecting quality-review for test code smells
+  tags: [single]
+
+# ============================================================
+# Fan-out — the compound request this rework was built for.
+# ============================================================
+
+- id: fanout_post_feature_full
+  description: The canonical post-feature request must pull all six agents covering its four dimensions
+  user_query: "I finished the invoice export feature. Review it: documented, well organized, performant, and tested."
+  expected:
+    behavior: >
+      Selects all six agents the README documents for this phrasing, every one
+      REQUIRED: documentation-review AND doc-vs-code-review (documented),
+      architecture-review AND quality-review (well organized: architecture owns
+      the layer-boundary angle, quality owns the readability angle, they are
+      complementary halves and both must fire), performance-review (performant),
+      and test-review (tested). Missing any one is a FAIL.
+      Must NOT include security-review, infrastructure-review, or
+      observability-review, which the query does not name.
+    reasoning: >
+      Each of these agents' descriptions carries the post-feature fan-out clause
+      naming this exact phrasing ("I built X, make sure it is documented, well
+      organized, performant, and tested"). architecture-review and
+      quality-review each explicitly claim one half of "well organized", so
+      accepting either alone would certify a narrower fan-out than the README
+      Recipes table promises.
+  anti_patterns:
+    - Selecting only one agent for a four-dimension request
+    - Omitting test-review (the dimension with no agent before this rework)
+    - Omitting documentation-review
+    - Omitting architecture-review, leaving the layer-boundary angle unreviewed
+    - Omitting quality-review, leaving the readability angle unreviewed
+    - Selecting security-review or infrastructure-review, which the query does not name
+  tags: [fanout]
+
+- id: fanout_pre_merge_gate
+  description: Merge-readiness pulls the pre-merge set, not the deploy set
+  user_query: "Is this branch ready to merge?"
+  expected:
+    behavior: >
+      Selects exactly the four-member pre-merge set: quality-review,
+      security-review, test-review, AND doc-vs-code-review. All four are
+      REQUIRED, missing any one is a FAIL.
+      Must NOT include infrastructure-review, performance-review, or
+      observability-review.
+    reasoning: >
+      All four members carry the pre-merge fan-out clause naming this bounded
+      set verbatim ("is this ready to merge?"), so all four must fire.
+      infrastructure-review's clause is pre-DEPLOY, a different gate.
+  anti_patterns:
+    - Selecting infrastructure-review for a merge-readiness question
+    - Selecting only one agent for a broad readiness gate
+    - Omitting test-review from a merge gate
+    - Omitting doc-vs-code-review, the fourth declared gate member
+    - Fanning out to all nine agents
+  tags: [fanout, boundary]
+
+- id: fanout_pre_deploy_gate
+  description: Deploy-safety pulls the deploy set, not the code-quality set
+  user_query: "Is this safe to deploy to production?"
+  expected:
+    behavior: >
+      Selects the pre-deploy set: must include infrastructure-review,
+      security-review, and observability-review.
+      Must NOT include performance-review or documentation-review.
+    reasoning: >
+      infrastructure, security, and observability descriptions each carry the
+      pre-deploy fan-out clause ("safe to deploy?", "is this production-ready?").
+      No other agent claims that phrasing.
+  anti_patterns:
+    - Omitting infrastructure-review from a deploy question
+    - Selecting documentation-review for a deploy-safety question
+    - Selecting all nine agents indiscriminately
+  tags: [fanout, boundary]
+
+# ============================================================
+# Disambiguation — pairs that genuinely overlap. The hard cases.
+# ============================================================
+
+- id: disambig_docs_drift_vs_quality
+  description: Post-refactor doc accuracy routes to doc-vs-code-review, not documentation-review
+  user_query: "I renamed the client factory last week. Are the docs still accurate?"
+  expected:
+    behavior: >
+      Selects doc-vs-code-review and NOT documentation-review.
+      documentation-review present in the set is a FAIL.
+    reasoning: >
+      doc-vs-code-review owns "is the doc still accurate?" and post-refactor
+      verification. documentation-review's description explicitly says NOT for
+      checking docs against code for staleness or drift.
+  anti_patterns:
+    - Selecting documentation-review for a drift question
+    - Selecting quality-review because a refactor is mentioned
+  tags: [disambiguation]
+
+- id: disambig_docs_quality_vs_drift
+  description: Newcomer-readability of a README routes to documentation-review, not drift
+  user_query: "Could a new hire actually get this service running from the README alone?"
+  expected:
+    behavior: >
+      Selects documentation-review and NOT doc-vs-code-review.
+      doc-vs-code-review present in the set is a FAIL.
+    reasoning: >
+      documentation-review owns "can a newcomer get started from this?" and
+      judges completeness and clarity as a reader would. Nothing here claims the
+      docs drifted from code, so the drift agent is the wrong route.
+  anti_patterns:
+    - Selecting doc-vs-code-review for a clarity/completeness question
+    - Treating this as a code review and selecting quality-review
+  tags: [disambiguation]
+
+- id: disambig_organized_boundaries_vs_readability
+  description: A layering violation routes to architecture-review, not quality-review
+  user_query: "My domain model is importing the ORM directly. Is that a problem?"
+  expected:
+    behavior: >
+      Selects architecture-review and NOT quality-review.
+      quality-review present in the set is a FAIL.
+    reasoning: >
+      architecture-review lists "domain layer importing the ORM (infra leaking
+      into domain)" as an exact catch and owns dependency direction.
+      quality-review's description defers module/layer boundaries to it.
+  anti_patterns:
+    - Selecting quality-review for a layer-boundary violation
+    - Selecting infrastructure-review because an ORM implies a database
+  tags: [disambiguation]
+
+- id: disambig_organized_readability_vs_boundaries
+  description: A god-function routes to quality-review, not architecture-review
+  user_query: "This 300-line function does four different things. Is it maintainable?"
+  expected:
+    behavior: >
+      Selects quality-review and NOT architecture-review.
+      architecture-review present in the set is a FAIL.
+    reasoning: >
+      quality-review owns "is this maintainable?", function size and cohesion,
+      and lists a long function with distinct sequential phases as a catch.
+      This is readability inside one unit, not a boundary between modules.
+  anti_patterns:
+    - Selecting architecture-review for intra-function size and cohesion
+    - Routing to the rust-decompose or a language skill instead of quality-review
+  tags: [disambiguation]
+
+- id: disambig_infra_vs_architecture_substrate
+  description: Terraform network exposure routes to infrastructure-review, not architecture-review
+  user_query: "Review our Terraform. Is anything publicly exposed that shouldn't be?"
+  expected:
+    behavior: >
+      Selects infrastructure-review. Must NOT select architecture-review.
+    reasoning: >
+      infrastructure-review reads IaC (.tf) and claims "is anything publicly
+      exposed?" verbatim. architecture-review's description says NOT for
+      infrastructure or deployment topology, which reads .tf not source.
+  anti_patterns:
+    - Selecting architecture-review because the query says "review our architecture-adjacent config"
+    - Selecting security-review as the only agent, ignoring the IaC substrate
+  tags: [disambiguation, negative-routing]
+
+- id: disambig_logs_secrets_security_vs_observability
+  description: Secrets-in-logs framed as a vulnerability routes to security-review
+  user_query: "I think we're leaking customer emails and auth tokens into our logs. Is that a security problem?"
+  expected:
+    behavior: >
+      security-review is REQUIRED and must be in the set. observability-review is
+      optional, either present or absent PASSes, because the two descriptions
+      declare a documented overlap on log hygiene. Selecting observability-review
+      WITHOUT security-review is a FAIL.
+    reasoning: >
+      Both descriptions name this overlap explicitly: security-review owns the
+      vulnerability angle (secrets or PII in logs), observability-review owns the
+      can-I-debug angle. The query frames it as a security problem, so
+      security-review must fire; the overlap makes the sibling harmless either way.
+  anti_patterns:
+    - Selecting observability-review instead of security-review for a stated security concern
+    - Omitting security-review from a stated security concern
+    - Refusing to route because the two agents overlap
+  tags: [disambiguation]
+
+# ============================================================
+# Negative routing — requests that must NOT reach a review agent.
+# ============================================================
+
+- id: negative_write_tests_goes_to_tdd
+  description: Asking to WRITE a test routes to the tdd skill, not test-review
+  user_query: "Add a test for the new discount rule I'm about to implement."
+  expected:
+    behavior: >
+      Selects NO review agent. Either DISPATCH: NONE, or `tdd` named on the
+      DISPATCH line. Both PASS: the harness loads only agents/, so naming the
+      skill is a bonus, not a requirement. What matters is that test-review is
+      NOT selected.
+    reasoning: >
+      test-review's description says NOT for WRITING tests or driving
+      red-green-refactor (use the tdd skill). This request is write-time, so no
+      review agent should claim it.
+  anti_patterns:
+    - Selecting test-review for a request to author a new test
+    - Selecting quality-review
+  tags: [negative-routing]
+
+- id: negative_skill_evals_not_test_review
+  description: Authoring skill evals routes to skill-testing, not test-review
+  user_query: "Create behavioral evals with golden examples for my new onboarding skill."
+  expected:
+    behavior: >
+      Selects NO review agent. Either DISPATCH: NONE, or `skill-testing` named on
+      the DISPATCH line. Both PASS: the harness loads only agents/, so naming the
+      skill is a bonus, not a requirement. What matters is that test-review is
+      NOT selected.
+    reasoning: >
+      test-review's description says NOT for authoring LLM-as-judge evals for a
+      skill (use the skill-testing skill), so no review agent should claim it.
+  anti_patterns:
+    - Selecting test-review for LLM-as-judge eval authoring
+    - Routing to the tdd skill
+  tags: [negative-routing]
+
+- id: negative_language_idiom_not_quality
+  description: A Rust idiom question is not a quality-review request
+  user_query: "Is using Arc<Mutex<T>> here idiomatic Rust, or should I restructure the ownership?"
+  expected:
+    behavior: >
+      Selects NO review agent. Either DISPATCH: NONE, or a language skill named
+      on the DISPATCH line. Both PASS: the harness loads only agents/, so the
+      dispatcher cannot see the Rust skills by name and must not be required to
+      guess one. What matters is that quality-review is NOT selected.
+    reasoning: >
+      quality-review's description says NOT for language-idiom review (use the
+      language-specific skills), so the correct outcome is that no review agent
+      claims this request.
+  anti_patterns:
+    - Selecting quality-review for a language-idiom question
+    - Selecting architecture-review for an ownership question inside one type
+    - Selecting any *-review agent for a language-idiom question
+  tags: [negative-routing]
+
+- id: negative_vague_no_fanout
+  description: A vague request must not trigger a nine-agent fan-out
+  user_query: "Take a look at this when you get a chance."
+  context: |
+    No path given, no dimension named, no diff described.
+  expected:
+    behavior: >
+      Does NOT dispatch all nine agents. Either asks which dimension the user
+      wants, or names a small default set with its reasoning stated.
+      Selecting every agent is a FAIL.
+    reasoning: >
+      No description matches a vague look-at-this request. Fan-out clauses are
+      scoped to named outcomes (documented/organized/performant/tested) or named
+      gates (merge/deploy). Absent those, routing should narrow or ask.
+  anti_patterns:
+    - Dispatching all nine review agents on a vague request
+    - Dispatching five or more agents with no dimension named
+  tags: [negative-routing, boundary]
