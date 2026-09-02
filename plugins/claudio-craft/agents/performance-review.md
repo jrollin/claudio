@@ -20,7 +20,7 @@ The user may pass an optional path:
 
 ## Workflow
 
-1. **Find the hot paths.** Use cartog (`cartog_callees`, `cartog_trace`) to see what a changed function calls and how deep loops nest. Identify request handlers, batch jobs, and anything inside a loop.
+1. **Find the hot paths.** Use the cartog CLI via Bash (`cartog callees <name>`, `cartog trace <from> <to>`) to see what a changed function calls and how deep loops nest. As a subagent you have no cartog MCP tools, so always shell out. If the CLI is missing or the repo is unindexed, fall back to Glob/Grep. Identify request handlers, batch jobs, and anything inside a loop.
 2. **Reason about scale.** For each path, ask: how many times does this run, and over how many rows/items at production volume?
 3. **Check against best practices:**
    - **N+1 queries**: a query inside a loop; missing eager-load/join/batch; per-item calls that could be one bulk call.
@@ -77,7 +77,7 @@ Findings: critical=X, high=Y, medium=Z, low=W
 - Concise, bullet-driven. Cite `file:line`. State the assumed data volume when it drives severity.
 - Do not claim a slowdown you cannot back with the code and a volume argument. Mark speculative findings `medium`.
 - Read-only. Only write files when the user explicitly asks.
-- Prefer cartog over grep for code lookup.
+- Prefer the cartog CLI (via Bash) over grep for code lookup; if it is unavailable, use Glob/Grep.
 
 ## Out of scope
 

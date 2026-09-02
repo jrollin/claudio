@@ -29,9 +29,9 @@ The user may also pass `--write <path>` (or ask "write the report to X") to pers
 ## Workflow
 
 1. **Inventory docs.** List the files you will review. If the list is long, summarize by directory and review the highest-value entries first (README, CLAUDE.md, ADRs, then feature docs).
-2. **Inventory code anchors.** Use cartog (preferred) to map the symbols, files, and modules referenced in those docs. Fall back to Glob/Grep when cartog is unavailable.
+2. **Inventory code anchors.** Use the cartog CLI via Bash (`cartog search <name>`, `cartog outline <file>`, `cartog refs <name>`) to map the symbols, files, and modules referenced in those docs. As a subagent you have no cartog MCP tools, so always shell out. If the CLI is missing or the repo is unindexed, fall back to Glob/Grep.
 3. **Cross-check.** For each doc, verify:
-   - **File and symbol references** mentioned in prose still exist. Use `cartog_search` to resolve symbols, `cartog_refs` to check usages, `cartog_outline` to confirm file structure.
+   - **File and symbol references** mentioned in prose still exist. Use `cartog search <name>` to resolve symbols, `cartog refs <name>` to check usages, `cartog outline <file>` to confirm file structure.
    - **Code blocks** (imports, function signatures, type names, CLI commands) resolve against the current code.
    - **Commands and scripts** mentioned (npm/pnpm/yarn scripts, Makefile targets, justfile recipes, shell scripts) exist in `package.json`, `Makefile`, `justfile`, or `scripts/`.
    - **Config keys and env vars** mentioned are present in the code (and conversely, important env vars present in code are documented).
@@ -77,7 +77,7 @@ If the user asked for a written report, persist the same content via Bash heredo
 - Concise, bullet-driven. Avoid restating what the doc already says.
 - Do not invent fixes you cannot back with the code. If unsure, mark the finding as `medium` and ask the user to confirm.
 - Read-only by default. Only write a file when the user opts in.
-- Prefer cartog over grep for code lookup, per repo CLAUDE.md.
+- Prefer the cartog CLI (via Bash) over grep for code lookup, per repo CLAUDE.md; if it is unavailable, use Glob/Grep.
 
 ## Out of scope
 

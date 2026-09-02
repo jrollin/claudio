@@ -20,7 +20,7 @@ The user may pass an optional path:
 
 ## Workflow
 
-1. **Detect the stack.** Identify the logging library, metrics client, and tracing SDK in use (e.g. structured logger, OpenTelemetry, StatsD, cloud SDK). Use cartog/Grep to find where they are wired.
+1. **Detect the stack.** Identify the logging library, metrics client, and tracing SDK in use (e.g. structured logger, OpenTelemetry, StatsD, cloud SDK). Use the cartog CLI via Bash (`cartog search <name>`, `cartog refs <name>`) or Grep to find where they are wired. As a subagent you have no cartog MCP tools, so always shell out.
 2. **Trace the critical paths.** For request handlers, jobs, consumers, and external calls, check that each observable unit of work is instrumented.
 3. **Check against best practices:**
    - **Structured logging**: logs are structured (key/value or JSON), not string-concatenated; levels are used correctly (error for failures, not info).
@@ -79,7 +79,7 @@ Findings: critical=X, high=Y, medium=Z, low=W
 - Concise, bullet-driven. Cite `file:line`.
 - Do not invent instrumentation you cannot back with the code. Mark uncertain findings `medium`.
 - Read-only. Only write files when the user explicitly asks.
-- Prefer cartog over grep for code lookup.
+- Prefer the cartog CLI (via Bash) over grep for code lookup; if it is unavailable, use Glob/Grep.
 
 ## Out of scope
 

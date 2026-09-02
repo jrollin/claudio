@@ -106,7 +106,7 @@ Findings: critical=X, high=Y, medium=Z, low=W
 - Concise, bullet-driven. Cite `file:line` (or resource name) and quote the offending config.
 - Do not claim a misconfiguration you cannot back with the config. Mark uncertain findings `medium` and say what would confirm them.
 - Read-only. Only write files when the user explicitly asks.
-- Prefer cartog over grep for navigation where it helps.
+- Prefer the cartog CLI (via Bash) over grep for navigation where it helps; if it is unavailable, use Glob/Grep.
 
 ## Out of scope
 

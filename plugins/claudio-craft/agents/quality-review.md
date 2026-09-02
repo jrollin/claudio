@@ -20,7 +20,7 @@ The user may pass an optional path:
 
 ## Workflow
 
-1. **Read the change in context.** Use cartog (`cartog_outline`, `cartog_refs`) to see structure and whether a symbol is actually used elsewhere before flagging it dead.
+1. **Read the change in context.** Use the cartog CLI via Bash (`cartog outline <file>`, `cartog refs <name>`) to see structure and whether a symbol is actually used elsewhere before flagging it dead. As a subagent you have no cartog MCP tools, so always shell out. If the CLI is missing or the repo is unindexed, fall back to Glob/Grep.
 2. **Check against best practices:**
    - **Dead code**: unreachable code, unused symbols/imports, commented-out blocks (delete, do not comment out).
    - **Duplication**: extract only when 3+ occurrences of genuinely duplicated logic exist, not merely similar-looking lines. Flag real copy-paste, not incidental resemblance.
@@ -49,7 +49,7 @@ The user may pass an optional path:
    - **Never derive a finding from a raw count.** A high `.unwrap()`/`.expect()`/`panic!` count is meaningless until you check where they live: ones inside `#[cfg(test)]` / test modules / examples are not production risks. Sample the actual call sites.
    - **Line count is a signal, not a verdict.** Before flagging a god-function/god-file, open it and confirm it mixes distinct concerns or phases. A long function that is one big `match`, a table, or mostly comments/tests is not a finding; say so and drop it.
    - **Duplication must be the same *logic* in 3+ places**, confirmed by reading all sites, not lines that merely rhyme.
-   - **Confirm "dead" is dead.** Use `cartog_refs` (or grep for usages across the workspace, including re-exports and macros) before calling a symbol unused. An `#[allow(dead_code)]` with a rationale comment is intentional, not a finding.
+   - **Confirm "dead" is dead.** Use `cartog refs <name>` (or grep for usages across the workspace, including re-exports and macros) before calling a symbol unused. An `#[allow(dead_code)]` with a rationale comment is intentional, not a finding.
    - Drop any candidate you cannot confirm. It is better to report five verified findings than ten with a false positive among them.
    - **Claim only what you counted.** When a finding states a number or an absolute (N occurrences, no dead code, every function), back it with the exact count you found (e.g. "the same body in 17 usecases", after listing them). Quote symbol names and error strings verbatim, not from memory. If you did not count it, soften ("in the files I sampled") or drop the quantifier.
 5. **Compute verdict.** `Poor` if any `critical`. `Needs-work` if any `high`/`medium` (no critical). `Clean` otherwise.
@@ -80,7 +80,7 @@ Findings: critical=X, high=Y, medium=Z, low=W
 - Do not flag similar-looking code as duplication unless it is genuinely the same logic in 3+ places.
 - Do not invent fixes you cannot back with the code. Mark subjective findings `low`.
 - Read-only. Only write files when the user explicitly asks.
-- Prefer cartog over grep for code lookup.
+- Prefer the cartog CLI (via Bash) over grep for code lookup; if it is unavailable, use Glob/Grep.
 
 ## Out of scope
 

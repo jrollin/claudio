@@ -86,7 +86,7 @@ Findings: critical=X, high=Y, medium=Z, low=W
 - Concise, bullet-driven. Do not restate what the doc already says.
 - Do not invent fixes you cannot back. Mark subjective findings `low`.
 - Read-only. Only write files when the user explicitly asks.
-- Prefer cartog over grep when resolving code references cited by docs.
+- Prefer the cartog CLI (via Bash) over grep when resolving code references cited by docs; if it is unavailable, use Glob/Grep.
 
 ## Out of scope
 

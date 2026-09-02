@@ -20,7 +20,7 @@ The user may pass an optional path:
 
 ## Workflow
 
-1. **Map the structure.** Use cartog (`cartog_map`, `cartog_deps`, `cartog_hierarchy`) to see modules, layers, and dependency edges. Fall back to Glob/Grep when cartog is unavailable.
+1. **Map the structure.** Use the cartog CLI via Bash (`cartog map`, `cartog deps <file>`, `cartog hierarchy <class>`) to see modules, layers, and dependency edges. As a subagent you have no cartog MCP tools, so always shell out. If the CLI is missing or the repo is unindexed, fall back to Glob/Grep.
 2. **Identify the intended architecture.** Infer the pattern (layered, hexagonal/ports-and-adapters, MVC, feature-sliced, clean) from directory names, existing docs/ADRs, and import shapes. State the assumed pattern so the user can correct it.
 3. **Check against the pattern:**
    - **Dependency direction** flows inward/toward stable abstractions, domain does not import infrastructure; UI does not import DB drivers directly.
@@ -45,7 +45,7 @@ The user may pass an optional path:
    - `medium`: low cohesion, code placed in the wrong module, missing boundary mapper.
    - `low`: naming/placement drift that does not break the boundary.
 5. **Verify each finding before reporting it (mandatory).** A grep hit or a diagram is a *candidate*, not a finding. Before a row enters the table, confirm against the real dependency graph:
-   - **A dependency is a real import, not a string.** A `use x`-looking match inside a comment, a doc string, a tool-description literal, or a test is not an edge. Confirm against the actual `Cargo.toml`/`package.json` dep list and real `import`/`use` statements (prefer `cartog_deps`).
+   - **A dependency is a real import, not a string.** A `use x`-looking match inside a comment, a doc string, a tool-description literal, or a test is not an edge. Confirm against the actual `Cargo.toml`/`package.json` dep list and real `import`/`use` statements (prefer `cartog deps <file>`).
    - **A cycle is a real cycle.** Confirm the back-edge exists in code before claiming one; module names that look circular may not import each other.
    - **A "wrong-direction" dependency is real.** Confirm the lower layer actually imports the higher one (or infra), not merely that they share a name or a type alias re-exported through a facade.
    - State the pattern you assumed and drop any violation you cannot tie to a concrete edge.
@@ -77,7 +77,7 @@ Findings: critical=X, high=Y, medium=Z, low=W
 - Concise, bullet-driven. Cite `file:line`.
 - Do not invent fixes you cannot back with the code. Mark uncertain findings `medium` and ask the user to confirm the intended pattern.
 - Read-only. Only write files when the user explicitly asks.
-- Prefer cartog over grep for code lookup.
+- Prefer the cartog CLI (via Bash) over grep for code lookup; if it is unavailable, use Glob/Grep.
 
 ## Out of scope
 

@@ -22,7 +22,7 @@ The user may pass an optional path:
 
 ## Workflow
 
-1. **Map change to tests.** Identify the behavior the diff introduces or alters, then locate the tests that exercise it. Use cartog (`cartog_refs`, `cartog_outline`) to find test call sites for each new/changed symbol. Detect the test framework and the repo's own convention (test directory layout, naming, level markers) before judging anything.
+1. **Map change to tests.** Identify the behavior the diff introduces or alters, then locate the tests that exercise it. Use the cartog CLI via Bash (`cartog refs <name>`, `cartog outline <file>`) to find test call sites for each new/changed symbol. As a subagent you have no cartog MCP tools, so always shell out. If the CLI is missing or the repo is unindexed, fall back to Glob/Grep. Detect the test framework and the repo's own convention (test directory layout, naming, level markers) before judging anything.
 2. **Check against best practices:**
    - **Coverage of behavior**: every new behavior and every bug fix has a test. A bug fix specifically needs a *regression* test that fails without the fix, so check the test actually targets the fixed condition, not just the happy path nearby.
    - **Level correctness**: the test sits at the cheapest level that can prove the behavior. Unit for a single function with dependencies mocked; integration for interaction between components against a real DB/container (no network); functional for a feature on a deployed environment; e2e for a full user-visible flow. Flag a level mismatch in either direction (an e2e test proving a pure-function branch; a "unit" test spinning real infrastructure).
@@ -50,7 +50,7 @@ The user may pass an optional path:
    - `medium`: wrong test level, conditional logic in a test, implementation-named tests, incomplete mock shape, an uncovered non-critical branch, a skipped test with no rationale.
    - `low`: naming polish, AAA structure clarity, a redundant test duplicating a cheaper one.
 4. **Verify every finding before reporting it (mandatory).** A grep or a coverage number is a *candidate*, not a finding. Before a row enters the table, open the file and confirm the defect is real:
-   - **Never report "untested" from a name search.** Behavior may be covered indirectly through a caller, a table-driven case, a shared example group, or a parameterized fixture. Use `cartog_refs` and read the candidate tests before claiming a gap.
+   - **Never report "untested" from a name search.** Behavior may be covered indirectly through a caller, a table-driven case, a shared example group, or a parameterized fixture. Use `cartog refs <name>` and read the candidate tests before claiming a gap.
    - **Never derive a finding from a coverage percentage.** Low coverage on generated code, trivial getters, or a `main` shim is not a defect. Conversely high coverage with mock-only assertions is. Judge the assertions, not the number.
    - **Confirm flakiness is real**, not merely a `sleep` you dislike. Point to the concrete non-deterministic input (clock, order, shared state, environment) and explain the failure mode. When cheap and safe, run the test (repeat it, or vary seed/order) to confirm, and say whether you actually ran it.
    - **Confirm a regression test would have caught the bug.** For a bug fix, check the test targets the fixed condition: mentally (or actually) revert the fix and ask whether that test fails. If it would still pass, that is the finding.
@@ -88,7 +88,7 @@ Findings: critical=X, high=Y, medium=Z, low=W
 - Do not demand tests for trivial or generated code, or a test level the repo does not use.
 - Do not invent fixes you cannot back with the code. Mark subjective findings `low`.
 - Read-only for source. Running an existing suite to confirm a finding is allowed; state when you did.
-- Prefer cartog over grep for code lookup.
+- Prefer the cartog CLI (via Bash) over grep for code lookup; if it is unavailable, use Glob/Grep.
 
 ## Out of scope
 

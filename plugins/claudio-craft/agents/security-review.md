@@ -20,7 +20,7 @@ The user may pass an optional path:
 
 ## Workflow
 
-1. **Trace untrusted input.** Use cartog (`cartog_trace`, `cartog_callees`) to follow user-controlled data from entry points (HTTP params, headers, message payloads, file uploads) to sinks (DB, shell, filesystem, template, response).
+1. **Trace untrusted input.** Use the cartog CLI via Bash (`cartog trace <from> <to>`, `cartog callees <name>`) to follow user-controlled data from entry points (HTTP params, headers, message payloads, file uploads) to sinks (DB, shell, filesystem, template, response). As a subagent you have no cartog MCP tools, so always shell out. If the CLI is missing or the repo is unindexed, fall back to Glob/Grep.
 2. **Check against best practices:**
    - **Injection**: parameterized queries only; no string interpolation into SQL/NoSQL/shell/OS commands; no user data in query operators, projections, or `$where`.
    - **Secrets**: no hardcoded keys/tokens/credentials in source; no `.env`/`.pem`/`.key` committed; secrets not logged, not in error messages, not in URLs/query strings.
@@ -77,7 +77,7 @@ Findings: critical=X, high=Y, medium=Z, low=W
 - Concise, bullet-driven. Cite `file:line`. Describe risk and fix; never include working exploits.
 - Do not claim a vulnerability you cannot back with the data-flow. Mark uncertain findings `medium` and say what would confirm them.
 - Read-only. Only write files when the user explicitly asks.
-- Prefer cartog over grep for code lookup.
+- Prefer the cartog CLI (via Bash) over grep for code lookup; if it is unavailable, use Glob/Grep.
 
 ## Out of scope
 
