@@ -23,6 +23,12 @@ Engineering craft plugin for Claude Code: TDD discipline, skill testing, doc/cod
   - `templates/eval.sh` — multi-backend (claude / opencode) eval harness with
     dual judge mode (behavioral + command-routing).
 
+- **`writing-style`** — Explicit prose style: concise, bullet-first, straight to
+  the point, no AI slop. Two modes: write (author under the rules) and review
+  (audit an existing text against a banned-pattern table, then rewrite it).
+  Explicit-invocation only, it never auto-triggers.
+  - `SKILL.md` — density/tone/structure rules, banned-pattern table, review pass.
+
 ### Agents
 
 All agents are **read-only** by default: they report findings and suggested
@@ -93,6 +99,7 @@ Via the claudio marketplace:
 - TDD: invoke implicitly (any implementation task) or explicitly via skill
   recognition.
 - Skill testing: ask "create evals for skill X" or "add golden examples to skill Y".
+- Writing style: `/writing-style`, or "apply my writing style" / "rewrite this without AI slop".
 - Doc review: ask "review docs vs code" or "@doc-vs-code-review docs/architecture.md".
 - Best-practice review: invoke a single dimension (e.g.
   "@performance-review src/api" or "@security-review") or ask for several at
@@ -241,4 +248,6 @@ claudio-craft/
       SKILL.md
       references/golden-examples-schema.md
       templates/eval.sh
+    writing-style/
+      SKILL.md
 ```
