@@ -29,6 +29,12 @@ Engineering craft plugin for Claude Code: TDD discipline, skill testing, doc/cod
   Explicit-invocation only, it never auto-triggers.
   - `SKILL.md` — density/tone/structure rules, banned-pattern table, review pass.
 
+- **`pr-triage`** — Address review feedback on an existing pull request: fetch
+  the PR diff and its comments, verify each claim against the code, classify it
+  (valid / invalid / out-of-scope / unclear), fix the valid ones test-first, and
+  hand back at "ready to commit" with draft replies.
+  - `SKILL.md` — scope resolution, classification table, workflow, red flags.
+
 ### Agents
 
 All agents are **read-only** by default: they report findings and suggested
@@ -249,5 +255,7 @@ claudio-craft/
       references/golden-examples-schema.md
       templates/eval.sh
     writing-style/
+      SKILL.md
+    pr-triage/
       SKILL.md
 ```
