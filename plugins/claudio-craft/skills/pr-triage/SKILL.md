@@ -5,7 +5,7 @@ description: >
   code, classify it, fix what is valid, and reply on the threads.
   Trigger for: "triage the PR comments", "address the review feedback", "handle the comments on PR
   123", "the reviewer says X, is that right?", "answer the review threads".
-  NOT for producing a review of someone else's PR (use the *-review agents), NOT for opening or
+  NOT for producing a review of someone else's PR (use pr-review), NOT for opening or
   updating a PR, and NOT for reviewing an uncommitted local diff.
 ---
 

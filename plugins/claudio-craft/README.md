@@ -35,6 +35,13 @@ Engineering craft plugin for Claude Code: TDD discipline, skill testing, doc/cod
   hand back at "ready to commit" with draft replies.
   - `SKILL.md` — scope resolution, classification table, workflow, red flags.
 
+- **`pr-review`**: review someone else's pull request. Skips resolved threads,
+  checks each unresolved one against the PR head (addressed / not addressed /
+  unclear), reviews the diff, and drafts severity-sorted findings (severity, risk,
+  impact, mitigation, comment text). Posts the summary, inline comments, and
+  thread replies only after an explicit `post` command naming the approved items.
+  - `SKILL.md`: iron rule, thread re-review, report fields, validation and posting commands.
+
 ### Agents
 
 All agents are **read-only** by default: they report findings and suggested
@@ -106,6 +113,7 @@ Via the claudio marketplace:
   recognition.
 - Skill testing: ask "create evals for skill X" or "add golden examples to skill Y".
 - Writing style: `/writing-style`, or "apply my writing style" / "rewrite this without AI slop".
+- PR review: `/pr-review 123`, or "review PR 123" / "re-review the PR".
 - Doc review: ask "review docs vs code" or "@doc-vs-code-review docs/architecture.md".
 - Best-practice review: invoke a single dimension (e.g.
   "@performance-review src/api" or "@security-review") or ask for several at
@@ -257,5 +265,7 @@ claudio-craft/
     writing-style/
       SKILL.md
     pr-triage/
+      SKILL.md
+    pr-review/
       SKILL.md
 ```
