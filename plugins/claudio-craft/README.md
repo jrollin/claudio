@@ -35,12 +35,14 @@ Engineering craft plugin for Claude Code: TDD discipline, skill testing, doc/cod
   hand back at "ready to commit" with draft replies.
   - `SKILL.md` — scope resolution, classification table, workflow, red flags.
 
-- **`pr-review`**: review someone else's pull request. Skips resolved threads,
-  checks each unresolved one against the PR head (addressed / not addressed /
-  unclear), reviews the diff, and drafts severity-sorted findings (severity, risk,
-  impact, mitigation, comment text). Posts the summary, inline comments, and
-  thread replies only after an explicit `post` command naming the approved items.
-  - `SKILL.md`: iron rule, thread re-review, report fields, validation and posting commands.
+- **`pr-review`**: review someone else's pull request. Reads the code from a
+  detached worktree at the PR head when a local clone exists (API otherwise),
+  checks each unresolved thread against it (addressed / not addressed / unclear),
+  reviews the diff, and drops findings an existing thread already covers. Drafts
+  severity-tagged findings (emoji severity, risk, impact, fix). Posts inline
+  comments and the summary as one review, plus thread replies, only after an
+  explicit `post` command naming the approved items and a freshness check.
+  - `SKILL.md`: iron rule, code source, thread re-review, dedupe, report layout, validation and posting.
 
 ### Agents
 

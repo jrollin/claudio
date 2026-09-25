@@ -58,29 +58,47 @@ comments(first:50){nodes{databaseId author{login} body}}}}}}}'
 ```
 
 Re-run with `-F cursor=<endCursor>` while `hasNextPage` is true. A thread with more than 50
-comments is truncated: say so in the report.
+comments is truncated: say so in the report. Record the thread count and the total comment count
+(thread comments, conversation comments, review bodies) for the freshness check in step 6.
 
-Read files at the PR head, never from the local working tree (it may be another branch):
+Conversation comments and review bodies (`comments`, `reviews`) cannot be resolved: use them
+only for dedupe in step 3.
+
+#### Code source
+
+Read files at the PR head, never from the user's working tree (it may be another branch). A local
+clone is faster and allows grep and test runs, so look for one first:
+
+1. The current directory, if `git remote get-url origin` points to `<owner>/<repo>`.
+2. Otherwise ask the user for the path of a local clone, or "none".
+
+With a clone, check out the head in a detached worktree in the scratchpad, never in the clone:
+
+```bash
+git -C <clone> fetch origin pull/<pr>/head
+git -C <clone> worktree add --detach <scratchpad>/pr-<pr> <headRefOid>
+git -C <scratchpad>/pr-<pr> rev-parse HEAD   # must equal headRefOid
+```
+
+Remove it after posting, or when the user stops: `git -C <clone> worktree remove <scratchpad>/pr-<pr>`.
+
+Without a clone, or if the fetch fails, read each file through the API:
 
 ```bash
 gh api "repos/<owner>/<repo>/contents/<path>?ref=<headRefOid>" -H "Accept: application/vnd.github.raw"
 ```
 
-Or run `gh pr checkout <pr> -R <owner>/<repo>` first, with the user's agreement, and confirm
-`git rev-parse HEAD` equals `headRefOid`.
-
-Conversation comments and review bodies (`comments`, `reviews`) cannot be resolved: use them
-only for dedupe in step 3.
-
 ### 2. Re-review open threads
 
-Resolved threads are skipped here and kept for dedupe in step 3. Threads opened by the PR author
-are skipped too. Bot threads are re-reviewed like any other: a review bot is often the main
-reviewer.
+Resolved threads are skipped here and kept for dedupe in step 3. Bot threads are re-reviewed like
+any other: a review bot is often the main reviewer.
 
-One exception to skipping resolved threads: a thread resolved with no reply and not outdated
-(`isResolved`, `!isOutdated`, a single comment) was closed without a fix or an answer. Do not
-re-review it; list it in the summary so the user can decide.
+Threads opened by the PR author are skipped, unless another participant replied: then re-review
+the thread against that reply.
+
+A thread resolved with no reply and not outdated (`isResolved`, `!isOutdated`, a single comment)
+may have been closed without a fix. Read the code: if the concern still holds, list it under
+**Notes for you** so the user can decide. If it was fixed, drop it silently.
 
 For each remaining unresolved thread, read the code at its path at `headRefOid` (for an outdated
 thread, the file's current content, not the old line) and mark it:
@@ -92,6 +110,10 @@ thread, the file's current content, not the old line) and mark it:
 | **unclear** | Partially fixed, or the change moved the concern | A question on the thread |
 
 Cite file and line for every status.
+
+On a thread opened by another reviewer, draft a reply only when it adds evidence the thread lacks
+(a new `path:line`, a consequence the reviewer did not name). A reply that only restates the ask
+is noise: list the thread with its status and no draft.
 
 ### 3. Review the diff
 
@@ -109,37 +131,78 @@ Rules:
 
 - Read the surrounding file at `headRefOid`, not only the hunk, before raising a finding.
 - Comment only on lines the PR changed; pre-existing issues go to the summary as follow-ups.
-- Do not raise what is already covered by a review thread (resolved or not), a conversation
-  comment, or a review body.
 - No style nits a formatter or linter would catch.
+
+Dedupe check, for each candidate finding before it enters the report: list every thread (resolved
+or not), conversation comment, and review body on the same path or topic. Drop the finding if one
+already raises it, or if it would undo what a thread asked for and got. Record each drop under
+**Checked and dropped**.
 
 ### 4. Report
 
-Two sections, numbered continuously so one number addresses one draft:
+One block per item, draft right under it. Numbered continuously across sections, so one number
+addresses one draft. Only postable items get a number.
 
-1. **Open threads**, listed first: every re-reviewed thread with its status, `path:line`,
-   evidence, and the draft reply for `not addressed` and `unclear`. `addressed` threads carry
-   no number: nothing to post, the user resolves them.
-2. **New findings**, sorted by severity: **critical** > **high** > **medium** > **low**.
+```markdown
+## Open threads
 
-For each new finding:
+1. not addressed · <reviewer> · `path:line`
+   Evidence: `path:line` still ...
+   Draft: "..."
 
-| Field | Content |
-| --- | --- |
-| Severity | critical / high / medium / low |
-| Location | `path:line`, or `summary` when the line is outside the diff |
-| Risk | What can go wrong |
-| Impact | Who or what is affected, and how badly |
-| Mitigation | The concrete fix |
-| Draft | The comment text, 1 to 3 sentences |
+Nothing to post:
+- addressed · `path:line` · evidence (the user can resolve it)
+- not addressed, no new evidence · <reviewer> · `path:line`
 
-Draft comment style: direct, specific, one issue per comment, a suggested fix, no praise padding,
-no hedging. Example: "`userId` comes from the query string and is used without an ownership
-check, so any user can read another user's invoices. Load the invoice scoped to
-`current_user`."
+## New findings
 
-End with the draft summary comment: verdict in one line, finding counts per severity, status of
-open threads, threads resolved without a fix or reply, out-of-diff follow-ups.
+2. 🟡 medium · `path:line` · <title>
+
+   🟡 medium: <title>
+
+   - Risk: what can go wrong
+   - Impact: who or what is affected, and how badly
+   - Fix: the concrete change
+
+## Checked and dropped
+
+- <suspected issue>: why it does not hold, or which thread already covers it
+
+## Notes for you
+
+- head `<headRefOid>`, N threads read, code source (worktree or API)
+- review states, threads resolved without a fix, skipped author threads worth a look
+
+## Summary comment
+
+<the draft summary, posted as the review body>
+```
+
+New findings are sorted by severity, one emoji each: 🔴 critical > 🟠 high > 🟡 medium >
+⚪ low. The draft is the comment text as posted: severity line, then Risk, Impact, and Fix, one
+short bullet each. A finding outside the diff has no number: it goes into the summary comment.
+
+Thread replies stay 1 to 2 sentences, no severity block.
+
+Draft style: direct, specific, one issue per comment, no praise padding, no hedging. Example:
+
+```markdown
+🟠 high: invoice lookup has no ownership check
+
+- Risk: `userId` comes from the query string and is used without an ownership check
+- Impact: any user can read another user's invoices
+- Fix: load the invoice scoped to `current_user`
+```
+
+The summary comment is for the PR author, not a log of the review:
+
+- Verdict in one line: `Blocking: <reason>`, `Non-blocking: <reason>`, or `No issues found`.
+  Never "Approve" or "Request changes": those are review states the user sets.
+- Finding counts per severity, and open threads by status.
+- Out-of-diff follow-ups.
+
+Thread bookkeeping (counts read, resolved-without-reply, skipped threads) goes to **Notes for
+you**, never to the summary.
 
 ### 5. Validate
 
@@ -153,34 +216,42 @@ Nothing else is a posting instruction. If unsure, ask.
 
 ### 6. Post
 
-Before posting, re-read `headRefOid`. If it changed, stop: re-gather and re-validate.
+Freshness check, before posting: re-read `headRefOid` and re-run the thread query and
+`gh pr view --json comments,reviews`. If the head, the thread count, or the comment count changed
+since step 1, stop: re-gather, re-review what is new, and re-validate.
 
-Post only the approved items, as separate comments. Write each payload to a JSON file in the
+Post the approved inline findings and the summary as one review with `event: COMMENT`: one
+notification for the author instead of one per comment. Write each payload to a JSON file in the
 scratchpad (never inline shell strings: multi-line text and backticks break quoting):
 
 ```bash
-# Summary
-gh pr comment <pr> -R <owner>/<repo> --body-file summary.md
+# review.json:
+# {"commit_id": "<headRefOid>", "event": "COMMENT", "body": "<summary>",
+#  "comments": [{"path": "<path>", "line": <line>, "side": "RIGHT", "body": "<draft>"}]}
+gh api repos/<owner>/<repo>/pulls/<pr>/reviews --input review.json
 
-# Inline comment on a changed line
-# inline-N.json: {"body": "...", "commit_id": "<headRefOid>", "path": "<path>", "line": <line>, "side": "RIGHT"}
-gh api repos/<owner>/<repo>/pulls/<pr>/comments --input inline-N.json
-
-# Reply on an open thread (databaseId of the thread's first comment)
+# Reply on an open thread (databaseId of the thread's first comment), one call per reply
 # reply-N.json: {"body": "..."}
 gh api repos/<owner>/<repo>/pulls/<pr>/comments/<id>/replies --input reply-N.json
 ```
 
-An inline comment GitHub rejects (line outside the diff) is not retried elsewhere: report it and
-ask whether to fold it into the summary. Report the URL of each posted comment.
+`body` is required with `event: COMMENT`. When `summary` is not among the approved items, use
+`Inline comments at <headRefOid>` as the body.
+
+Before posting, check that every inline `line` falls inside a hunk of `gh pr diff`. GitHub rejects
+the whole review if one line is outside the diff: nothing is posted, so report which comment and
+ask whether to fold it into the summary. Report the URL of the review and of each reply.
 
 ## Red flags
 
 - Posting, replying, or resolving anything without an explicit `post` command this turn.
 - Marking a thread "addressed" without reading the code at `headRefOid`.
-- Reading files from the local working tree without checking it is the PR head.
+- Reading files from the user's working tree instead of a worktree at the PR head.
 - Reviewing a partial thread list because pagination stopped early.
+- Posting after new threads or comments appeared since the gather.
 - Re-raising a point an existing thread or comment already covers.
-- A finding without risk, impact, and mitigation.
+- A finding that undoes what a resolved thread asked for.
+- A reply on another reviewer's thread that only restates the ask.
+- A finding without risk, impact, and fix.
 - Inline comments anchored to a stale commit.
 - Resolving `{owner}`/`{repo}` from the current directory when the PR lives elsewhere.
