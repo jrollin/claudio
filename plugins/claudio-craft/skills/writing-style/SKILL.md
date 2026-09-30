@@ -12,8 +12,8 @@ description: >
 
 Two modes. Pick from the request.
 
-- **Write mode** — author new prose under these rules.
-- **Review mode** — an existing text is supplied ("rewrite this", "review this text"): audit it against the rules, then output the rewrite.
+- **Write mode**: author new prose under these rules.
+- **Review mode**: an existing text is supplied ("rewrite this", "review this text"). Audit it against the rules, then output the rewrite.
 
 ## Rules
 
@@ -25,6 +25,8 @@ Two modes. Pick from the request.
 - Paragraphs only for a single connected argument.
 - No summary section that repeats what was just said.
 - Numbers, names, and paths beat adjectives: "3 retries, 200ms backoff", not "a robust retry policy".
+- Round to the precision the decision needs: "about 2 to 4 weeks", not "9 to 26.5 days".
+  For effort, use T-shirt sizes with a legend (range and a staffing equivalent).
 
 ### Tone
 
@@ -50,6 +52,8 @@ Two modes. Pick from the request.
 | Emoji as decoration | "🚀 Deploy" | Delete unless the user's format uses them |
 | Bold sprayed on nouns | "the **service** calls the **handler**" | Bold only a term being defined |
 | Pseudo-heading label | `**Tenant isolation.** OSS has no row security…` | Promote to a real heading, one level below the section |
+| Semicolon chain | "CPU at 90%; backlog growing; errors up 3x" | One item per line or per bullet |
+| False precision | "11 to 20.5 person-weeks" | Round, add a human equivalent |
 
 ### Structure
 
@@ -57,24 +61,29 @@ Two modes. Pick from the request.
 - Tables for 3+ items compared on 2+ axes.
 - Code blocks for anything a reader will copy.
 - Front-load: conclusion, then evidence.
+- One item per line, table cells included: a cell with 2+ facts puts each on its own line
+  (`<br>` plus "• " in Markdown or Notion tables), never a semicolon chain.
+- A bold lead-in label stands alone as the bullet; each sentence becomes a sub-bullet.
+- Vision and decision docs: show the recommended path, mark optional or conditional steps
+  and who decides, leave rejected options out unless asked.
 
 ## Review mode
 
 Run this pass, in order:
 
-1. **Slop scan** — flag every hit from the banned-patterns table, quoting the span.
-2. **Density pass** — mark sentences carrying no new information.
-3. **Structure pass** — should a paragraph be bullets, or bullets be a table?
-4. **Fact check** — flag adjectives that should be numbers or names.
-5. **Rewrite** — output the corrected text.
+1. **Slop scan**: flag every hit from the banned-patterns table, quoting the span.
+2. **Density pass**: mark sentences carrying no new information.
+3. **Structure pass**: should a paragraph be bullets, bullets be a table, or a table cell be split into lines?
+4. **Fact check**: flag adjectives that should be numbers or names.
+5. **Rewrite**: output the corrected text.
 
 Report findings compactly, then the rewrite:
 
 ```
 ## Findings
-- L3 "seamlessly integrates" — hollow intensifier, say what it does
-- L7-9 — restates the heading, delete
-- L12 — paragraph of 4 parallel items, convert to bullets
+- L3 "seamlessly integrates": hollow intensifier, say what it does
+- L7-9: restates the heading, delete
+- L12: paragraph of 4 parallel items, convert to bullets
 
 ## Rewrite
 <text>
@@ -91,3 +100,5 @@ Before returning any prose, verify:
 - [ ] No em-dash
 - [ ] Every adjective earns its place, or is a number instead
 - [ ] Nothing repeated
+- [ ] No semicolon chain, in prose or in a table cell
+- [ ] Numbers rounded to the precision the decision needs
