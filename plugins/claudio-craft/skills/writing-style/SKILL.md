@@ -21,6 +21,7 @@ Two modes. Pick from the request.
 
 - Lead with the answer. No preamble, no restating the question.
 - One idea per sentence. Cut every sentence that carries no new information.
+- One idea per bullet: a bullet holding 2+ facts or sentences splits into sub-bullets.
 - Bullets over paragraphs when listing 2+ items, comparing, or enumerating steps.
 - Paragraphs only for a single connected argument.
 - No summary section that repeats what was just said.
@@ -54,6 +55,7 @@ Two modes. Pick from the request.
 | Pseudo-heading label | `**Tenant isolation.** OSS has no row security…` | Promote to a real heading, one level below the section |
 | Semicolon chain | "CPU at 90%; backlog growing; errors up 3x" | One item per line or per bullet |
 | False precision | "11 to 20.5 person-weeks" | Round, add a human equivalent |
+| Inline list after a label | "Dev: update the schema, migrate data, add tests" | Label alone, one sub-bullet per item |
 
 ### Structure
 
@@ -63,7 +65,8 @@ Two modes. Pick from the request.
 - Front-load: conclusion, then evidence.
 - One item per line, table cells included: a cell with 2+ facts puts each on its own line
   (`<br>` plus "• " in Markdown or Notion tables), never a semicolon chain.
-- A bold lead-in label stands alone as the bullet; each sentence becomes a sub-bullet.
+- A lead-in label (bold or plain, e.g. "Dev:") followed by 2+ items stands alone as the bullet,
+  with one sub-bullet per item; tasks start with a verb. A label with one item stays inline.
 - Vision and decision docs: show the recommended path, mark optional or conditional steps
   and who decides, leave rejected options out unless asked.
 
@@ -73,7 +76,8 @@ Run this pass, in order:
 
 1. **Slop scan**: flag every hit from the banned-patterns table, quoting the span.
 2. **Density pass**: mark sentences carrying no new information.
-3. **Structure pass**: should a paragraph be bullets, bullets be a table, or a table cell be split into lines?
+3. **Structure pass**: should a paragraph be bullets, bullets be a table, a bullet be split into
+   sub-bullets, or a table cell be split into lines?
 4. **Fact check**: flag adjectives that should be numbers or names.
 5. **Rewrite**: output the corrected text.
 
@@ -101,4 +105,5 @@ Before returning any prose, verify:
 - [ ] Every adjective earns its place, or is a number instead
 - [ ] Nothing repeated
 - [ ] No semicolon chain, in prose or in a table cell
+- [ ] No bullet or table cell holds 2+ items or sentences
 - [ ] Numbers rounded to the precision the decision needs
