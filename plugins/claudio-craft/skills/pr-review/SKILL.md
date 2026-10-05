@@ -39,7 +39,7 @@ comments the user approves before anything reaches GitHub.
 ### 1. Gather
 
 ```bash
-gh pr view <pr> -R <owner>/<repo> --json number,title,body,author,headRefOid,baseRefName,url,comments,reviews
+gh pr view <pr> -R <owner>/<repo> --json number,title,body,author,headRefOid,baseRefName,isCrossRepository,url,comments,reviews
 gh pr diff <pr> -R <owner>/<repo>
 ```
 
@@ -81,6 +81,12 @@ git -C <scratchpad>/pr-<pr> rev-parse HEAD   # must equal headRefOid
 ```
 
 Remove it after posting, or when the user stops: `git -C <clone> worktree remove <scratchpad>/pr-<pr>`.
+
+Running PR code (repros, tests, installs) executes the author's code on this machine:
+
+- Same-repository PR (`isCrossRepository` false): run it.
+- Fork: ask first.
+- Install with lifecycle scripts disabled (`npm ci --ignore-scripts`, `pnpm install --ignore-scripts`).
 
 Without a clone, or if the fetch fails, read each file through the API:
 
@@ -138,6 +144,10 @@ or not), conversation comment, and review body on the same path or topic. Drop t
 already raises it, or if it would undo what a thread asked for and got. Record each drop under
 **Checked and dropped**.
 
+A resolved thread whose concern still holds at `headRefOid`, fully or in part, does not cover the
+finding: nobody acts on a resolved thread. List it under **Notes for you** with the thread and the
+`path:line`, never under **Checked and dropped**.
+
 ### 4. Report
 
 One block per item, draft right under it. Numbered continuously across sections, so one number
@@ -163,6 +173,7 @@ Nothing to post:
    - Risk: what can go wrong
    - Impact: who or what is affected, and how badly
    - Fix: the concrete change
+   - Repro: `call(...)` returns X, expected Y (only when run)
 
 ## Checked and dropped
 
@@ -180,7 +191,10 @@ Nothing to post:
 
 New findings are sorted by severity, one emoji each: 🔴 critical > 🟠 high > 🟡 medium >
 ⚪ low. The draft is the comment text as posted: severity line, then Risk, Impact, and Fix, one
-short bullet each. A finding outside the diff has no number: it goes into the summary comment.
+sentence each (about 25 words). Evidence the author does not need to act (runtime source lines,
+private symbols) goes to **Notes for you**. A finding confirmed by running code gets a `Repro:`
+bullet: one line of code, its result, and the expected result. A finding outside the diff has no
+number: it goes into the summary comment.
 
 Thread replies stay 1 to 2 sentences, no severity block.
 
@@ -211,6 +225,14 @@ Stop and wait. The user answers with:
 - `post all` / `post 1,3,5` / `post summary`
 - `edit 2: <new text>`, then show the edited draft again
 - `drop 4`
+
+The summary counts and cites only findings that reach the PR, in the same review or earlier.
+Rebuild it (severity counts, verdict, references to inline comments) and show it again:
+
+- after a `drop`
+- when a `post` names the summary but leaves some findings unposted
+
+A changed summary needs a new `post`.
 
 Nothing else is a posting instruction. If unsure, ask.
 
@@ -250,6 +272,9 @@ ask whether to fold it into the summary. Report the URL of the review and of eac
 - Reviewing a partial thread list because pagination stopped early.
 - Posting after new threads or comments appeared since the gather.
 - Re-raising a point an existing thread or comment already covers.
+- Dropping a finding as covered by a resolved thread whose concern still holds.
+- A summary that counts or cites findings that are not posted.
+- Running code from a fork without asking, or installing with lifecycle scripts enabled.
 - A finding that undoes what a resolved thread asked for.
 - A reply on another reviewer's thread that only restates the ask.
 - A finding without risk, impact, and fix.
