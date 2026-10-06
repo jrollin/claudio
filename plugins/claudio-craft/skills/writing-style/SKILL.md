@@ -21,7 +21,8 @@ Two modes. Pick from the request.
 
 - Lead with the answer. No preamble, no restating the question.
 - One idea per sentence. Cut every sentence that carries no new information.
-- One idea per bullet: a bullet holding 2+ facts or sentences splits into sub-bullets.
+- One idea per bullet: a bullet holding 2+ facts or sentences splits into sub-bullets,
+  even when one sentence joins the facts with "and", "but" or a comma.
 - Bullets over paragraphs when listing 2+ items, comparing, or enumerating steps.
 - Paragraphs only for a single connected argument.
 - No summary section that repeats what was just said.
@@ -56,6 +57,7 @@ Two modes. Pick from the request.
 | Semicolon chain | "CPU at 90%; backlog growing; errors up 3x" | One item per line or per bullet |
 | False precision | "11 to 20.5 person-weeks" | Round, add a human equivalent |
 | Inline list after a label | "Dev: update the schema, migrate data, add tests" | Label alone, one sub-bullet per item |
+| Compound fact after a label | "**Why:** we miss 7 of 11 practices and meet the other 4 partly" | Label alone, one sub-bullet per fact |
 
 ### Structure
 
@@ -65,8 +67,13 @@ Two modes. Pick from the request.
 - Front-load: conclusion, then evidence.
 - One item per line, table cells included: a cell with 2+ facts puts each on its own line
   (`<br>` plus "• " in Markdown or Notion tables), never a semicolon chain.
-- A lead-in label (bold or plain, e.g. "Dev:") followed by 2+ items stands alone as the bullet,
-  with one sub-bullet per item; tasks start with a verb. A label with one item stays inline.
+- A lead-in label (bold or plain, e.g. "Why:", "Dev:") followed by 2+ facts or items stands
+  alone as the bullet, with one sub-bullet per fact or item.
+  - Tasks in sub-bullets start with a verb.
+  - A label stays inline only with a single fact: a value, a name or a short phrase
+    ("**Confidence:** High").
+  - Example: `- **Why:**` then `  - today the services miss 7 of the 11 practices`
+    and `  - the other 4 are only partly in place`.
 - Vision and decision docs: show the recommended path, mark optional or conditional steps
   and who decides, leave rejected options out unless asked.
 
@@ -105,5 +112,5 @@ Before returning any prose, verify:
 - [ ] Every adjective earns its place, or is a number instead
 - [ ] Nothing repeated
 - [ ] No semicolon chain, in prose or in a table cell
-- [ ] No bullet or table cell holds 2+ items or sentences
+- [ ] No bullet, label line or table cell holds 2+ facts or sentences, even joined by "and"
 - [ ] Numbers rounded to the precision the decision needs
