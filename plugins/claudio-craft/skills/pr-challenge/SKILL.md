@@ -36,7 +36,8 @@ dependency, a failure, a cost.
   - a bug spotted on the way goes to **Notes for you**
 - The delta, not the system:
   - challenge what the PR adds or worsens against `baseRefName` (calls per request, rows, cost)
-  - a pre-existing problem the PR does not worsen goes to **Considered, not raised**
+  - a pre-existing problem that limits the PR's stated goal is raised, scoped to that goal
+  - any other pre-existing problem the PR does not worsen goes to **Considered, not raised**
 - Patterns over lines: three new clients with no timeout make one challenge (no resilience
   policy), not three.
 - Context over code: "what happens at N calls a second, on M rows, with dependency D down", not
@@ -130,7 +131,7 @@ a config file), or mark it unknown.
 | Trigger | What runs this code: HTTP route, job, queue or stream consumer, cron, CLI? | • routes and handlers<br>• IaC and schedules<br>• callers via cartog (`impact`, `refs`) or grep |
 | Frequency | How often: per request, per tenant, per batch, on a schedule? | • trigger config<br>• cron expressions<br>• call sites |
 | Runtime | Where it runs, with which concurrency, memory, and timeout limits? | • IaC<br>• container and function config |
-| Data | Which stores it reads and writes, and how big they are? | • models and migrations<br>• queries |
+| Data | Which stores it reads and writes, how big they are, and their capacity limits (throughput mode, partition or connection caps)? | • models and migrations<br>• queries<br>• IaC capacity settings |
 | Downstream | Which services or APIs it calls, and their rate, timeout, and quota limits? | • clients<br>• SDK config |
 | Consumers | Who reads what it writes: events, API responses, tables? | • event schemas<br>• API contracts<br>• other repos named in docs |
 | Signals | Which metrics, logs, traces, monitors, and alerts already cover it? | • instrumentation code<br>• monitors as code<br>• dashboard config |
@@ -141,9 +142,9 @@ PR changes.
 
 ### 3. Size it
 
-List candidate challenges with a first pass of the lenses in step 4, then size the quantities
-they rest on: peak requests per second, rows per call and per tenant, payload size, fan-out per
-call, growth per month, retention. Every value carries a source tag:
+Load `references/lenses.md` and list candidate challenges with a first pass of the lenses. Then
+size the quantities they rest on: peak requests per second, rows per call and per tenant,
+payload size, fan-out per call, growth per month, retention. Every value carries a source tag:
 
 | Tag | Meaning |
 | --- | --- |
@@ -152,11 +153,14 @@ call, growth per month, retention. Every value carries a source tag:
 | `derived` | Computed from `measured` or `stated` values, with the computation shown |
 | `unknown` | Becomes an open question for the author |
 
+A `derived` value computed from a range stays a range: "4 to 8 s", not "~4 s".
+
 Live sources, when one is connected (MCP or CLI):
 
 - Observability (APM, metrics, logs), read-only, no need to ask:
   - take the service name from config (service tag, IaC), never guess it
-  - use the peak hour over the last 30 days
+  - use one window for every measured value, last 30 days by default, stated once
+  - for traffic, take the peak hour in that window
   - a new endpoint or job has no traffic yet: measure its caller
 - Production database:
   - ask the user before the first query
@@ -176,18 +180,8 @@ Unknown quantities:
 
 ### 4. Challenge
 
-Run each lens over what the PR adds or worsens. Skip a lens with nothing specific to say.
-
-| Lens | Ask | Signals in code |
-| --- | --- | --- |
-| Volumetry | • What is N per call, per tenant, in total?<br>• How fast does it grow?<br>• How long is it kept? | • unbounded load into memory<br>• per-tenant fan-out<br>• new table with no retention |
-| Scalability | • What breaks first at 10x: CPU, memory, connections, a lock, a hot key, a downstream limit?<br>• Does it scale out? | • in-process state or cache<br>• global lock<br>• single partition key<br>• one job looping over all tenants |
-| Performance | • Is it on a user-facing path?<br>• What is its latency budget?<br>• Could the work be async? | • sync remote call in a request<br>• serial calls that could run together<br>• heavy work in a hot loop |
-| Monitoring | • How will we know it works?<br>• How fast will we know it breaks?<br>• Which alert fires, and who gets paged? | • new job, endpoint, or consumer with no metric<br>• errors logged but not counted<br>• dead-letter queue with no alarm |
-| Failure modes | • What happens when a dependency is slow, down, or wrong?<br>• Is a retry safe?<br>• What is the blast radius? | • no timeout<br>• retry with no backoff or cap<br>• non-idempotent write on an at-least-once consumer<br>• partial write with no compensation |
-| Data lifecycle | • Does the migration lock a large table?<br>• Who backfills?<br>• Can it roll back without data loss?<br>• Do old and new code share the schema during deploy? | • column renamed in one step<br>• NOT NULL added on a large table<br>• destructive migration<br>• no purge |
-| Cost | • What does one call cost?<br>• What does it cost at 10x? | • paid API call per item<br>• log line per item on a hot path<br>• high-cardinality metric tag<br>• unbounded storage growth |
-| Alternatives | • Is there a simpler or better-placed design at this volume? | • rebuilds an existing component<br>• sync call where an event fits<br>• logic in the wrong service |
+Run each lens in `references/lenses.md` over what the PR adds or worsens. Skip a lens with
+nothing specific to say.
 
 Fill the Monitoring table for every new behavior (endpoint, job, consumer, external call), even
 when no challenge results. A log line nobody queries is not monitoring.
@@ -195,9 +189,10 @@ when no challenge results. A log line nobody queries is not monitoring.
 Two kinds of challenge carry extra fields:
 
 - Antipattern:
-  - name the pattern in the title (N+1 across services, dual write without outbox, retry storm,
-    chatty I/O, shared database between services, polling where an event exists, distributed
-    monolith)
+  - name a known pattern in the title (N+1 across services, dual write without outbox, retry
+    storm, chatty I/O, shared database between services, polling where an event exists,
+    distributed monolith)
+  - no known name fits: frame it as a missing best practice instead
   - say why it hurts here, tied to a volume or a threshold
   - say when it would be acceptable
 - Missing best practice:
@@ -210,6 +205,8 @@ Before a challenge enters the report:
 
 - Check it against the context map: a timeout set in a shared client, or an alert defined in
   another repo, drops a "missing" challenge.
+- Check it against measured values: a challenge built on a `stated` claim that a `measured`
+  value contradicts becomes an open question.
 - Check the existing comments: a question already answered on the PR is dropped.
 - Rank it by horizon:
   - `now`: hurts at today's volume
@@ -221,99 +218,13 @@ Before a challenge enters the report:
 
 ### 5. Report
 
-Number items continuously across Open questions and Challenges, so one number addresses one
-item. Numbers stay stable after a `drop`: gaps are fine. Each bullet is one sentence.
+Load `references/report-template.md`: writing rules, Monitoring status, local report, and draft
+comment.
 
-```markdown
-## Context
-
-- Intent: <what the PR does, one line>
-- Trigger: <route, job, consumer> · `path:line`
-- Runs on: <runtime and limits>
-- Data: <stores and sizes>
-- Downstream: <services and limits>
-- Consumers: <who reads what it writes>
-- Decisions: <ADRs, docs, tickets that constrain it>
-
-## Volumes
-
-| Quantity | Value | Source |
-| --- | --- | --- |
-| Peak requests | 40/s | measured: APM, `<query>`, peak hour over 30 days |
-| Runs per hour | 12 | stated: cron at `path:line` |
-| Rows per hour | about 6k | derived: batch of 500 at `path:line` × 12 runs |
-| Growth | unknown | question 1 |
-
-## Monitoring
-
-| New behavior | Signal that proves it works | Alert when it fails | Status |
-| --- | --- | --- | --- |
-| `POST /exports` | `exports.created` counter · `path:line` | none found | missing: challenge 2 |
-
-## Open questions
-
-1. <a missing number or constraint, one line>
-
-## Challenges
-
-### Now
-
-2. <Lens> · <title> · <`path:line` or component>
-
-   - Observation: <what the PR adds or changes>
-   - Why it matters here: <consequence tied to a volume or a threshold>
-   - Suggestion: <the change>
-   - Cost: <what adopting it takes>
-   - Question: <what the author should answer>
-
-### At 10x
-
-3. <Lens> · Antipattern: <name> · <`path:line` or component>
-
-   - Observation: <what the PR adds or changes>
-   - Why it matters here: <consequence tied to a volume or a threshold>
-   - Acceptable when: <the condition>
-   - Suggestion: <the change>
-   - Cost: <what adopting it takes>
-   - Question: <what the author should answer>
-
-### Later
-
-4. <Lens> · Best practice: <name> · <`path:line` or component>
-
-   - Observation: <what the PR does instead>
-   - Why it matters here: <consequence tied to a volume or a threshold>
-   - How here: <the change, with the existing example at `path:line` when one exists>
-   - Cost: <what adopting it takes>
-   - Question: <what the author should answer>
-
-## Considered, not raised
-
-- <candidate>: why it does not hold here (bounded volume, handled at `path:line`, pre-existing
-  and not worsened)
-
-## Notes for you
-
-- head `<headRefOid>`
-- code source: worktree, scratchpad clone, or API
-- live tools queried, with their windows
-- entry points left out of the map
-- correctness bugs spotted on the way, to raise with `pr-review`
-
-## Draft comment
-
-<the comment as posted>
-```
-
-The draft comment is for the PR author:
-
-- First line: `Architecture challenge at <short sha>: scale, operations, and design questions, not a correctness review.`
-- The `derived` volumes the challenges rest on, so the author can correct them.
-- The Monitoring table.
-- Open questions, then challenges by horizon, with the same numbers.
-- No context map, no source tags, no **Notes for you**.
-- Never a tenant or customer identifier.
-- In a public repository, ask before including `measured` production figures.
+- Number items 1 to N across Open questions and Challenges, so one number addresses one item.
+- Renumber on every rebuild, cross-references included. Commands refer to the last draft shown.
+- The draft comment never holds a tenant or customer identifier.
+- In a public repository, ask before including `measured` production figures in the draft.
 
 ### 6. Validate
 
@@ -353,10 +264,14 @@ Report the review URL.
 
 - Posting without an explicit `post` command this turn.
 - A challenge about correctness, style, or naming.
-- A challenge about a pre-existing problem the PR does not worsen.
+- A challenge about a pre-existing problem the PR neither worsens nor depends on for its goal.
 - One challenge per line where one pattern explains them all.
 - A generic challenge that would fit any PR, or one added to reach a count.
 - A number with no source tag, or a `derived` number with no computation shown.
+- A number in the draft that its numbers table does not hold, unless the PR itself shows it.
+- A challenge built on a `stated` claim that a `measured` value contradicts.
+- A Monitoring status pointing to a challenge about another row.
+- A field or table cell holding 2+ facts on one line.
 - An antipattern named without why it hurts here.
 - A best practice with no "how".
 - A challenge with no question for the author.

@@ -50,7 +50,8 @@ Engineering craft plugin for Claude Code: TDD discipline, skill testing, doc/cod
   is correct and asks whether it holds in production:
   - maps the context first (trigger, frequency, runtime, data, downstream,
     consumers, existing signals)
-  - challenges only what the PR adds or worsens, one challenge per pattern
+  - challenges what the PR adds or worsens, plus pre-existing problems that limit
+    its stated goal, one challenge per pattern
   - sizes it with source-tagged volumes (`measured`, `stated`, `derived`,
     `unknown`), queried from a connected observability tool when available
   - turns a volume that stays unknown into a threshold ("above N, X happens"),
@@ -64,7 +65,9 @@ Engineering craft plugin for Claude Code: TDD discipline, skill testing, doc/cod
   - ranks at most 8 challenges by horizon (`now`, `10x`, `later`), zero is valid
   - stops early on a PR with no runtime impact
   - posts one review comment only after an explicit `post` command
-  - `SKILL.md`: stance, context map, volumes, lenses, report layout, validation and posting.
+  - `SKILL.md`: stance, context map, volumes, challenge checks, validation and posting.
+  - `references/lenses.md`: the 8 lenses, with questions and code signals.
+  - `references/report-template.md`: writing rules, Monitoring status, local report, draft comment.
 
 ### Agents
 
@@ -295,4 +298,5 @@ claudio-craft/
       SKILL.md
     pr-challenge/
       SKILL.md
+      references/{lenses,report-template}.md
 ```
