@@ -46,6 +46,26 @@ Engineering craft plugin for Claude Code: TDD discipline, skill testing, doc/cod
   explicit `post` command naming the approved items and a freshness check.
   - `SKILL.md`: iron rule, code source, thread re-review, dedupe, report layout, validation and posting.
 
+- **`pr-challenge`**: challenge a pull request as an architect. Assumes the code
+  is correct and asks whether it holds in production:
+  - maps the context first (trigger, frequency, runtime, data, downstream,
+    consumers, existing signals)
+  - challenges only what the PR adds or worsens, one challenge per pattern
+  - sizes it with source-tagged volumes (`measured`, `stated`, `derived`,
+    `unknown`), queried from a connected observability tool when available
+  - turns a volume that stays unknown into a threshold ("above N, X happens"),
+    never an invented number
+  - questions the change through 8 lenses: volumetry, scalability, performance,
+    monitoring, failure modes, data lifecycle, cost, alternatives
+  - maps every new behavior to the signal that proves it works and the alert
+    that fires when it fails
+  - names antipatterns (why here, when acceptable) and missing best practices
+    (why here, how, cost)
+  - ranks at most 8 challenges by horizon (`now`, `10x`, `later`), zero is valid
+  - stops early on a PR with no runtime impact
+  - posts one review comment only after an explicit `post` command
+  - `SKILL.md`: stance, context map, volumes, lenses, report layout, validation and posting.
+
 ### Agents
 
 All agents are **read-only** by default: they report findings and suggested
@@ -118,6 +138,7 @@ Via the claudio marketplace:
 - Skill testing: ask "create evals for skill X" or "add golden examples to skill Y".
 - Writing style: `/writing-style`, or "apply my writing style" / "rewrite this without AI slop".
 - PR review: `/pr-review 123`, or "review PR 123" / "re-review the PR".
+- PR challenge: `/pr-challenge 123`, or "challenge PR 123" / "will this PR scale?".
 - Doc review: ask "review docs vs code" or "@doc-vs-code-review docs/architecture.md".
 - Best-practice review: invoke a single dimension (e.g.
   "@performance-review src/api" or "@security-review") or ask for several at
@@ -271,5 +292,7 @@ claudio-craft/
     pr-triage/
       SKILL.md
     pr-review/
+      SKILL.md
+    pr-challenge/
       SKILL.md
 ```

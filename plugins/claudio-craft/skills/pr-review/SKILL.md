@@ -6,8 +6,9 @@ description: >
   posted only after explicit user approval.
   Trigger for: "review PR 123", "review this pull request", "re-review the PR", "check the
   comments were addressed", "draft review comments for this PR".
-  NOT for addressing feedback on your own PR (use pr-triage), NOT for reviewing an uncommitted
-  local diff (use the *-review agents), and NOT for opening or updating a PR.
+  NOT for addressing feedback on your own PR (use pr-triage), NOT for an architect challenge on
+  scale, monitoring, or design (use pr-challenge), NOT for reviewing an uncommitted local diff
+  (use the *-review agents), and NOT for opening or updating a PR.
 ---
 
 # PR Review
