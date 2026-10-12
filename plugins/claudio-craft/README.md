@@ -37,14 +37,17 @@ Engineering craft plugin for Claude Code: TDD discipline, skill testing, doc/cod
 
 - **`pr-review`**: review someone else's pull request. Reads the code from a
   detached worktree at the PR head when a local clone exists (API otherwise),
-  checks each unresolved thread against it (addressed / not addressed / unclear),
+  writes the intent it understands from the diff before reading the description, then
+  scores the description against it (1 to 5, main gap), and drafts a comment asking for a
+  clearer description at 3 or below. Checks each unresolved thread
+  against the code (addressed / not addressed / unclear),
   reviews the diff, and drops findings an existing thread already covers (a resolved
   thread whose concern still holds is surfaced, not dropped). Asks before running code
   from a fork, and installs with lifecycle scripts disabled. Drafts severity-tagged findings
   (emoji severity, risk, impact, fix, repro when run). Posts inline
   comments and the summary as one review, plus thread replies, only after an
   explicit `post` command naming the approved items and a freshness check.
-  - `SKILL.md`: iron rule, code source, thread re-review, dedupe, report layout, validation and posting.
+  - `SKILL.md`: iron rule, code source, blind intent and description score, thread re-review, dedupe, report layout, validation and posting.
 
 - **`pr-challenge`**: challenge a pull request as an architect. Assumes the code
   is correct and asks whether it holds in production:

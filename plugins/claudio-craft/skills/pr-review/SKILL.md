@@ -40,11 +40,70 @@ comments the user approves before anything reaches GitHub.
 ### 1. Gather
 
 ```bash
-gh pr view <pr> -R <owner>/<repo> --json number,title,body,author,headRefOid,baseRefName,isCrossRepository,url,comments,reviews
+gh pr view <pr> -R <owner>/<repo> --json number,author,headRefOid,baseRefName,isCrossRepository,url
 gh pr diff <pr> -R <owner>/<repo>
 ```
 
 Record `headRefOid`: every file read and every inline comment is anchored to it.
+
+#### Intent
+
+Write the intent from the diff alone, before reading the title, the body, or any comment or
+thread: the description must not shape it.
+
+- 2 to 4 bullets: what the change does, and why it seems to do it.
+- No `path:line`, no evidence, no verdict: what was understood, nothing more.
+
+Then read the description:
+
+```bash
+gh pr view <pr> -R <owner>/<repo> --json title,body,comments,reviews
+```
+
+Score how well the title and body state that intent:
+
+| Score | Meaning |
+| --- | --- |
+| 5 | Same intent, nothing missing |
+| 4 | Same intent, minor omission |
+| 3 | Same goal, but a notable change is not mentioned, or a claim is not visible in the diff |
+| 2 | The described intent only partly matches the diff |
+| 1 | The description contradicts the diff or is unrelated to it |
+| n/a | Empty or template-only description |
+
+Below 5, name the main gap: the single biggest difference between the intent and the
+description, in one phrase (about 10 words). One gap only, the one that costs the most points.
+Name the difference, never a verdict on the author.
+
+| Gap kind | Example |
+| --- | --- |
+| Undeclared change | `also changes the default retry count, not mentioned` |
+| Missing work | `claims docs update, none in the diff` |
+| Different purpose | `described as a refactor, diff changes behavior` |
+| Scope mismatch | `describes the full feature, diff is only the API layer` |
+| Vague description | `says "fixes" without saying what` |
+
+The intent bullets and the score are for the user: never posted.
+
+At 3 or below, or n/a, draft a numbered comment asking the author to fix the description. At 4
+or 5, no draft: a minor omission is not worth a comment.
+
+- One sentence naming the gap, one asking for the update.
+- The understood intent as bullets, so the author can confirm or correct it.
+- No score: it reads as a grade.
+
+```markdown
+The description does not mention the default timeout change. Could you add it, so reviewers
+and release notes see it? My reading of the diff:
+
+- adds exponential backoff to the payment client
+- raises the default timeout
+```
+
+The draft is not a finding: the summary does not count it. Once approved, it goes into the
+review body (step 6).
+
+#### Review threads
 
 Review threads need GraphQL: REST does not expose whether a thread is resolved. Page until
 `hasNextPage` is false; never review a partial thread list.
@@ -155,9 +214,20 @@ One block per item, draft right under it. Numbered continuously across sections,
 addresses one draft. Only postable items get a number.
 
 ```markdown
+## Intent
+
+- Understood:
+  - <what the change does>
+  - <why it seems to do it>
+- Description match: 3/5
+- Main gap: <one phrase, omitted at 5, `no description` at n/a>
+
+1. description · <main gap>
+   Draft: "..."
+
 ## Open threads
 
-1. not addressed · <reviewer> · `path:line`
+2. not addressed · <reviewer> · `path:line`
    Evidence: `path:line` still ...
    Draft: "..."
 
@@ -167,7 +237,7 @@ Nothing to post:
 
 ## New findings
 
-2. 🟡 medium · `path:line` · <title>
+3. 🟡 medium · `path:line` · <title>
 
    🟡 medium: <title>
 
@@ -243,7 +313,7 @@ Freshness check, before posting: re-read `headRefOid` and re-run the thread quer
 `gh pr view --json comments,reviews`. If the head, the thread count, or the comment count changed
 since step 1, stop: re-gather, re-review what is new, and re-validate.
 
-Post the approved inline findings and the summary as one review with `event: COMMENT`: one
+Post the approved inline findings, description draft, and summary as one review with `event: COMMENT`: one
 notification for the author instead of one per comment. Write each payload to a JSON file in the
 scratchpad (never inline shell strings: multi-line text and backticks break quoting):
 
@@ -258,8 +328,8 @@ gh api repos/<owner>/<repo>/pulls/<pr>/reviews --input review.json
 gh api repos/<owner>/<repo>/pulls/<pr>/comments/<id>/replies --input reply-N.json
 ```
 
-`body` is required with `event: COMMENT`. When `summary` is not among the approved items, use
-`Inline comments at <headRefOid>` as the body.
+`body` is required with `event: COMMENT`. It is the approved summary, then the approved
+description draft. With neither approved, use `Inline comments at <headRefOid>`.
 
 Before posting, check that every inline `line` falls inside a hunk of `gh pr diff`. GitHub rejects
 the whole review if one line is outside the diff: nothing is posted, so report which comment and
@@ -268,6 +338,8 @@ ask whether to fold it into the summary. Report the URL of the review and of eac
 ## Red flags
 
 - Posting, replying, or resolving anything without an explicit `post` command this turn.
+- Writing the intent after reading the title, body, or comments.
+- Posting the description score.
 - Marking a thread "addressed" without reading the code at `headRefOid`.
 - Reading files from the user's working tree instead of a worktree at the PR head.
 - Reviewing a partial thread list because pagination stopped early.
