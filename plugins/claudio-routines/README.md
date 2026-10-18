@@ -14,7 +14,9 @@ Manage claude.ai routines (scheduled cloud agents) as code:
 |---|---|---|
 | `/routines` skill | `skills/routines/SKILL.md` | Export, diff, render, lint, sync, setup-script and run flows over Claude's `RemoteTrigger` tool |
 | `routines.py` | `skills/routines/scripts/routines.py` | File side of every flow: snapshots, render, diff, lint, update body, setup script |
-| Skeletons | `skills/routines/templates/` | Generic `prod-watch.md` prompt and `setup-env.sh` setup script, placeholders only |
+| Config tree | `runtime/config_tree.py` | Loads `config.json` and the routine files into one config, resolves each source's transport, and rejects secrets; the skill and the runtime share it |
+| Example | `example/` | A private directory to copy: `config.json` and one routine file per routine, placeholders only |
+| Skeletons | `skills/routines/templates/` | Generic `prod-watch.md` prompt, `setup-env.sh` setup script and the not-runnable `tribe-digest.md`, `chat-recap.md` and `weekly-status.md`, placeholders only |
 | State engine | `runtime/state.py` | Run window, item lifecycle, blind spots, mutes and run records for routine runs |
 | Collector | `runtime/collect.py` | Lists a routine's sources, checks the place's credentials and connectors, reads one source per command into a collection |
 | Evaluator | `runtime/evaluate.py` | `features` computes the judgment features, `judge` checks the model's judgment and merges it into the facts, `annotate` adds the analysis of new and escalated items |
@@ -25,6 +27,26 @@ Manage claude.ai routines (scheduled cloud agents) as code:
 | Provider adapters | `runtime/providers/` | One module per vendor, each with an `api` and an `mcp` transport; see [the providers README](runtime/providers/README.md) |
 
 The real templates and every value that names a company resource live in a private repository, never here.
+
+## Templates
+
+| Template | Kind | Runs |
+|---|---|---|
+| `prod-watch.md` | Routine prompt | Yes |
+| `setup-env.sh` | Environment setup script, printed by `setup-script` | Yes |
+| `tribe-digest.md` | Routine prompt skeleton | No, structure only |
+| `chat-recap.md` | Routine prompt skeleton | No, structure only |
+| `weekly-status.md` | Routine prompt skeleton | No, structure only |
+
+A template is marked not runnable when its first line is exactly `<!-- not runnable -->`, in a public skeleton or a private template. A leading byte order mark and one trailing carriage return are ignored.
+- `render` keeps the marker line and warns, naming the template.
+- `render --runnable` and `body` refuse it with exit 2, and `sync` stops on it, so it is never pushed to a live routine. `/routines run` renders with `--runnable`.
+- `diff` and `lint` treat it like any other template.
+- `lint` reports a first line that is an HTML comment holding `not runnable` in another case or spacing as the finding `marker`, since it would leave the template runnable.
+
+`lint --private` also prints two warnings on stderr, naming keys and never values, and leaves the exit code unchanged:
+- `literal-value`: a template line holds, as case-sensitive text, a string value of 8 characters or more from the shared and own `values` of a routine that renders it. Use the placeholder.
+- `repeated-value`: two routines set the same value key to the same value. Move it to the shared `values`.
 
 ## Prerequisites
 
@@ -40,7 +62,9 @@ The real templates and every value that names a company resource live in a priva
 
 1. Create the private repository, for example `gh repo create <owner>/claudio-private --private --clone`.
 2. Export its path in your shell profile: `export CLAUDIO_PRIVATE_DIR=<path to the clone>`.
-3. Copy `config.example.json` to `$CLAUDIO_PRIVATE_DIR/config.json` and fill in the values.
+3. Copy the contents of the plugin's `example/` directory into `$CLAUDIO_PRIVATE_DIR`: `config.json` and `config/routines/`. Fill in every `<placeholder>`.
+   - Name each routine file after the live routine's slug, as `export` prints it, and set its `id`.
+   - Delete the files of the routines you do not track.
 4. Add your templates under `$CLAUDIO_PRIVATE_DIR/templates/<template>.md`. A routine without a private template renders from the public skeleton of the same name.
 5. Run `/claudio-routines:routines export`, then `/claudio-routines:routines diff` until each configured routine prints `in sync`.
 6. For local runs, run `/claudio-routines:routines setup-script --place local` and run its output.
@@ -67,6 +91,24 @@ Exit codes of `routines.py`, `state.py`, `collect.py`, `evaluate.py` and `digest
 
 ## Config reference
 
+The private directory holds a shared file and one file per routine:
+
+```text
+$CLAUDIO_PRIVATE_DIR/
+  config.json                  timezone, runtime, places, providers, values
+  config/routines/<slug>.json  one routine
+  templates/<template>.md      private templates
+  routines/                    snapshots written by export
+```
+
+Routine files and routines inline under `routines` in `config.json` are both accepted, and the skill and the runtime read the same config from them.
+- A routine file holds the keys of one routine, listed below, and never `timezone`, `runtime`, `places` or `providers`.
+- A slug set both inline and in a routine file fails the load, and so do two routines with one `id`.
+- A `.json` file of `config/routines/` whose name is not a slug (lowercase letters, digits and hyphens) fails the load; a file without the `.json` extension is ignored.
+- A file that is not UTF-8 JSON, or not an object, fails the load.
+- A runtime script reads `config.json` and the file of its own routine only, so another routine's broken file never stops a run.
+- Error messages label a key of a routine file as `config/routines/<slug>.json: <path>`, and never print a config value.
+
 `$CLAUDIO_PRIVATE_DIR/config.json`:
 
 | Key | Meaning |
@@ -82,21 +124,39 @@ Exit codes of `routines.py`, `state.py`, `collect.py`, `evaluate.py` and `digest
 | `providers.<name>.adapter` | Module name of its adapter under `runtime/providers/` |
 | `providers.<name>.api.base_url` | HTTPS base URL of the provider API, with no user info, query or fragment: the only host the adapter calls |
 | `providers.<name>.api.credentials` | Name of the environment variable of each credential, never its value |
-| `providers.<name>.mcp.connectors.<place>` | Name of the provider's connector in that place |
+| `providers.<name>.mcp.connectors.<place>` | Name of the provider's connector in that place; a provider read only through a connector sets no `api` block |
 | `providers.<name>.links_base` | Optional HTTPS base of the provider's web UI, for record links; set it for a provider read only through a connector |
-| `values` | Render-time values shared by every routine |
-| `routines.<slug>` | One tracked routine; `<slug>` is the live routine name in lowercase with hyphens, as `export` prints it |
-| `routines.<slug>.id` | Routine id, from the export |
-| `routines.<slug>.template` | Template name, without `.md` |
-| `routines.<slug>.cron` | Cron expression pushed by sync |
-| `routines.<slug>.values` | Values of that routine only, applied over `values` |
-| `routines.<slug>.sources.<source>` | One source of the routine; `<source>` matches `^[a-z][a-z0-9-]*$` and names its collection file |
-| `routines.<slug>.sources.<source>.provider` | A key of `providers` |
-| `routines.<slug>.sources.<source>.transport.cloud` | `api` or `mcp`: how cloud runs read the source |
-| `routines.<slug>.sources.<source>.transport.local` | `api` or `mcp`: how local runs read the source |
-| `routines.<slug>.query_pack` | Entries the evaluator turns into features, each with a prose rule (see below) |
-| `routines.<slug>.rules` | Routine-wide judgment rules, for example flapping, discovered monitors and No Data: a list of texts of at most 500 characters |
-| `routines.<slug>.models` | Model names of the run, copied into the facts |
+| `providers.<name>.transport.<place>` | Optional default transport of every source of the provider in that place: `api` or `mcp` |
+| `values` | Render-time values shared by every routine, for example one chat channel used by several routines |
+| `routines` | Optional object of inline routines, keyed by slug |
+
+A routine is one file, `config/routines/<slug>.json`, or one entry `routines.<slug>` of `config.json`. `<slug>` is the live routine name in lowercase with hyphens, as `export` prints it. The keys below are relative to the routine:
+
+| Key | Meaning |
+|---|---|
+| `id` | Routine id, from the export; unique among the routines |
+| `template` | Template name, without `.md` |
+| `cron` | Cron expression pushed by sync |
+| `values` | Values of that routine only, applied over the shared `values` |
+| `sources.<source>` | One source of the routine; `<source>` matches `^[a-z][a-z0-9-]*$` and names its collection file |
+| `sources.<source>.provider` | A key of `providers` |
+| `sources.<source>.transport.cloud` | Optional `api` or `mcp`: how cloud runs read the source |
+| `sources.<source>.transport.local` | Optional `api` or `mcp`: how local runs read the source |
+| `query_pack` | Entries the evaluator turns into features, each with a prose rule (see below) |
+| `rules` | Routine-wide judgment rules, for example flapping, discovered monitors and No Data: a list of texts of at most 500 characters |
+| `models` | Model names of the run, copied into the facts |
+
+Provider default transport:
+- A source takes the transport of its provider for each place: `providers.<name>.transport.<place>`.
+- A source's own `transport.<place>` overrides the default for that place only, so a source that sets `transport.local: mcp` still takes the provider's `cloud` default.
+- A place that resolves to no transport, a place other than `cloud` or `local`, and a value other than `api` or `mcp` fail the load, naming the key path.
+- Every command past the loader reads one resolved transport per source and place.
+
+Secret guard:
+- The loader scans `config.json` and each routine file it reads, and fails the load on a secret.
+- Credentials and secret-named keys hold environment variable names. A key named `password`, `passwd`, `secret`, `token`, `api_key`, `apikey`, `app_key` or `private_key`, or ending in `_` and one of them once camelCase is split and dashes become underscores, holds a name matching `^[A-Z][A-Z0-9_]*$` (rule `secret-key`).
+- A string or a key shaped like a known token or a private key header fails the load wherever it sits, in `values` and source options included (rule `token`).
+- A message names the file, the key path and the rule, and never prints a value.
 
 A source also holds the options of its provider's role:
 
@@ -145,7 +205,7 @@ Templates use `{{dotted.key}}` placeholders; `\{{` renders a literal `{{`. Rende
 
 ## Collectors
 
-Each source has one transport per place, set in `routines.<slug>.sources.<source>.transport`:
+Each source has one transport per place, from its own `transport` or its provider's default:
 - `api`: `collect.py fetch` calls the provider's HTTPS API from the place that runs the routine.
 - `mcp`: a relay loop.
   - `collect.py plan` writes the next connector calls.
@@ -238,7 +298,8 @@ Analysis text rules, checked by `evaluate.py annotate` before the state stores t
   - The run pushes its run record and leaves the state and its cursors unchanged, so a change never posted is never consumed.
 - With `--post`, the digest reaches the chat channel and the state moves, as in a cloud run.
 - `--since T` runs an explicit window from `T`, which reports only.
-- The run reads the working tree's `config.json`; the run record marks uncommitted config changes (`config_dirty`).
+- The run reads the working tree's `config.json` and the routine's file `config/routines/<slug>.json`.
+- `config_dirty` in the run record covers both files: it is true when either holds uncommitted changes, an untracked routine file included.
 - A local run with `--post` and a cloud run at the same time both post; the second push is rejected and reports `state not saved`, and the next run collects the window again.
 
 ## Runtime

@@ -1,3 +1,4 @@
+import importlib
 import os
 import subprocess
 import sys
@@ -755,6 +756,23 @@ class AllowlistTest(unittest.TestCase):
     def test_missing_allow_file_exits_two(self):
         missing = str(self.repo.base / "missing-allow.txt")
         self.assertEqual(self.repo.scan("--tree", "--allow", missing).returncode, 2)
+
+
+RUNTIME = Path(__file__).resolve().parents[1] / "plugins" / "claudio-routines" / "runtime"
+
+
+def runtime_token_pattern():
+    sys.path.insert(0, str(RUNTIME))
+    try:
+        return importlib.import_module("config_tree").TOKEN.pattern
+    finally:
+        sys.path.remove(str(RUNTIME))
+
+
+class RuntimeTokenParityTest(unittest.TestCase):
+    def test_config_guard_rejects_the_token_shapes_of_the_leak_check(self):
+        rule = next(rule for rule in leak_check.GENERIC_RULES if rule.name == "token")
+        self.assertEqual(runtime_token_pattern(), rule.pattern.pattern)
 
 
 if __name__ == "__main__":

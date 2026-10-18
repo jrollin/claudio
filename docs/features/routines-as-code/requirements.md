@@ -6,6 +6,7 @@ Puts the owner's claude.ai routines (scheduled cloud agents) under version contr
 
 - A public plugin in this repository ships the render and diff scripts, generic prompt skeletons, a runtime state engine and a leak guard.
 - A private repository holds the real prompt templates and the render-time values that name company resources.
+- The private config holds the shared settings once, in `config.json`, and the routines, one file each.
 - A skill renders, diffs and pushes routine prompts.
 - The state engine computes the lifecycle of the items a routine run tracks.
 - Collectors read each source through the provider's API or through a claude.ai connector, chosen per source and per place, so a routine runs the same way locally and in the cloud.
@@ -20,6 +21,8 @@ Puts the owner's claude.ai routines (scheduled cloud agents) under version contr
 - Private identifiers can reach a public repository, and git history keeps them.
 - Data collection is prose that tells the model which connector tools to call, so a routine runs only inside a cloud session.
 - Fixed thresholds miss what the model catches: a replay of one live Prod watch window matched 10 of its 24 open items, missing flapping monitors, monitors outside the pack and growth-based rules.
+- One config file holds every routine, and each source repeats its provider's transport.
+- Only Prod watch has a template: the other 4 live prompts have no history, diff or lint.
 **Why** it matters:
 - Drift between copies makes routines skip steps.
 - Re-derived logic costs tokens on every run.
@@ -32,6 +35,7 @@ Puts the owner's claude.ai routines (scheduled cloud agents) under version contr
 - For the same window and the same provider data, a Prod watch run gives the same features locally and in the cloud.
 - A replay of a live Prod watch window opens the same items as the live routine, apart from states that changed between the two reads.
 - Every value of a digest item, and every value a measured claim cites, traces to a feature.
+- A provider's settings appear once in the private config, whatever the number of routines that read it.
 
 ## User Stories
 
@@ -205,7 +209,7 @@ WHEN a run collects one of its sources
 THE collector reads the source for the run window, through the transport the private config sets for that source and place, and writes one collection file in the schema of the source's role
 
 **Acceptance Criteria:**
-- [ ] The private config sets, per source of a routine, its role, its provider and one transport (`api` or `mcp`) for each place (`local`, `cloud`), per BR-24 *(AC-13.1)*
+- [ ] The private config sets, per source of a routine, its role, its provider and one transport (`api` or `mcp`) for each place (`local`, `cloud`), on the source or through its provider's default, per BR-24 *(AC-13.1)*
 - [ ] The two transports of one provider give byte-identical records and cursor from the same provider data *(AC-13.2)*
 - [ ] A source that cannot be read is marked not read, with a reason naming the missing variable, the HTTP status, the host or the tool, and the other sources are still collected *(AC-13.3)*
 - [ ] A source read only in part is marked not read, per BR-28 *(AC-13.4)*
@@ -229,6 +233,9 @@ THE provider adapter calls the provider's HTTPS API with the credentials held in
 - [ ] Each request has a bounded timeout, and a rate-limit or server error is retried once, after the delay the provider asks for, within a cap *(AC-14.4)*
 - [ ] A paginated read follows the provider's cursor up to a page cap, and reaching the cap marks the source partial *(AC-14.5)*
 - [ ] The providers README lists, per provider, the credential variables, the read-only scope to create, and where each place reads the variables from *(AC-14.6)*
+- [ ] A config key named like a secret (`password`, `secret`, `token`, `api_key`, `app_key`, `private_key`, in any case, camelCase or dashed form) that holds anything but an environment variable name fails the load, naming the key path and never the value, per BR-25 *(AC-14.7)*
+- [ ] A config string or key shaped like a known token or private key fails the load, naming the key path and the rule and never the value, per BR-25 *(AC-14.8)*
+- [ ] A source reads through `api` with credentials named by environment variables, or through `mcp` with no `api` settings at all, per place *(AC-14.9)*
 
 ### Relay a source through a connector {#US-15}
 
@@ -353,6 +360,81 @@ THE model writes its risk, reason, mitigation leads and next action, and the eng
 - [ ] On a report-only run, the analysis is shown in the digest and not stored, per BR-22 *(AC-22.6)*
 - [ ] The digest shows the analysis of each new and escalated item, rendered by a script, per BR-42 *(AC-22.7)*
 
+### Split the private config per routine {#US-23}
+
+WHEN a script loads the private config
+THE loader reads the shared `config.json` and the routine files under `config/routines/`, and merges them into one config
+
+**Acceptance Criteria:**
+- [ ] `config.json` holds the timezone, the runtime pin, the places, the providers and the shared values, per BR-44 *(AC-23.1)*
+- [ ] `config/routines/<slug>.json` holds one routine, and its file name is the slug *(AC-23.2)*
+- [ ] `config.json` may also hold routines under `routines`, and both forms load the same way *(AC-23.3)*
+- [ ] A config with neither `routines` nor a routine file has no routine *(AC-23.4)*
+- [ ] `diff` reports `untracked` for a live routine with neither a routine file nor a `routines` entry *(AC-23.5)*
+- [ ] A slug defined both under `routines` and as a routine file fails the load, per BR-43 *(AC-23.6)*
+- [ ] Two routines with the same `id` fail the skill's load, per BR-47 *(AC-23.7)*
+- [ ] A routine file holding `timezone`, `runtime`, `places` or `providers` fails the load, per BR-44 *(AC-23.8)*
+- [ ] A routine file that is not JSON, or not an object, fails the load *(AC-23.9)*
+- [ ] A file of `config/routines/` ending in `.json` whose name does not match `^[a-z0-9-]+\.json$` fails the load *(AC-23.10)*
+- [ ] Files of `config/routines/` that do not end in `.json` are ignored *(AC-23.11)*
+- [ ] Every load error names the file and the key path inside it, and a clash names both paths *(AC-23.12)*
+- [ ] `--config` keeps naming `config.json`, and the runtime reads the routine files from the `config/routines/` directory of the folder that holds `config.json` *(AC-23.13)*
+- [ ] The skill's `render`, `diff`, `lint`, `body` and `sync` load every routine file, and an invalid file fails them *(AC-23.14)*
+- [ ] A runtime command for one routine reads `config.json` and that routine's file only: an invalid file of another routine does not stop it *(AC-23.15)*
+- [ ] The skill and the runtime give the same merged routine from the same files *(AC-23.16)*
+- [ ] A routine's values override the shared values of the same key *(AC-23.17)*
+- [ ] `config_dirty` is true when `config.json` or the routine's file has uncommitted changes, an untracked file included *(AC-23.18)*
+- [ ] `export` writes only under `routines/`, never under `config/` *(AC-23.19)*
+- [ ] The plugin's example config ships the split layout: a shared `config.json` and one routine file *(AC-23.20)*
+
+### Default a source's transport to its provider's {#US-24}
+
+WHEN a source sets no transport for a place
+THE loader resolves it to the default transport its provider sets for that place
+
+**Acceptance Criteria:**
+- [ ] A provider may set `transport`, with one value per place *(AC-24.1)*
+- [ ] A transport value other than `api` or `mcp`, or a place other than `local` or `cloud`, fails the load with its key path, on a provider as on a source *(AC-24.2)*
+- [ ] A source's own transport for a place wins over its provider's default, per BR-24 *(AC-24.3)*
+- [ ] A source may set the transport of one place and take its provider's default for the other *(AC-24.4)*
+- [ ] A source that resolves no transport for a place fails the load, naming the source's key path *(AC-24.5)*
+- [ ] A resolved transport needs what US-13 and US-14 require: the provider's `api` settings for `api`, a connector for that place for `mcp` *(AC-24.6)*
+- [ ] Every command, collection and run record sees the resolved transport only *(AC-24.7)*
+
+### Mirror every live routine {#US-25}
+
+WHEN the owner renders, diffs, lints or syncs any of the 5 live routines
+THE skill renders it from its private template and routine file, and the result equals the live prompt and cron
+
+**Acceptance Criteria:**
+- [ ] Each live routine has a routine file and a private template *(AC-25.1)*
+- [ ] After an export, `/routines diff` prints `in sync` for all 5, prompt and cron *(AC-25.2)*
+- [ ] Ids, channels, pages, user ids, logins, organizations and the owner's identity in the 4 new templates are render-time values, never literal text *(AC-25.3)*
+- [ ] The private lint warns when a template holds, as literal text, a configured value of 8 characters or more *(AC-25.4)*
+- [ ] A value that several routines use is one shared value, per BR-45 *(AC-25.5)*
+- [ ] The private lint warns when two routines define the same value key with the same value *(AC-25.6)*
+- [ ] Two routines whose prompts differ only by values render from one template with per-routine values: the two tribe digests share one template *(AC-25.7)*
+- [ ] A routine without `sources` renders, diffs, lints and syncs *(AC-25.8)*
+- [ ] The runtime refuses a routine whose `sources` is absent or empty, naming the key path *(AC-25.9)*
+- [ ] The private lint passes on all 5 routines and warns of no unused shared value *(AC-25.10)*
+
+### Ship skeletons for the other routines {#US-26}
+
+WHEN a user of the public plugin has no private template for a tribe digest, a chat recap or a weekly status
+THE skill renders the plugin's structure-only skeleton for it, marked not runnable
+
+**Acceptance Criteria:**
+- [ ] Three skeletons ship: tribe digest, chat recap and weekly status *(AC-26.1)*
+- [ ] Each skeleton lists its steps, its sources by role and its outputs, with placeholders only, per BR-8 and BR-30 *(AC-26.2)*
+- [ ] A template is marked not runnable when its first line is exactly `<!-- not runnable -->`, whether it is a public skeleton or a private template *(AC-26.3)*
+- [ ] The 3 skeletons carry the marker *(AC-26.4)*
+- [ ] Rendering a marked template keeps the marker line and prints a warning naming the template *(AC-26.5)*
+- [ ] `diff` and `lint` treat a marked template like any other *(AC-26.6)*
+- [ ] `sync` refuses a marked template before any API call, and `body` before printing a body, naming the template, per BR-46 *(AC-26.7)*
+- [ ] `/routines run` refuses a marked template before collecting, naming the template, per BR-46 *(AC-26.8)*
+- [ ] The skeletons pass the public lint *(AC-26.9)*
+- [ ] The plugin README lists every skeleton and says whether it runs *(AC-26.10)*
+
 ## Business Rules
 
 - No private name, identifier, URL host or secret is committed to this public repository *(BR-1)*
@@ -378,7 +460,7 @@ THE model writes its risk, reason, mitigation leads and next action, and the eng
 - A known gap is retried on the first run of each day, and a retry that reads the source removes it *(BR-21)*
 - A run with an explicit start time, or a local run without `--post`, reports only: it never advances the state or its cursors *(BR-22)*
 - Run state and run records live only in the private repository, on the `claude/state` branch *(BR-23)*
-- Each source has one transport per place, set in the private config; a failed read never falls back to the other transport *(BR-24)*
+- Each source has one transport per place, its own or else its provider's default, and a failed read never falls back to the other transport *(BR-24)*
 - Credentials live only in the environment variables of the place that runs the collector, never in config, templates, repositories, facts, run records or state *(BR-25)*
 - A local run posts its digest to the chat channel only when the owner passes `--post` *(BR-26)*
 - State moves only by fast-forward pushes to `claude/state`; a rejected push is reported, never forced or merged *(BR-27)*
@@ -397,14 +479,21 @@ THE model writes its risk, reason, mitigation leads and next action, and the eng
 - Discovery only opens items: a discovery read that fails or stops at its page cap adds a blind spot to the monitors source, and the source's by-id reads still count as read *(BR-40)*
 - A mute on an entry key also covers the group keys of that entry *(BR-41)*
 - A script renders the digest text from the change summary; the model posts that text unchanged and writes none of it *(BR-42)*
+- Each routine is defined once: under `routines` in `config.json` or in its own routine file, never both *(BR-43)*
+- The timezone, the runtime pin, the places and the providers are defined once, in `config.json` *(BR-44)*
+- A value that several routines use is defined once, in the shared values of `config.json` *(BR-45)*
+- A template marked not runnable is never pushed to a live routine, nor run *(BR-46)*
+- A live routine id belongs to one configured routine *(BR-47)*
 
 ## Out of Scope
 
 - Digest structure check: a later spec
 - Scheduling local runs (cron, launchd): `/routines run` runs on demand
-- The tribe digests: the next increment, with an issue tracker role, chat thread replies, 7-day and 30-day trend windows, changed documents, a digest page and a chat message as outputs
+- Running the tribe digests on the runtime: the next increment, with an issue tracker role, chat thread replies, 7-day and 30-day trend windows, changed documents, a digest page and a chat message as outputs
   - Its acceptance is content parity with two reference digests kept in the private repository: over the same window, the same warnings, severities, urgencies, decisions, checks and blind spots, apart from data that changed since; layout and output target are free
-- The chat recap and weekly status routines: after the tribe digests, reusing their collectors
+- Running the chat recap and weekly status on the runtime: after the tribe digests, reusing their collectors
+- Changing the 4 mirrored live prompts: the mirrors reproduce them as they are
+- A shared source catalog: each routine defines its own sources and names providers
 - Drafting issues or tracker comments from items
 - Letting the model decide whether to post: the post rule stays in the scripts
 - Creating or deleting routines: only existing routines are exported and updated
@@ -427,3 +516,9 @@ None open. Settled before design:
 - Analysis: stored in the item and reused until it escalates (owner, 2026-10-18).
 - A muted change gets no analysis, and the item keeps its earlier one (owner, 2026-10-18).
 - Digest text: rendered by a script from the summary, posted unchanged by the model (owner, 2026-10-18).
+- Config split: shared `config.json` plus one file per routine, providers defined once (owner, 2026-10-18).
+- Shared transport: a provider default per place, with a per-source override, and no source catalog yet (owner, 2026-10-18).
+- Public skeletons for the other routines: structure only, marked not runnable (owner, 2026-10-18).
+- Routine forms: inline under `routines` and one file per routine both load, so single-file configs keep working.
+- Values: a routine's value overrides the shared one of the same key, and the lint warns on a value repeated across routines.
+- Not runnable: an exact first-line marker, refused by `sync`, `body` and `/routines run`.

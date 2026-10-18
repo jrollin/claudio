@@ -53,8 +53,9 @@ class ListOf:
 
 
 class MapOf:
-    def __init__(self, spec):
+    def __init__(self, spec, non_empty=False):
         self.spec = spec
+        self.non_empty = non_empty
 
 
 def _matches(pattern):
@@ -256,6 +257,8 @@ def _conform(value, spec, path, error, exact):
     elif isinstance(spec, MapOf):
         if not isinstance(value, dict):
             raise error(f"{path}: must be a mapping")
+        if spec.non_empty and not value:
+            raise error(f"{path}: must be a non-empty mapping")
         for key in sorted(value):
             _conform(value[key], spec.spec, join(path, key), error, exact)
     else:
@@ -290,7 +293,7 @@ def validate_config(config, routine, place, role_of=None):
     providers = _config_field(config, "", "providers", {})
     routines = _config_field(config, "", "routines", {})
     routine_path = f"routines.{routine}"
-    sources = _config_field(_config_field(routines, "routines", routine, {}), routine_path, "sources", MapOf({}))
+    sources = _config_field(_config_field(routines, "routines", routine, {}), routine_path, "sources", MapOf({}, non_empty=True))
     for name in sorted(sources):
         if SOURCE_NAME.fullmatch(name) is None:
             raise ConfigError(f"{routine_path}.sources.{name}: the source name must match ^[a-z][a-z0-9-]*$")

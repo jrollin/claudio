@@ -1,0 +1,5 @@
+{
+  "id": "<weekly-status-routine-id>",
+  "template": "weekly-status",
+  "cron": "CRON_TZ=Europe/Paris 0 16 * * 5"
+}

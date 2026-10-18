@@ -1,5 +1,7 @@
+import os
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import config_tree
 import providers
 import roles
 import state
@@ -20,8 +22,12 @@ def load_zone(name, reason):
         raise state.InputError(reason) from error
 
 
+def config_directory(path):
+    return os.path.dirname(os.path.abspath(path))
+
+
 def read_routine(path, routine, place, role_of):
-    config = state.load(path, "config", accept_any)
+    config = config_tree.load(path, routine=routine)
     roles.validate_config(config, routine, place, role_of=role_of)
     chosen = config["routines"][routine]
     sources = {

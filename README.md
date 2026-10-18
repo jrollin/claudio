@@ -69,6 +69,7 @@ This repository hosts several plugins, each shipped independently from the `clau
 | `runtime/digest.py` | Digest: renders the posted message from the change summary, the next state and the base file, so the model posts it unchanged and writes none of it |
 | `runtime/features.py` | Features, base and rules files: the named numbers the model judges and cites |
 | `runtime/judgment.py` | Judgment and analysis checks: every cited value must match the features |
+| `runtime/config_tree.py` | Config tree: loads `config.json` and the routine files, resolves transports, rejects secrets |
 | `runtime/roles.py` | Role record schemas, collector config and query pack validation |
 | `runtime/providers/` | One adapter per vendor, per role, for both transports; credentials and hosts in its README |
 

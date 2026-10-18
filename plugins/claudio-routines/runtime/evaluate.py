@@ -6,11 +6,12 @@ import subprocess
 import sys
 from datetime import date
 
+import config_tree
 import features
 import judgment
 import roles
 import state
-from config import accept_any, adapter_role, load_zone, read_routine
+from config import accept_any, adapter_role, config_directory, load_zone, read_routine
 
 KIND_RECORDS = {"monitors": {"monitors", "events"}, "metrics": {"metrics"}}
 MUTES_HEADING = "Mutes"
@@ -39,14 +40,14 @@ def load_config(path, routine, place, role_of):
     try:
         return read_routine(path, routine, place, role_of)
     except roles.ConfigError as error:
-        raise state.InputError(f"config: {error}") from error
+        raise state.InputError(config_tree.locate(f"config: {error}", config_directory(path))) from error
 
 
-def check_pack(routine, sources, slug):
+def check_pack(routine, sources, slug, path):
     try:
         roles.validate_pack(routine.get("query_pack"), sources, routine=slug, rules=routine.get("rules", []))
     except roles.PackError as error:
-        raise state.Rejected(f"config: {error}") from error
+        raise state.Rejected(config_tree.locate(f"config: {error}", config_directory(path))) from error
 
 
 def config_zone(config):
@@ -157,9 +158,10 @@ def page_facts(sources, collections):
 
 
 def run_context(args, collections, git):
-    directory = os.path.dirname(os.path.abspath(args.config))
+    directory = config_directory(args.config)
     commit = git(directory, ["rev-parse", "HEAD"])
-    status = git(directory, ["status", "--porcelain", "--", os.path.basename(args.config)])
+    tracked = [os.path.basename(args.config), config_tree.routine_file(args.routine)]
+    status = git(directory, ["status", "--porcelain", "--", *[path for path in tracked if path is not None]])
     return {
         "place": args.place,
         "runtime": args.runtime,
@@ -174,7 +176,7 @@ def run_context(args, collections, git):
 
 def run_features(args, role_of, git):
     config, routine, sources = load_config(args.config, args.routine, args.place, role_of)
-    check_pack(routine, sources, args.routine)
+    check_pack(routine, sources, args.routine, args.config)
     zone = config_zone(config)
     stored = state.load(args.state, "state", state.check_state)
     window = state.load(args.window, "window", check_window)

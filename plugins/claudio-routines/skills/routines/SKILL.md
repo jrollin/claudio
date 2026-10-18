@@ -49,6 +49,7 @@ Run `R render <slug> [--place cloud|local] [--post]`.
 - The rendered prompt posts its digest for the cloud place, and for the local place only with `--post`.
 - Exit 2 names the unresolved placeholder and its template.
 - Warnings name values the routine's template does not use.
+- A template whose first line is exactly `<!-- not runnable -->` is marked not runnable. Render keeps that line and warns, naming the template. `--runnable` exits 2 on it, with nothing on stdout and no `--out` file written.
 
 ## Lint
 
@@ -57,23 +58,29 @@ Run `R render <slug> [--place cloud|local] [--post]`.
   - It fails a provider name (`provider-name`: a module name under `runtime/providers/`) in the skeletons, the plugin README and this file.
 - Private templates: `R lint --private <path> [--claudio <checkout>]`. It checks every `state.py`, `collect.py`, `evaluate.py` and `digest.py` command and flag against the runtime at the pinned tag, so the tag must exist in a local claudio checkout. Pass `--claudio` when the plugin runs from the plugin cache.
 - Each finding prints `path:line:rule`.
+- `marker`: the first line is an HTML comment holding `not runnable` but is not exactly `<!-- not runnable -->`, so the template would stay runnable. Both lints report it at line 1.
+- `lint --private` also prints warnings on stderr, naming keys and never values. They leave the exit code unchanged:
+  - `literal-value`: a template holds the value of a routine key as literal text. Use the placeholder.
+  - `repeated-value`: two routines set the same key to the same value. Move it to the shared values.
 
 ## Sync
 
 Pushes one routine's rendered prompt and cron. Never push without the owner's explicit approval of the diff shown in this session.
 
-1. Run Export, then `R diff <slug>`.
+1. Make a directory with `mktemp -d`, outside any repository, and run `R render <slug> --runnable --out <dir>/prompt.md`. Exit 2 stops the sync with its message, before any API call: the template is marked not runnable, or the render failed.
+2. Run Export, then `R diff <slug>`.
    - Exit 0: report `in sync` and stop.
-2. Generate one UUID (`python3 -c "import uuid; print(uuid.uuid4())"`) and run `R body <slug> --uuid <uuid> > <dir>/before.json`, in a `mktemp -d` directory outside any repository. It prints `{"trigger_id": ..., "body": ...}`, built from the fresh snapshot, so connectors, environment and tools stay as they are live.
-3. Show the full diff and ask the owner to approve the push for this routine. Wait for an explicit approval. Anything else stops the sync with nothing pushed.
-4. After the approval, run `R body <slug> --uuid <uuid> > <dir>/after.json` with the same UUID and compare the body built before and after approval with `cmp <dir>/before.json <dir>/after.json`.
+3. Generate one UUID (`python3 -c "import uuid; print(uuid.uuid4())"`) and run `R body <slug> --uuid <uuid> > <dir>/before.json`, in the same directory. It prints `{"trigger_id": ..., "body": ...}`, built from the fresh snapshot, so connectors, environment and tools stay as they are live.
+   - `body` exits 2 on a template marked not runnable: stop the sync with its message.
+4. Show the full diff and ask the owner to approve the push for this routine. Wait for an explicit approval. Anything else stops the sync with nothing pushed.
+5. After the approval, run `R body <slug> --uuid <uuid> > <dir>/after.json` with the same UUID and compare the body built before and after approval with `cmp <dir>/before.json <dir>/after.json`.
    - Different: a template, the config or the snapshot changed during the wait. Stop with nothing pushed and run Sync again.
-5. Call `RemoteTrigger` with `action: "update"`, the `trigger_id` and the `body` of `after.json`, unchanged.
+6. Call `RemoteTrigger` with `action: "update"`, the `trigger_id` and the `body` of `after.json`, unchanged.
    - An HTTP error stops the sync for this routine and leaves the others untouched. Report the status.
-6. Run Export again, then `R diff <slug>`.
+7. Run Export again, then `R diff <slug>`.
    - Exit 0: the sync succeeded.
    - Exit 1: the sync failed. Show the residual diff.
-7. Report the routine link from the update result and the next run time.
+8. Report the routine link from the update result and the next run time.
 
 ## Setup script
 
@@ -88,11 +95,11 @@ Pushes one routine's rendered prompt and cron. Never push without the owner's ex
 Runs one routine in this session for the local place, with the same template, state branch and runtime as a cloud run. Without `--post`, the run reports only: it pushes its run record, leaves the state unchanged and prints the digest.
 
 1. Run `R check-private`. On exit 2, stop and show its message.
-2. Read `places.local.runtime_dir`, `places.local.state_dir` and `runtime.sha` from the private `config.json`, then run `git -C <runtime_dir> rev-parse HEAD` and `git -C <runtime_dir> status --porcelain --ignored`.
+2. Read `places.local.runtime_dir`, `places.local.state_dir` and `runtime.sha` from the private `config.json` (a routine may sit in `config/routines/<slug>.json` beside it), then run `git -C <runtime_dir> rev-parse HEAD` and `git -C <runtime_dir> status --porcelain --ignored`.
    - `rev-parse` fails or prints another hash than `runtime.sha`, or `status` prints anything: tell the owner to run `R setup-script --place local` and run its output, then stop.
    - `places.local.state_dir` does not resolve to the private repository path of the Preconditions (compare the `realpath` of both): tell the owner to set `places.local.state_dir` to that path, then stop.
-3. Render the local place into a file of a `mktemp -d` directory outside any repository: `R render <slug> --place local --out <dir>/prompt.md`, with `--post` added only when the owner passed it.
-   - Exit 2 names the problem: stop and report it.
+3. Render the local place into a file of a `mktemp -d` directory outside any repository: `R render <slug> --place local --runnable --out <dir>/prompt.md`, with `--post` added only when the owner passed it.
+   - Exit 2 names the problem, including a template marked not runnable: stop and report it.
 4. Run `python3 -B <runtime_dir>/plugins/claudio-routines/runtime/collect.py check-env --config <state_dir>/config.json --routine <slug> --place local`.
    - Each `missing <source> <variable>` line: tell the owner which variable is missing and which source it leaves not read.
    - Each `connector <source> <connector>` line: check that this session lists a tool from that connector, and name the missing ones.

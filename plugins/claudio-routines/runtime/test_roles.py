@@ -367,6 +367,11 @@ class ValidateConfigTest(ConfigCase):
         del config["routines"][ROUTINE]["sources"]
         self.assert_config_error(config, "routines.prod-watch.sources")
 
+    def test_rejects_a_routine_with_empty_sources(self):
+        config = make_config()
+        config["routines"][ROUTINE]["sources"] = {}
+        self.assert_config_error(config, "routines.prod-watch.sources")
+
     def test_accepts_a_source_name_with_digits_and_hyphens(self):
         config = make_config()
         routine_sources(config)["chat-2"] = routine_sources(config).pop("chat")

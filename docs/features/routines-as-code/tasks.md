@@ -3,7 +3,7 @@
 ---
 feature: routines-as-code
 spec_version: 1
-total_tasks: 45
+total_tasks: 52
 phases:
   - name: "Leak guard"
     tasks: [T-1, T-2, T-3]
@@ -25,6 +25,8 @@ phases:
     tasks: [T-32, T-33]
   - name: "Model judgment"
     tasks: [T-34, T-35, T-36, T-37, T-38, T-39, T-40, T-41, T-42, T-43, T-44, T-45]
+  - name: "Config split and mirrors"
+    tasks: [T-46, T-47, T-48, T-49, T-50, T-51, T-52]
 depends_on: []
 ---
 
@@ -466,6 +468,110 @@ Runs in a local session with the observability and document store connectors; no
 - **Rules**: BR-36, BR-40
 - **Status**: Complete (replay 2: 13 of 24 live items match, 0 unexplained, 0 replay-only items)
 
+## Phase 11: Config split and mirrors
+
+The private config moves to routine files (T-51) only after both loaders read them (T-47, T-48).
+
+### T-46: Load and merge the config tree
+- `runtime/config_tree.py`, standard library and `roles.py` only:
+  - `load(path)`: `config.json` plus every `.json` file of `config/routines/`, merged into `routines`.
+  - `load(path, routine=SLUG)`: `config.json` plus `config/routines/SLUG.json` only; a `SLUG` that does not match `^[a-z0-9-]+$` reads no routine file.
+  - Rejects, as `roles.ConfigError`: a `.json` name that does not match `^[a-z0-9-]+\.json$`, a file that is not UTF-8 JSON or not an object, a routine file holding `timezone`, `runtime`, `places` or `providers`, a slug both inline and in a file (both paths named), and, in a full load, two routines with one `id` (both paths named, no value printed).
+  - Ignores files that do not end in `.json`; a config with neither `routines` nor routine files has no routine.
+  - Resolves each source's transport per place, for every routine in a full load and for `SLUG` only in a one-routine load: the source's value, else `providers.<name>.transport`; rejects an unknown place, a value other than `api` or `mcp`, and a place left unresolved, naming the key path; leaves malformed shapes for `roles.validate_config`.
+  - `label(directory, slug)` and `locate(message, directory)`: every `routines.<slug>.` key path of a routine kept in a file reads `config/routines/<slug>.json: <path inside the file>`, whatever the message's prefix.
+  - Re-exports `roles.ConfigError` as `config_tree.ConfigError`.
+- Tests: each rejection with its message, inline and file forms giving the same merged config, a one-routine load that ignores another routine's broken file, a path-like slug rejected before any read, per-place override of a provider default, the unchanged single-file form, labels and `locate` on matching and non-matching messages.
+- **Refs**: US-23, US-24, TD-34, TD-35
+- **Files**: `plugins/claudio-routines/runtime/config_tree.py` (new), `plugins/claudio-routines/runtime/test_config_tree.py` (new)
+- **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime`
+- **Rules**: BR-24, BR-43, BR-44, BR-47
+- **Status**: Complete
+
+### T-47: Read the config tree in the runtime
+- `config.read_routine` loads through `config_tree.load(path, routine=...)`, so every `collect.py` and `evaluate.py` command sees the merged routine and the resolved transports.
+- `roles.validate_config` rejects an absent or empty `sources`, exit 2.
+- `collect.py` and `evaluate.py` print `ConfigError` and `PackError` messages through `config_tree.locate`.
+- `run_context` runs `git status --porcelain -- config.json config/routines/<slug>.json`, so `config_dirty` is true for a modified or untracked routine file.
+- Tests: `sources`, `check-env` and `fetch` on a routine kept in a file, with a provider default transport; another routine's broken file does not stop them; a pack error located to the routine file; `config_dirty` for a modified, an untracked and an absent routine file; empty `sources` rejected; the existing inline fixtures unchanged.
+- **Refs**: US-23, US-24, US-25, TD-34, TD-35, TD-36
+- **Files**: `plugins/claudio-routines/runtime/config.py` (modify), `plugins/claudio-routines/runtime/roles.py` (modify), `plugins/claudio-routines/runtime/collect.py` (modify), `plugins/claudio-routines/runtime/evaluate.py` (modify), `plugins/claudio-routines/runtime/test_collect.py` (modify), `plugins/claudio-routines/runtime/test_evaluate.py` (modify), `plugins/claudio-routines/runtime/test_roles.py` (modify)
+- **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime`
+- **Blocked by**: T-46
+- **Rules**: BR-24, BR-43, BR-44
+- **Status**: Complete
+
+### T-48: Read the config tree in the skill
+- `routines.py load_config` imports `config_tree` from its plugin's runtime through `runtime_imports`, converts `config_tree.ConfigError` to a usage error, and runs its own checks on the merged config with `config_tree.label` in every routine message; a `routines` that is not an object fails.
+- `routines` in `config.json` is optional; `render`, `diff`, `lint`, `body` and `sync` see inline and file routines alike, and an invalid routine file fails them.
+- `diff` reports `untracked` for a live routine with neither a routine file nor a `routines` entry; `export` writes only under `routines/`.
+- `lint --private` adds the `literal-value` and `repeated-value` warnings (TD-36), naming keys, never values; the pure line check sits in `lint.py`.
+- Tests: render and diff of a routine kept in a file, a routine value overriding a shared one, a slug clash and an id clash failing with both paths, an invalid file failing every command, `untracked` and `not exported` over the merged set, `export` leaving `config/` untouched, each warning and its absence.
+- **Refs**: US-23, US-25, TD-34, TD-36
+- **Files**: `plugins/claudio-routines/skills/routines/scripts/routines.py` (modify), `plugins/claudio-routines/skills/routines/scripts/lint.py` (modify), `plugins/claudio-routines/skills/routines/scripts/test_routines.py` (modify)
+- **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/skills/routines/scripts`
+- **Blocked by**: T-46
+- **Rules**: BR-43, BR-45, BR-47
+- **Status**: Complete
+
+### T-49: Mark templates not runnable and ship the skeletons
+- `lint.py` detects the marker: a first line that is exactly `<!-- not runnable -->`, ignoring a leading byte order mark and one trailing carriage return; a near-miss first line (an HTML comment holding `not runnable` in another case or spacing) is the lint finding `marker`.
+- `render` keeps the line, and the `render` command warns, naming the template, while `diff` and `lint` render silently; `render --runnable` exits 2; `body` exits 2 before printing a body.
+- Three public skeletons, each starting with the marker, with the sections Purpose, Sources (by role), Steps and Outputs, placeholders only and no runtime command: `tribe-digest.md`, `chat-recap.md`, `weekly-status.md`.
+- SKILL.md: `/routines run` renders with `--runnable`, and `sync` runs `render --runnable` before its export, then stops when `body` refuses.
+- README: each template and whether it runs.
+- Tests: the marker on the first line only, with a byte order mark or a carriage return, the near-miss finding, render's warning, `--runnable` and `body` refusals before any output, `diff` and `lint` silent on a marked template, the three skeletons in `lint --public`.
+- **Refs**: US-26, TD-37
+- **Files**: `plugins/claudio-routines/skills/routines/scripts/routines.py` (modify), `plugins/claudio-routines/skills/routines/scripts/lint.py` (modify), `plugins/claudio-routines/skills/routines/scripts/test_routines.py` (modify), `plugins/claudio-routines/skills/routines/templates/tribe-digest.md` (new), `plugins/claudio-routines/skills/routines/templates/chat-recap.md` (new), `plugins/claudio-routines/skills/routines/templates/weekly-status.md` (new), `plugins/claudio-routines/skills/routines/SKILL.md` (modify), `plugins/claudio-routines/README.md` (modify)
+- **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/skills/routines/scripts && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
+- **Blocked by**: T-48
+- **Rules**: BR-8, BR-30, BR-46
+- **Status**: Complete
+
+### T-50: Ship the example private directory
+- `example/config.json`: timezone, runtime pin, places, providers with a default transport, shared values, all placeholders.
+- `example/config/routines/prod-watch.json`: the Prod watch routine of `config.example.json`, its sources without transport blocks.
+- `example/config/routines/tribe-digest.json`, `chat-recap.json`, `weekly-status.json`: id, template, cron and values for the skeletons, no sources.
+- Each example routine has its own id placeholder, so the example passes the id clash check.
+- `config.example.json` is deleted; the example tests load `example/` through `config_tree`: Prod watch passes `validate_config` in both places and the pack check, and every skeleton renders with no placeholder left.
+- README: setup copies `example/` into the private directory; the config reference shows the split layout and the provider default transport.
+- Plugin and marketplace versions bumped.
+- **Refs**: US-23, US-24, US-26, TD-34, TD-35, TD-37
+- **Files**: `plugins/claudio-routines/example/config.json` (new), `plugins/claudio-routines/example/config/routines/prod-watch.json` (new), `plugins/claudio-routines/example/config/routines/tribe-digest.json` (new), `plugins/claudio-routines/example/config/routines/chat-recap.json` (new), `plugins/claudio-routines/example/config/routines/weekly-status.json` (new), `plugins/claudio-routines/config.example.json` (delete), `plugins/claudio-routines/skills/routines/scripts/test_routines.py` (modify), `plugins/claudio-routines/README.md` (modify), `plugins/claudio-routines/.claude-plugin/plugin.json` (modify), `.claude-plugin/marketplace.json` (modify)
+- **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/skills/routines/scripts && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime && python3 scripts/leak_check.py --tree`
+- **Blocked by**: T-47, T-49
+- **Rules**: BR-8, BR-44
+- **Status**: Complete
+
+### T-51: Split the private config and mirror the 4 live routines
+Runs in a local session; nothing is pushed to a live routine, and the private repository is committed only on the owner's word.
+1. Export the live routines (`RemoteTrigger list`, then `/routines export`).
+2. Move Prod watch to `config/routines/prod-watch.json`, set each provider's default transport, and drop the sources' transport blocks.
+3. Merge the duplicated digest channel values into one shared key, and update the Prod watch templates' placeholder.
+4. Write the routine files of the 4 other routines (id, template, cron, values) and the mirrors `tribe-digest.md`, `chat-recap.md` and `weekly-status.md`, with every id, channel, page, user id, login, organization and owner identity as a value.
+5. Check that each render equals its exported prompt, and that `diff` prints `in sync` for all 5.
+6. Once T-31 pins the runtime, run `lint --private`: no finding, and no `unused`, `literal-value` or `repeated-value` warning.
+- **Refs**: US-23, US-24, US-25, TD-34, TD-35, TD-36
+- **Files**: none in this repository; the private repository's `config.json`, `config/routines/` and `templates/` change
+- **Verify**: `S=plugins/claudio-routines/skills/routines/scripts/routines.py; R=plugins/claudio-routines/runtime/collect.py; python3 $S diff && python3 -B $R check-env --config "$CLAUDIO_PRIVATE_DIR/config.json" --routine prod-watch --place local && python3 -B $R check-env --config "$CLAUDIO_PRIVATE_DIR/config.json" --routine prod-watch --place cloud`
+- **Blocked by**: T-47, T-48
+- **Rules**: BR-43, BR-44, BR-45
+- **Status**: In Progress (all 5 routines split into routine files and mirrored, `diff` in sync for all 5, `check-env` exit 0 in both places; `lint --private` waits for the runtime pin of T-31)
+
+### T-52: Reject secrets in the private config
+- `config_tree` scans `config.json` and each routine file it reads, before the merge:
+  - `secret-key`: a key named `password`, `passwd`, `secret`, `token`, `api_key`, `apikey`, `app_key` or `private_key`, or ending in `_` and one of them once camelCase is split and dashes become underscores, holds an environment variable name, else the load fails; the keys of `routines`, `providers` and `sources` are names, never secret names.
+  - `token`: a string or a key anywhere matching the leak guard's `token` rule fails the load.
+  - Messages name the file, the key path and the rule, never the value.
+- Tests: each rule in `config.json`, in a routine file, in `values`, in a source option and in `api`; credential variable names and `max_tokens`-like keys pass; a one-routine load ignores another routine's file; an `mcp`-only provider with no `api` block loads; no value in any message.
+- `providers/README.md`: credentials hold variable names and the loader rejects secrets; a connector-only provider sets no `api` block.
+- **Refs**: US-14, US-23, TD-34, TD-38
+- **Files**: `plugins/claudio-routines/runtime/config_tree.py` (modify), `plugins/claudio-routines/runtime/test_config_tree.py` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify)
+- **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime && python3 scripts/leak_check.py --tree`
+- **Blocked by**: T-46
+- **Rules**: BR-25
+- **Status**: Complete
+
 ## Related Features
 
 - **onboarding (claudio-spec skill)**: its examples are made generic in a separate commit that lands before this feature.
@@ -479,3 +585,8 @@ Runs in a local session with the observability and document store connectors; no
   - **Risk**: a sync rendered from the old shape fails at render, and a query pack that drifts from the page's last thresholds changes which items open.
   - **Shared state, model judgment**: the query pack version 2 replaces thresholds, severities and urgencies with prose rules (T-34, T-43).
   - **Risk**: a pack written before T-34 fails validation with exit 3 until it moves to version 2; the live routine is unaffected until a sync.
+  - **Shared state, config split**: Prod watch moves to `config/routines/prod-watch.json`, and the sources take their providers' default transport (T-51).
+  - **Risk**: a runtime pinned before T-47 finds no routine in a split config and exits 2, so T-31 pins a tag that holds T-47.
+- **Mirrored live routines**: the 4 other routines' stored prompts and crons.
+  - **Shared state**: their snapshots in the private repository, compared with the mirrors' renders.
+  - **Risk**: a sync from a mirror that is not byte-identical changes a live prompt, so `diff` must print `in sync` for each before any sync.

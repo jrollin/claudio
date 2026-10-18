@@ -326,6 +326,72 @@ class InputValidationTest(EvaluateCase):
         self.assertEqual(stop.exception.code, 2)
 
 
+class RoutineFileTest(EvaluateCase):
+    FILE = f"config/routines/{ROUTINE}.json"
+
+    def write_routine_file(self, slug, text):
+        os.makedirs(self.path("config/routines"), exist_ok=True)
+        write_text(self.path(f"config/routines/{slug}.json"), text)
+
+    def kept_in_file(self, config=None):
+        config = make_config() if config is None else config
+        routine = config["routines"].pop(ROUTINE)
+        for provider in config["providers"].values():
+            provider["transport"] = {"cloud": "api", "local": "mcp"}
+        for configured in routine["sources"].values():
+            del configured["transport"]
+        self.write_routine_file(ROUTINE, json.dumps(routine))
+        return config
+
+    def test_features_of_a_routine_kept_in_a_file_equal_those_of_the_inline_form(self):
+        inline = self.raw("features")
+
+        self.assertEqual(self.raw("features", tag="-file", config=self.kept_in_file()), inline)
+
+    def test_base_of_a_routine_kept_in_a_file_equals_that_of_the_inline_form(self):
+        inline = self.raw("base")
+
+        self.assertEqual(self.raw("base", tag="-file", config=self.kept_in_file()), inline)
+
+    def test_another_routines_broken_file_does_not_stop_features(self):
+        config = self.kept_in_file()
+        self.write_routine_file("other-routine", "{not json")
+
+        self.assertEqual(self.run_evaluate(config=config), (0, ""))
+
+    def test_pack_error_exits_3(self):
+        config = self.kept_in_file(make_config(pack=[metric_entry(read="median")]))
+
+        self.assertEqual(self.run_evaluate(config=config)[0], 3)
+
+    def test_pack_error_names_the_routine_file_and_the_key_path_inside_it(self):
+        config = self.kept_in_file(make_config(pack=[metric_entry(read="median")]))
+
+        error = self.run_evaluate(config=config)[1]
+
+        self.assertTrue(error.startswith(f"evaluate.py: rejected: config: {self.FILE}: query_pack[0].read: "), error)
+
+    def test_source_config_error_exits_2(self):
+        config = self.kept_in_file(make_config(gauges=source("observer", kind="metrics")))
+
+        self.assertEqual(self.run_evaluate(config=config)[0], 2)
+
+    def test_source_config_error_names_the_routine_file_and_the_key_path_inside_it(self):
+        config = self.kept_in_file(make_config(gauges=source("observer", kind="metrics")))
+
+        error = self.run_evaluate(config=config)[1]
+
+        self.assertEqual(error, f"evaluate.py: config: {self.FILE}: sources.gauges.scope_filter: missing\n")
+
+    def test_transport_left_unresolved_exits_2_naming_the_routine_file(self):
+        config = self.kept_in_file()
+        del config["providers"]["observer"]["transport"]
+
+        code, error = self.run_evaluate(config=config)
+
+        self.assertEqual((code, f"config: {self.FILE}: sources.alerts.transport.cloud: " in error), (2, True))
+
+
 class OutputTest(EvaluateCase):
     def test_base_holds_every_facts_field_but_the_observations(self):
         expected = [
@@ -529,7 +595,7 @@ class RunContextTest(EvaluateCase):
 
         self.assertEqual((context["config"], context["config_dirty"]), (None, None))
 
-    def test_git_is_asked_about_the_config_file_in_its_directory(self):
+    def test_git_is_asked_about_the_config_file_and_the_routine_file_in_its_directory(self):
         calls = []
 
         def recording_git(directory, args):
@@ -538,8 +604,8 @@ class RunContextTest(EvaluateCase):
 
         self.base(git=recording_git)
 
-        expected = [(self.dir, ["rev-parse", "HEAD"]), (self.dir, ["status", "--porcelain", "--", "config.json"])]
-        self.assertEqual(calls, expected)
+        status = ["status", "--porcelain", "--", "config.json", f"config/routines/{ROUTINE}.json"]
+        self.assertEqual(calls, [(self.dir, ["rev-parse", "HEAD"]), (self.dir, status)])
 
     def test_collected_names_role_transport_and_read_per_source(self):
         base = self.base(docs=collections(notes=unread_notes()))
@@ -604,7 +670,7 @@ class MoreSourcesPageTest(EvaluateCase):
         self.assertEqual(base["blind_spots"], [{"key": "notes", "gap": "mutes table unreadable"}])
 
 
-class RunGitTest(unittest.TestCase):
+class GitRepoCase(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.dir)
@@ -628,6 +694,8 @@ class RunGitTest(unittest.TestCase):
         self.git("add", "config.json")
         self.git("commit", "-q", "-m", "config")
 
+
+class RunGitTest(GitRepoCase):
     def test_reads_the_commit_of_a_repository(self):
         self.commit_config()
 
@@ -646,6 +714,72 @@ class RunGitTest(unittest.TestCase):
 
     def test_directory_outside_a_repository_gives_none(self):
         self.assertIsNone(evaluate.run_git(self.dir, ["rev-parse", "HEAD"]))
+
+
+class RoutineFileDirtyTest(GitRepoCase):
+    ROUTINE_FILE = os.path.join("config", "routines", f"{ROUTINE}.json")
+
+    def write_routine_file(self, document):
+        os.makedirs(os.path.join(self.dir, "config", "routines"), exist_ok=True)
+        write_json(os.path.join(self.dir, self.ROUTINE_FILE), document)
+
+    def commit_routine_file(self):
+        self.write_routine_file({"sources": {}})
+        self.git("add", self.ROUTINE_FILE)
+        self.git("commit", "-q", "-m", "routine")
+
+    def config_dirty(self, routine=ROUTINE):
+        args = types.SimpleNamespace(config=os.path.join(self.dir, "config.json"), routine=routine, place="cloud", runtime="runtime-a")
+        return evaluate.run_context(args, {}, evaluate.run_git)["config_dirty"]
+
+    def commit_sibling_and_modify_it(self):
+        sibling = os.path.join("config", "routines", "other.json")
+        os.makedirs(os.path.join(self.dir, "config", "routines"), exist_ok=True)
+        write_json(os.path.join(self.dir, sibling), {"sources": {}})
+        self.git("add", sibling)
+        self.git("commit", "-q", "-m", "sibling")
+        write_json(os.path.join(self.dir, sibling), {"sources": {"changed": {}}})
+
+    def test_committed_config_and_routine_file_are_not_dirty(self):
+        self.commit_config()
+        self.commit_routine_file()
+
+        self.assertIs(self.config_dirty(), False)
+
+    def test_modified_routine_file_is_dirty(self):
+        self.commit_config()
+        self.commit_routine_file()
+        self.write_routine_file({"sources": {"changed": {}}})
+
+        self.assertIs(self.config_dirty(), True)
+
+    def test_untracked_routine_file_is_dirty(self):
+        self.commit_config()
+        self.write_routine_file({"sources": {}})
+
+        self.assertIs(self.config_dirty(), True)
+
+    def test_absent_routine_file_is_not_dirty(self):
+        self.commit_config()
+
+        self.assertIs(self.config_dirty(), False)
+
+    def test_modified_sibling_routine_file_is_not_dirty(self):
+        self.commit_config()
+        self.commit_sibling_and_modify_it()
+
+        self.assertIs(self.config_dirty(), False)
+
+    def test_glob_slug_never_widens_the_dirty_check(self):
+        self.commit_config()
+        self.commit_sibling_and_modify_it()
+
+        self.assertIs(self.config_dirty("*"), False)
+
+    def test_parent_directory_slug_keeps_the_dirty_check(self):
+        self.commit_config()
+
+        self.assertIs(self.config_dirty("../../x"), False)
 
 
 PREVIEW = {"new": [{"key": KEY}, {"key": "cpu"}], "escalated": []}

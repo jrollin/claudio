@@ -12,6 +12,7 @@ Four parts, one new plugin, one private repository.
   - The `/routines` skill drives the routines API through Claude's `RemoteTrigger` tool, the only client that holds the OAuth token.
   - `routines.py` does every file operation: normalize an API listing into snapshots, render templates, diff, lint, and build the update body.
   - Public skeletons sit in the plugin; real templates and render-time values sit in the private repository.
+  - `runtime/config_tree.py` loads the private config for the skill and the runtime: the shared `config.json` plus one file per routine (TD-34).
 - **State engine**, in `plugins/claudio-routines/runtime/state.py`:
   - Computes the run window and the item lifecycle from the previous state and the facts the evaluator writes.
   - Cloud runs get it from a setup script on the default environment, which clones this repository at a pinned tag.
@@ -26,7 +27,7 @@ Four parts, one new plugin, one private repository.
   - The routine's model judges the features against the routine's prose rules: it writes the verdicts (`open`, `severity`, `urgency`, `rank`, `cites`) and the analysis of new and escalated items, and sets no fact value.
   - A routine runs in the cloud on its schedule, or locally through `/routines run`, from the same template and the same pinned runtime.
 
-The private repository (`$CLAUDIO_PRIVATE_DIR`) holds `config.json`, `templates/` and `routines/` snapshots on its main branch, and the run state on `claude/state`. CI never reads it, and no script writes it into this repository.
+The private repository (`$CLAUDIO_PRIVATE_DIR`) holds `config.json`, `config/routines/`, `templates/` and `routines/` snapshots on its main branch, and the run state on `claude/state`. CI never reads it, and no script writes it into this repository.
 
 The routines name roles, not providers: an observability tool (monitors, metrics, alert events), a chat channel (the digest, and messages to read), a document store (the sources page with the mutes) and a code host (pull requests and issues). Which product fills each role is a private configuration choice: a source's `provider` in `config.json` picks the adapter.
 
@@ -90,6 +91,26 @@ flowchart TD
     P -->|Local without the post flag| R[Print the digest]
 ```
 
+Loading the private config, for a skill command or a runtime command:
+
+```mermaid
+flowchart TD
+    A{Caller} -->|routines.py| B[Read config.json and every config/routines/*.json]
+    A -->|collect.py or evaluate.py for SLUG| C{Slug name valid?}
+    C -->|No| X[Read config.json only: validate_config reports a missing routine]
+    C -->|Yes| D[Read config.json and config/routines/SLUG.json when present]
+    B --> E{Bad file name, bad JSON, shared keys in a routine file, slug clash or id clash?}
+    D --> E2{Bad JSON, shared keys in the routine file, or slug clash?}
+    E -->|Yes| Y[Exit 2: name the file, the key path, both paths for a clash]
+    E2 -->|Yes| Y
+    E -->|No| F[Resolve the transports of every routine]
+    E2 -->|No| F2[Resolve the transports of SLUG only]
+    F --> G{Every place resolved to api or mcp?}
+    F2 --> G
+    G -->|No| Z[Exit 2: name the key path]
+    G -->|Yes| H[One merged config]
+```
+
 ## Component Diagram
 
 ```mermaid
@@ -109,10 +130,12 @@ graph LR
             EV[evaluate.py]
             FT[features.py]
             JG[judgment.py]
+            CT[config_tree.py]
         end
     end
     subgraph private[Private repository]
-        CFG[(config.json: places, providers, sources, query packs)]
+        CFG[(config.json: places, providers, shared values)]
+        RCFG[(config/routines: one file per routine, sources, query packs)]
         TPL[(templates)]
         SNAP[(routines snapshots)]
         STATE[(claude/state: state and run records)]
@@ -131,7 +154,10 @@ graph LR
     SK -->|RemoteTrigger| API
     SK --> RP
     SK -->|run| LOCAL
-    RP --> CFG
+    RP --> CT
+    CT --> CFG
+    CT --> RCFG
+    CT --> RL
     RP --> TPL
     RP --> SKEL
     RP --> SNAP
@@ -139,8 +165,8 @@ graph LR
     ENV -->|git clone tag| runtime
     RUN --> runtime
     LOCAL --> runtime
-    COL --> CFG
-    EV --> CFG
+    COL --> CT
+    EV --> CT
     COL --> PRV
     COL --> RL
     EV --> RL
@@ -291,7 +317,7 @@ Commit entries need at least 7 hex characters and apply only in history mode; pa
 
 ### TD-11: Private configuration shape
 
-**Choice**: `config.json` in the private repository:
+**Choice**: `config.json` in the private repository, with each routine inline or in its own file (TD-34):
 - `timezone`
 - `runtime`: `repo` (HTTPS clone URL with no user info, query or fragment), `tag` (must match `^[A-Za-z0-9._-]+$`), `sha` (the commit hash of the tag, `git rev-parse <tag>^{commit}`, must match `^[0-9a-f]{40}$`)
 - `places.<place>`, for `cloud` and `local`:
@@ -300,12 +326,12 @@ Commit entries need at least 7 hex characters and apply only in history mode; pa
 - `runtime.dir`, a shared `values.state.dir` and a routine `values.state.dir` are refused (exit 2), naming `places.<place>.runtime_dir` or `places.<place>.state_dir` as the replacement.
 - `providers.<name>` (TD-19)
 - `values`: shared render-time values (ids, channel, page ids)
-- `routines.<slug>`: `id`, `template`, `cron`, its own `values`, `sources` (TD-19), `query_pack` (TD-23) and `models`
+- `routines.<slug>`, or `config/routines/<slug>.json`: `id`, `template`, `cron`, its own `values`, `sources` (TD-19), `query_pack` (TD-23) and `models`
 
 The render context merges `values`, then the routine's `values`, then `runtime.*`, `timezone`, and the rendered place: `runtime.dir`, `state.dir`, `place` and `run.post` (TD-24). `{{runtime.dir}}` and `{{state.dir}}` come only from `places`. Render refuses a `runtime.repo` not starting with `https://`, a `runtime.tag` or `runtime.sha` that does not match its pattern, and a `runtime_dir` that breaks its rule.
 
 **Alternatives considered**:
-- One config file per routine: rejected, shared ids would be duplicated.
+- One self-contained config file per routine, shared settings included: rejected, shared ids and providers would be duplicated.
 
 **Rationale**: one place per value. Switching Prod watch to the runtime is a one-line change of `template` (BR-15, AC-11.4).
 
@@ -318,6 +344,8 @@ The render context merges `values`, then the routine's `values`, then `runtime.*
 
 **Alternatives considered**:
 - The model assembles the body: rejected, it dropped and renamed fields in earlier manual updates.
+
+`body` refuses a template marked not runnable (TD-37).
 
 **Rationale**: fields absent from the template stay as they are live (AC-8.2), and `--uuid` keeps tests deterministic (NFR-2).
 
@@ -431,7 +459,7 @@ A source not read still gets a collection, with `read` false, a reason (control 
 **Choice**: the private config holds (AC-13.1):
 - `providers.<name>`: `adapter` (the vendor module name), `api.base_url`, `api.credentials` (each credential's environment variable name, never a value, AC-14.1, BR-25), `mcp.connectors.<place>` (the connector's name in that place, since a cloud session and a local session can name one vendor's connector differently).
 - `providers.<name>.links_base` (optional): the HTTPS base of the vendor's web UI, for record links. Without it, an adapter derives the UI host from `api.base_url`; a provider read only through a connector sets it, since a connector does not reveal its host.
-- `routines.<slug>.sources.<source>`: `provider`, `transport.cloud` and `transport.local` (`api` or `mcp`), and the role's source options.
+- `routines.<slug>.sources.<source>`: `provider`, `transport.cloud` and `transport.local` (`api` or `mcp`), each set on the source or taken from `providers.<name>.transport` (TD-35), and the role's source options.
 
 Config load checks every source before any provider call, and exits 2 naming the key: an `api` transport needs an `api` block, an `mcp` transport needs `mcp.connectors.<place>`.
 
@@ -571,7 +599,7 @@ Two kinds of calls:
 Accepted risks:
 - Clock skew: a cloud run that starts within the skew after a local run exits 3 on `window` (AC-10.4), posts the rejection and writes nothing; the next run recovers.
 - A local run with `--post` and a cloud run at the same time both post; the second push is rejected and reports `state not saved`, and the next run collects the window again.
-- A local run reads the working tree's `config.json`, which can hold uncommitted changes; `config_dirty` marks those runs in the record.
+- A local run reads the working tree's `config.json` and routine file, which can hold uncommitted changes; `config_dirty` marks those runs in the record.
 
 **Alternatives considered**:
 - The installed plugin's engine for local runs: rejected, its version can differ from the pinned tag, so local and cloud facts could differ.
@@ -754,6 +782,124 @@ Feature rules:
 
 **Rationale**: the same run gives the same message, and the posted text is checked text only. Like `collect.py` for collecting, rendering has its own script, so `state.py` stays the lifecycle engine.
 
+### TD-34: Config tree: shared file plus routine files
+
+**Choice**: `runtime/config_tree.py` loads the private config for both loaders. It imports the standard library and `roles.py`, which imports `state.py`.
+- `config.json` holds `timezone`, `runtime`, `places`, `providers`, `values` and an optional `routines` object. With neither `routines` nor a routine file, the merged config holds `routines: {}` (AC-23.4).
+- `config/routines/<slug>.json`, in the folder that holds `config.json`, holds one routine object, with the keys of `routines.<slug>` (TD-11). A routine file holding `timezone`, `runtime`, `places` or `providers` fails the load (BR-44).
+- `load(path)` reads `config.json` and every `.json` file of `config/routines/`, for `routines.py`. The load fails on:
+  - a `.json` name that does not match `^[a-z0-9-]+\.json$`;
+  - a file that is not UTF-8 JSON, or not an object;
+  - a slug also under `routines` (BR-43);
+  - two routines with one `id` (BR-47).
+- Files of `config/routines/` that do not end in `.json` are ignored, so editor backups never break a load.
+- `load(path, routine=SLUG)` reads `config.json` and `config/routines/SLUG.json` only, for `collect.py` and `evaluate.py`, so another routine's broken file never stops a run (AC-23.15):
+  - It fails on a routine file that is not UTF-8 JSON or not an object, on shared keys in it, and on a slug clash (BR-43).
+  - A `SLUG` that does not match `^[a-z0-9-]+$` builds no path: the load reads `config.json` only, and `roles.validate_config` reports the routine it lacks. Inline `routines` keys keep any shape (AC-23.3).
+- Both return one merged config. A full load resolves the transports of every routine; a one-routine load resolves those of `SLUG` only, so a broken inline sibling never stops a run. The resolver leaves malformed `sources`, sources, transports and unknown providers as they are, for `roles.validate_config` to report (TD-35).
+- The skill and the runtime see the same routine from the same files (AC-23.16).
+- `config_tree` raises `ConfigError`, the `roles.ConfigError` class it re-exports, so callers catch it through `config_tree`. Exit codes stay those of the caller: 2 for a config error, 3 for a pack error.
+- Error labels (AC-23.12):
+  - A key path under `routines.<slug>.` of a routine kept in a file prints as `config/routines/<slug>.json: <path inside the file>`.
+  - `config_tree.locate(message, directory)` rewrites the text of the `ConfigError` and `PackError` messages that `collect.py` and `evaluate.py` print: every such path in the message, a second path such as `duplicates routines.<slug>.query_pack[0].key` included, whatever prefix the message carries. A `routines.<slug>` not followed by `.` stays as it is.
+  - `routines.py` builds its own messages with the same label, from `config_tree.label(directory, slug)`.
+  - A clash names both paths. No message prints a config value, ids included (NFR-5).
+- `routines.py` imports `config_tree` from its plugin's runtime through `runtime_imports`, converts its `ConfigError` to a usage error (exit 2), then runs its own checks (TD-11) on the merged config. A `routines` that is not an object fails there. `diff` lists `untracked` and `not exported` from the merged config (AC-23.5).
+- `run_context` runs `git status --porcelain -- config.json config/routines/<slug>.json`, so `config_dirty` covers the routine file, an untracked one included (AC-23.18).
+- The plugin ships `example/`, a private directory to copy: `example/config.json`, plus `example/config/routines/<slug>.json` for Prod watch and the three skeletons of TD-37, each with its own id placeholder, so the example passes BR-47 (AC-23.20).
+
+**Alternatives considered**:
+- One merge per loader: rejected, two copies drift, and AC-23.16 needs one definition.
+- Fragment files deep-merged in name order: rejected, a key could come from any file, so an error could not name one.
+- A list of routine files in `config.json`: rejected, a second list to keep in step with the directory.
+- Routine files under `routines/`: rejected, `export` owns that directory and removes the snapshots the listing no longer holds.
+- Routine files only: rejected, every single-file config and test fixture would have to move, for no gain.
+- The runtime reads every routine file: rejected, one broken file would stop the runs of every routine.
+
+**Rationale**: providers and places sit in one file (BR-44), each routine changes in its own file, and one module defines the merge for every reader.
+
+### TD-35: Provider default transport
+
+**Choice**:
+- `providers.<name>.transport.<place>`: optional, `api` or `mcp`.
+- `routines.<slug>.sources.<source>.transport` is optional, and may set one place only.
+- `config_tree` resolves each source's transport per place: the source's value, else its provider's (BR-24). A one-routine load resolves that routine's sources only (TD-34).
+- It rejects, naming the key path (AC-24.2, AC-24.5):
+  - a place other than `cloud` or `local`, on a provider or a source;
+  - a value other than `api` or `mcp`;
+  - a place that resolves to no transport.
+- The merged config holds the resolved `transport.cloud` and `transport.local` on every source, so `roles.validate_config`, `check-env`, `sources`, `fetch`, `plan`, `parse`, the collections and the run record read one transport per place, unchanged (AC-24.7). The TD-19 checks run on the resolved transport (AC-24.6).
+
+**Alternatives considered**:
+- A shared source catalog: rejected by the owner, each routine reads its own channels, boards and services.
+- One default per place for every provider (`places.<place>.transport`): rejected for the TD-19 reason, a provider with no connector or no key in a place would need an override on each of its sources.
+- Resolving in `roles.validate_config`: rejected, `routines.py` never calls it, so the skill would see another routine than the runtime.
+
+**Rationale**: one line per provider sets the transport of all its sources, and every reader past the loader sees one transport per place.
+
+### TD-36: Mirror templates and shared values
+
+**Choice**:
+- The private repository holds one mirror per prompt shape (AC-25.1, AC-25.7):
+  - `templates/tribe-digest.md`, for both tribe digests, with a per-routine `digest.name` value;
+  - `templates/chat-recap.md`;
+  - `templates/weekly-status.md`.
+- The mirrors take the public skeletons' names, so the private template wins (AC-5.4).
+- A mirror is the live prompt with every id, channel, page, user id, login, organization and owner identity replaced by a placeholder (AC-25.3). Rendered for the cloud place, it equals the exported prompt byte for byte, and its routine file holds the live cron (AC-25.2).
+- A value that several routines use is a shared value of `config.json`, under one key (BR-45): the digest channel id is one key for all 5 routines.
+- A routine's values override shared values of the same key, as `build_context` merges them (AC-23.17).
+- `lint --private` prints two warnings. They go to stderr, name keys, never values (NFR-5), and leave the exit code unchanged:
+  - `literal-value`: a template line holds, as case-sensitive text, a string value of 8 characters or more from the shared and own `values` of a routine that renders it (AC-25.4). The runtime pin, the places and the timezone are not values, so the check skips them; a value that sits inside a placeholder name also matches.
+  - `repeated-value`: two routines set the same value key to the same value (AC-25.6).
+- A routine without `sources` renders, diffs, lints and syncs. `roles.validate_config` rejects an absent or empty `sources`, exit 2 (AC-25.8, AC-25.9).
+
+**Alternatives considered**:
+- One template per routine: rejected, the two tribe digest prompts differ by one word, and two copies drift.
+- Literal ids in private templates: rejected, the digest channel id would sit in 5 files.
+- Lint findings (exit 1) for the two checks: rejected, a value can match prose by chance, and a finding would block the lint.
+
+**Rationale**: `/routines diff` covers all 5 routines without changing a live prompt, and each id lives in one place.
+
+### TD-37: Not-runnable marker and structure-only skeletons
+
+**Choice**:
+- A template whose first line is exactly `<!-- not runnable -->` is not runnable, public or private (AC-26.3). A leading byte order mark and one trailing carriage return are ignored, so a file saved with either still counts as marked.
+- `lint` reports a first line that is an HTML comment holding `not runnable` in another case or spacing as the finding `marker`, since a near miss would leave the template runnable.
+- `render` keeps the line, and the `render` command prints a warning naming the template; `diff` and `lint` render without it (AC-26.5, AC-26.6).
+- `render --runnable` exits 2 on a marked template. The skill's `/routines run` renders with it (AC-26.8).
+- The skill's `sync` runs `render --runnable` before its export, so a marked template stops the sync before any API call. `body` exits 2 on a marked template before printing a body, as a second guard (AC-26.7, BR-46).
+- Three public skeletons start with the marker: `tribe-digest.md`, `chat-recap.md` and `weekly-status.md` (AC-26.4).
+- Each holds the sections Purpose, Sources (by role), Steps and Outputs, with placeholders only, and calls no runtime command, so the public lint passes (AC-26.2, AC-26.9):
+  - Tribe digest: issue tracker filters, chat channels and their threads, observability trend windows, changed documents; outputs a digest page and a chat message.
+  - Chat recap: direct messages, mentions, followed threads and announcements; outputs a chat message.
+  - Weekly status: the week's issue tracker, code host, chat and document store activity of the owner; outputs a chat message.
+- Each skeleton keeps its run state, or for the weekly status its run record only, on the `claude/state` branch (BR-23).
+- The plugin README lists each template and whether it runs (AC-26.10).
+
+**Alternatives considered**:
+- A front matter field: rejected, the rendered prompt would carry it to the live routine, and it needs a parser.
+- A drafts directory: rejected, the template lookup would need a third place.
+- A lint failure on marked templates: rejected, the skeletons must pass the public lint.
+- `render` refusing marked templates: rejected, the owner reads a skeleton through `render`.
+
+**Rationale**: users of the public plugin see the shape of each routine, and no script pushes or runs one before its runtime exists.
+
+### TD-38: Secret guard at load
+
+**Choice**: `config_tree` scans `config.json` and every routine file it reads, before any merge, and fails the load on:
+- `secret-key`: a key whose name, once camelCase is split and dashes become underscores, is or ends in `_` followed by `password`, `passwd`, `secret`, `token`, `api_key`, `apikey`, `app_key` or `private_key`, holding anything but an environment variable name (`^[A-Z][A-Z0-9_]*$`). A mapping under such a key is checked leaf by leaf. The keys of `routines`, `providers` and `sources` name things, so they are never secret names. `api.credentials.<credential>` passes, since it holds variable names (BR-25).
+- `token`: a string or a key anywhere in the file that matches the leak guard's `token` rule (TD-2); a test keeps the two patterns equal.
+- Accepted limit: a secret with no known token shape, under a key with an ordinary name, passes.
+- The message names the file, the key path and the rule, never the value (NFR-5). The skill and the runtime share the guard through `config_tree` (AC-14.7, AC-14.8).
+- `mcp` transports need no `api` settings: a provider read only through connectors sets no credentials at all (AC-14.9).
+
+**Alternatives considered**:
+- An exact `api` block (`base_url` and `credentials` only): rejected, a secret could still sit in `values` or a source option, and `values` reach the live prompt.
+- Importing the leak guard's rules: rejected, `lint --private` extracts the runtime directory alone, so the runtime cannot import `scripts/`. The token shapes are a short list kept in step with TD-2.
+- Detecting high-entropy strings: rejected, ids, queries and links would trip it.
+
+**Rationale**: a secret pasted into the private config fails every command before it reaches a prompt, a collection or a commit.
+
 ## Implementation Considerations
 
 ### Data Model
@@ -803,13 +949,14 @@ Run record, written by `apply --record` as `runs/<slug>/<run-at>.json`:
 
 The summary drives the digest and leaves muted changes out. It lists `still_open` per severity, each `{key, title}` in key order without muted keys, so the digest shows no muted item. It also lists `blind_spots` after the cap, each `{key, gap, runs}`, so the digest names each gap the cap kept and counts the dropped ones; the record drives stats and keeps every change.
 
-Private config additions (TD-19, TD-23, TD-24):
+Private config additions (TD-19, TD-23, TD-24, TD-34, TD-35):
 
 | Key | Content |
 |---|---|
-| `providers.<name>` | `adapter`, `api.base_url`, `api.credentials.<credential>` (environment variable name), `mcp.connectors.<place>` (connector name in that place), optional `links_base` |
+| `providers.<name>` | `adapter`, `api.base_url`, `api.credentials.<credential>` (environment variable name), `mcp.connectors.<place>` (connector name in that place), optional `links_base`, optional `transport.<place>` default (TD-35) |
 | `places.<place>` | `runtime_dir`, `state_dir`, for `cloud` and `local` |
-| `routines.<slug>.sources.<source>` | `provider`, `transport.cloud`, `transport.local`, and the role's options |
+| `config/routines/<slug>.json` | one routine, with the keys of `routines.<slug>` (TD-34) |
+| `routines.<slug>.sources.<source>` | `provider`, `transport.cloud` and `transport.local` when they differ from the provider default, and the role's options |
 | `routines.<slug>.query_pack` | list of entries (TD-23, TD-31) |
 | `routines.<slug>.rules` | routine-wide rule texts (TD-31) |
 | `routines.<slug>.sources.<monitors source>.discovery_query` | optional monitor search query (TD-29) |
@@ -840,7 +987,7 @@ Plan file (TD-21): `{"done", "partial", "calls": [{"id", "connector", "tool", "a
 python3 scripts/leak_check.py (--staged | --tree | --history | --range A..B | --message FILE) [--require-deny-words] [--allow FILE]
 python3 .../routines.py check-private [--private DIR]
 python3 .../routines.py export --input LISTING [--private DIR]
-python3 .../routines.py render SLUG [--private DIR] [--place cloud|local] [--post] [--out FILE]
+python3 .../routines.py render SLUG [--private DIR] [--place cloud|local] [--post] [--runnable] [--out FILE]
 python3 .../routines.py diff [SLUG] [--private DIR]
 python3 .../routines.py lint (--public | --private DIR [--claudio CHECKOUT])
 python3 .../routines.py body SLUG [--private DIR] [--uuid U]
@@ -859,6 +1006,8 @@ python3 .../runtime/evaluate.py features --config C --routine R --state S --wind
 python3 .../runtime/evaluate.py judge    --features FEATURES --base BASE --judgment J --out F
 python3 .../runtime/evaluate.py annotate --features FEATURES --facts F --analysis A --preview SUMMARY --out F2
 ```
+
+`--config` names `config.json`; the runtime also reads `config/routines/<routine>.json` beside it (TD-34). `render --runnable` and `body` exit 2 on a template marked not runnable (TD-37).
 
 `collect.py` runs one source outside any routine with a window from `state.py window --since` over a state from `state.py init` (AC-13.9). `collect.py check-env` exits 1 when a variable is missing; `collect.py` and `evaluate.py` exit 3 on an invalid query pack; `evaluate.py judge` and `annotate` exit 3 on a rejected judgment or analysis.
 
@@ -893,6 +1042,11 @@ Blind spots:
 
 `window` sets `retry_known_gaps` to true when the previous run's local date differs from the current local date, or when there is no previous run.
 
+### Rollout order
+
+- The pinned runtime must hold `config_tree.py` before a cloud or local run reads a private config with routine files. The live routines render from mirrors and run no runtime, so the private config holds routine files before the pin.
+- `lint --private` needs the pin, since it loads the flag contracts of `runtime.sha`; `render` and `diff` do not.
+
 ### Performance
 
 - `leak_check.py --tree` reads only the tracked and untracked non-ignored files; binary files are decoded rather than skipped, which keeps the scan under the NFR-4 budget at this repository's size.
@@ -903,6 +1057,7 @@ Blind spots:
 
 - No scanner output echoes matched text (BR-2).
 - `routines.py` refuses a private directory inside this working tree (AC-4.7), and prints config values only inside a rendered prompt the owner asked for.
+- `config_tree` checks a routine slug against `^[a-z0-9-]+$` before it builds a file path from it, so `--routine` cannot read outside `config/routines/`. Its errors, and the `routines.py` lint warnings, name files and keys, never values.
 - The setup script uses HTTPS with credential helpers disabled, clones into a temporary directory, and installs only a clone whose hash matches (AC-11.1, AC-11.2).
 - The CI workflow sets `permissions: contents: read`, never runs on `pull_request_target`, and exposes the deny-words secret only to the leak-check step.
 - Collectors:
@@ -1047,6 +1202,33 @@ sequenceDiagram
     St-->>M: next state, summary in rank order, run record
 ```
 
+### Load one routine in a run
+
+```mermaid
+sequenceDiagram
+    participant M as Routine model
+    participant C as collect.py or evaluate.py
+    participant T as config_tree.py
+    participant F as Private checkout
+    participant R as roles.py
+    M->>C: --config STATE_DIR/config.json --routine SLUG
+    C->>T: load(config.json, routine=SLUG)
+    T->>T: check SLUG against ^[a-z0-9-]+$
+    T->>F: read config.json
+    T->>F: read config/routines/SLUG.json, when present
+    T->>T: resolve the transports of SLUG's sources
+    alt bad JSON, shared keys in the file, slug clash, or a transport left unresolved
+        T-->>C: ConfigError with the file and the key path
+        C-->>M: exit 2
+    else merged config
+        T-->>C: merged config
+        C->>R: validate_config, then validate_pack
+        R-->>C: ok, ConfigError or PackError
+        C->>T: locate(message, directory) on an error
+        C-->>M: exit 2 or 3 with the routine file's path, or the command's output
+    end
+```
+
 ## File Inventory
 
 | File | Action | Purpose |
@@ -1109,8 +1291,24 @@ sequenceDiagram
 | `plugins/claudio-routines/runtime/test_roles.py`, `test_collect.py`, `test_evaluate.py`, `test_state.py` | modify | Judgment: tests for pack entries with prose rules, the new collection fields, tracked monitor reads, lookback spans, the subcommands, rank order and typed analysis |
 | `plugins/claudio-routines/runtime/providers/test_<vendor>.py`, `test_<vendor>_relay.py`, `fixtures/<vendor>/`, `README.md` | modify | Judgment, observability adapter: discovery, priority, not found and lookback fixtures over both transports, and the discovery endpoint per vendor |
 | `plugins/claudio-routines/skills/routines/scripts/test_routines.py` | modify | Judgment: template steps and flag contracts of the `evaluate.py` subcommands |
+| `plugins/claudio-routines/runtime/config_tree.py` | new | Config split: load and merge `config.json` and the routine files, resolve transports, label and locate errors, reject secrets (TD-34, TD-35, TD-38) |
+| `plugins/claudio-routines/runtime/test_config_tree.py` | new | Config split: merge, clashes, file names, shared keys in a routine file, one-routine reads, transport resolution, error labels |
+| `plugins/claudio-routines/runtime/config.py` | modify | Config split: `read_routine` loads through `config_tree` |
+| `plugins/claudio-routines/runtime/roles.py` | modify | Config split: absent or empty `sources` rejected |
+| `plugins/claudio-routines/runtime/collect.py`, `evaluate.py` | modify | Config split: errors located to the routine file, `config_dirty` covers the routine file |
+| `plugins/claudio-routines/runtime/test_collect.py`, `test_evaluate.py`, `test_roles.py` | modify | Config split: routine files, transport defaults, located errors, `config_dirty`, empty `sources` |
+| `plugins/claudio-routines/skills/routines/scripts/routines.py` | modify | Config split: load through `config_tree`, error labels, `render --runnable`, `body` refusal, `literal-value` and `repeated-value` warnings |
+| `plugins/claudio-routines/skills/routines/scripts/lint.py` | modify | Config split: pure functions for the not-runnable marker, the `marker` finding and the literal value lines |
+| `plugins/claudio-routines/skills/routines/scripts/test_routines.py` | modify | Config split: merged loads, labels, export untouched `config/`, marker handling, warnings, the example tree |
+| `plugins/claudio-routines/skills/routines/templates/tribe-digest.md`, `chat-recap.md`, `weekly-status.md` | new | Structure-only skeletons, marked not runnable (TD-37) |
+| `plugins/claudio-routines/skills/routines/SKILL.md` | modify | Config split: routine files, `/routines run` renders with `--runnable`, sync stops on a marked template |
+| `plugins/claudio-routines/example/config.json`, `example/config/routines/*.json` | new | Config split: example private directory, shared file plus Prod watch and the three skeletons |
+| `plugins/claudio-routines/config.example.json` | delete | Config split: the example config sits in `example/` |
+| `plugins/claudio-routines/README.md` | modify | Config split: layout, provider default transport, template list with run status |
+| `plugins/claudio-routines/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` | modify | Config split: version bump |
+| `plugins/claudio-routines/runtime/providers/README.md` | modify | Secret guard: credentials hold variable names, connector-only providers set no `api` block (TD-38) |
 
-A task creates the private repository files (`config.json`, `templates/prod-watch.md`, `templates/prod-watch-runtime.md`, `routines/*`) outside this repository; this inventory never lists their content.
+Tasks create the private repository files (`config.json`, `config/routines/*.json`, `templates/prod-watch.md`, `templates/prod-watch-runtime.md`, `templates/tribe-digest.md`, `templates/chat-recap.md`, `templates/weekly-status.md`, `routines/*`) outside this repository; this inventory never lists their content.
 
 ## Non-Functional Requirements
 

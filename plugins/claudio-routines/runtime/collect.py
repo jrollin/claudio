@@ -6,10 +6,11 @@ import stat
 import sys
 from urllib.parse import urlsplit
 
+import config_tree
 import providers
 import roles
 import state
-from config import adapter_role, load_zone, read_routine
+from config import adapter_role, config_directory, load_zone, read_routine
 from providers._common import ended
 from providers._http import BODY_CAP
 from providers._errors import CredentialsMissing, PartialRead, SourceUnreadable
@@ -453,16 +454,23 @@ def build_parser():
     return parser
 
 
+def fail(message, code):
+    print(f"collect.py: {message}", file=sys.stderr)
+    return code
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
         return COMMANDS[args.command](args)
-    except (roles.ConfigError, state.InputError) as error:
-        print(f"collect.py: {error}", file=sys.stderr)
-        return 2
-    except (roles.PackError, state.Rejected) as error:
-        print(f"collect.py: rejected: {error}", file=sys.stderr)
-        return 3
+    except roles.ConfigError as error:
+        return fail(config_tree.locate(str(error), config_directory(args.config)), 2)
+    except state.InputError as error:
+        return fail(str(error), 2)
+    except roles.PackError as error:
+        return fail("rejected: " + config_tree.locate(str(error), config_directory(args.config)), 3)
+    except state.Rejected as error:
+        return fail(f"rejected: {error}", 3)
 
 
 if __name__ == "__main__":

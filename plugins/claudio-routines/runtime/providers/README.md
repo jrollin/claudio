@@ -2,6 +2,14 @@
 
 One module per vendor reads one role through `_http.py`. This file lists, per vendor, what a place needs before it reads a source whose transport is `api`.
 
+## Credentials in the config
+
+- Credentials hold environment variable names, never values: `providers.<name>.api.credentials` maps each credential to a variable name matching `^[A-Z][A-Z0-9_]*$`.
+- The loader rejects a key named `password`, `passwd`, `secret`, `token`, `api_key`, `apikey`, `app_key` or `private_key`, or ending in `_` and one of them, that holds anything but a variable name. Names are compared after splitting camelCase and turning dashes into underscores, so `apiKey`, `x-api-key` and `clientSecret` count. A mapping under such a key is checked leaf by leaf. The keys naming a routine, a provider or a source are names, never secret names.
+- The loader also rejects a string or a key shaped like a known token or a private key header, anywhere in `config.json` or a routine file. The token shapes are those of the leak guard's `token` rule. The error names the file, the key path and the rule (`secret-key` or `token`), never the value.
+- A secret without a known token shape, held under a key with an ordinary name, is not detected.
+- A provider read only through its connector sets no `api` block.
+
 ## datadog
 
 - Role: observability.

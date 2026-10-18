@@ -1,9 +1,14 @@
 import argparse
+import itertools
+import json
 import re
 
 ALLOWED_HOSTS = {"claude.ai", "github.com"}
 URL_HOST = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://(?:[^\s/@]*@)?([A-Za-z0-9.-]+)")
 BARE_HOST = re.compile(r"(?<![A-Za-z0-9.-])((?:[A-Za-z0-9-]+\.)+(?i:com|net|io|eu|ai|org))(?![A-Za-z0-9-])")
+LITERAL_VALUE_MIN_LENGTH = 8
+MARKER = "<!-- not runnable -->"
+MARKER_NEAR_MISS = re.compile(r"\s*<!--.*not\s*runnable", re.IGNORECASE)
 SETUP_RULES = ("host", "literal-number")
 PUBLIC_RULES = (
     ("literal-number", re.compile(r"[0-9]{5,}")),
@@ -103,6 +108,19 @@ def logical_lines(lines):
         yield start, " ".join(parts)
 
 
+def first_line(text):
+    return text.removeprefix("\ufeff").split("\n", 1)[0].removesuffix("\r")
+
+
+def is_marked(text):
+    return first_line(text) == MARKER
+
+
+def near_miss_marker(text):
+    line = first_line(text)
+    return line != MARKER and MARKER_NEAR_MISS.match(line) is not None
+
+
 def line_findings(path, text, line_rules):
     return {(path, number, rule) for number, line in enumerate(text.splitlines(), 1) for rule in line_rules(line)}
 
@@ -114,4 +132,30 @@ def template_findings(path, text, line_rules, contracts):
         for number, line in logical_lines(text.splitlines())
         for rule in contract_rules(line, contracts)
     )
+    if near_miss_marker(text):
+        findings.add((path, 1, "marker"))
     return findings
+
+
+def literal_values(text, values):
+    literals = {
+        key: value for key, value in values.items() if isinstance(value, str) and len(value) >= LITERAL_VALUE_MIN_LENGTH
+    }
+    return sorted(
+        (number, key)
+        for number, line in enumerate(text.splitlines(), 1)
+        for key, value in literals.items()
+        if value in line
+    )
+
+
+def repeated_values(values_by_routine):
+    holders = {}
+    for slug in sorted(values_by_routine):
+        for key, value in values_by_routine[slug].items():
+            holders.setdefault((key, json.dumps(value, sort_keys=True)), []).append(slug)
+    return sorted(
+        (first, second, key)
+        for (key, _), slugs in holders.items()
+        for first, second in itertools.combinations(slugs, 2)
+    )

@@ -392,6 +392,11 @@ class ConfigCheckTest(CollectTestCase):
         sources["api-p95"] = dict(sources["metrics"])
         self.assertEqual(self.fetch()[0], 3)
 
+    def test_empty_sources_exit_2_naming_the_key_path(self):
+        self.config["routines"][ROUTINE]["sources"] = {}
+        code, _, err = self.run_command("sources")
+        self.assertEqual((code, f"routines.{ROUTINE}.sources: " in err), (2, True))
+
     def test_an_unknown_source_exits_2(self):
         self.assertEqual(self.fetch(source="absent")[0], 2)
 
@@ -487,6 +492,108 @@ class CheckEnvTest(CollectTestCase):
     def test_prints_only_connectors_when_every_variable_is_set(self):
         environ = {OBS_KEY_VAR: "set", OBS_APP_VAR: "set", DOC_TOKEN_VAR: "set"}
         self.assertEqual(self.check_env(environ, place="local")[1], "connector metrics obs-local\n")
+
+
+class RoutineFileCase(CollectTestCase):
+    def setUp(self):
+        super().setUp()
+        self.routine = self.config["routines"].pop(ROUTINE)
+        self.config["providers"]["obs"]["transport"] = {"cloud": "api", "local": "api"}
+        self.config["providers"]["docs"]["transport"] = {"cloud": "mcp", "local": "api"}
+        sources = self.routine["sources"]
+        del sources["monitors"]["transport"]
+        sources["metrics"]["transport"] = {"local": "mcp"}
+        del sources["sources-page"]["transport"]
+
+    def write_routine_file(self, slug, text):
+        os.makedirs(self.path("config/routines"), exist_ok=True)
+        with open(self.path(f"config/routines/{slug}.json"), "w", encoding="utf-8") as handle:
+            handle.write(text)
+
+    def run_main(self, *argv):
+        self.write_routine_file(ROUTINE, json.dumps(self.routine))
+        return super().run_main(*argv)
+
+
+class RoutineFileTest(RoutineFileCase):
+    FILE = f"config/routines/{ROUTINE}.json"
+
+    def test_sources_prints_the_transport_resolved_from_the_provider_default(self):
+        expected = [
+            {"provider": "obs", "role": "observability", "source": "metrics", "transport": "mcp"},
+            {"provider": "obs", "role": "observability", "source": "monitors", "transport": "api"},
+            {"provider": "docs", "role": "document_store", "source": "sources-page", "transport": "api"},
+        ]
+        self.assertEqual(self.run_command("sources", place="local")[1], state.dump(expected).decode("utf-8"))
+
+    def test_sources_prints_the_provider_default_for_the_place_a_source_leaves_unset(self):
+        listed = json.loads(self.run_command("sources", place="cloud")[1])
+        self.assertEqual({item["source"]: item["transport"] for item in listed}, {"metrics": "api", "monitors": "api", "sources-page": "mcp"})
+
+    def test_check_env_reads_the_resolved_transports(self):
+        with mock.patch.dict(os.environ, {OBS_KEY_VAR: "set"}, clear=True):
+            code, out, _ = self.run_command("check-env")
+        expected = f"connector sources-page docs-cloud\nmissing metrics {OBS_APP_VAR}\nmissing monitors {OBS_APP_VAR}\n"
+        self.assertEqual((code, out), (1, expected))
+
+    def test_fetch_reads_an_api_source_resolved_from_the_provider_default(self):
+        code, _, err = self.fetch(source="monitors")
+        self.assertEqual((code, err, self.collection()["transport"]), (0, "", "api"))
+
+    def test_fetch_refuses_a_source_resolved_to_mcp(self):
+        self.assertEqual(self.fetch(source="metrics", place="local")[0], 2)
+
+    def test_another_routines_broken_file_does_not_stop_sources(self):
+        self.write_routine_file("other-routine", "{not json")
+        self.assertEqual(self.run_command("sources")[0], 0)
+
+    def test_another_routines_broken_file_does_not_stop_check_env(self):
+        self.write_routine_file("other-routine", "{not json")
+        with mock.patch.dict(os.environ, {OBS_KEY_VAR: "set", OBS_APP_VAR: "set"}, clear=True):
+            self.assertEqual(self.run_command("check-env")[0], 0)
+
+    def test_another_routines_broken_file_does_not_stop_fetch(self):
+        self.write_routine_file("other-routine", "{not json")
+        self.assertEqual(self.fetch(source="monitors")[0], 0)
+
+    def test_a_pack_error_exits_3(self):
+        del self.routine["query_pack"][0]["rule"]
+        self.assertEqual(self.fetch()[0], 3)
+
+    def test_a_pack_error_names_the_routine_file_and_the_key_path_inside_it(self):
+        del self.routine["query_pack"][0]["rule"]
+        self.assertIn(f"{self.FILE}: query_pack[0].rule: missing", self.fetch()[2])
+
+    def test_a_pack_error_prints_no_inline_key_path(self):
+        del self.routine["query_pack"][0]["rule"]
+        self.assertNotIn(f"routines.{ROUTINE}", self.fetch()[2])
+
+    def test_a_pack_error_naming_a_second_path_locates_both(self):
+        self.routine["query_pack"][1]["key"] = self.routine["query_pack"][0]["key"]
+        expected = f"{self.FILE}: query_pack[1].key: duplicates {self.FILE}: query_pack[0].key"
+        self.assertIn(expected, self.run_command("sources")[2])
+
+    def test_a_source_config_error_exits_2(self):
+        del self.routine["sources"]["monitors"]["scope_filter"]
+        self.assertEqual(self.fetch()[0], 2)
+
+    def test_a_source_config_error_names_the_routine_file_and_the_key_path_inside_it(self):
+        del self.routine["sources"]["monitors"]["scope_filter"]
+        self.assertIn(f"{self.FILE}: sources.monitors.scope_filter: missing", self.fetch()[2])
+
+    def test_an_unknown_source_names_the_routine_file(self):
+        code, _, err = self.fetch(source="absent")
+        self.assertEqual((code, f"{self.FILE}: sources.absent: no such source in the routine" in err), (2, True))
+
+    def test_a_transport_left_unresolved_exits_2_naming_the_routine_file(self):
+        del self.config["providers"]["obs"]["transport"]
+        code, _, err = self.run_command("sources")
+        self.assertEqual((code, f"{self.FILE}: sources.metrics.transport.cloud: " in err), (2, True))
+
+    def test_a_routine_in_neither_form_exits_2(self):
+        self.config["routines"] = {}
+        os.makedirs(self.path("config/routines"))
+        self.assertEqual(self.run_main("sources", "--config", self.write("config.json", self.config), "--routine", "absent", "--place", "cloud")[0], 2)
 
 
 class FetchReadTest(CollectTestCase):

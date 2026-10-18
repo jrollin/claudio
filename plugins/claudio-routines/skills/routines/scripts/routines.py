@@ -278,10 +278,10 @@ def cmd_export(args):
     return 0
 
 
-def require(mapping, key, kind, where):
+def require(mapping, key, kind, where, prefix="config.json: "):
     value = mapping.get(key) if isinstance(mapping, dict) else None
     if not isinstance(value, kind):
-        raise UsageError(f"config.json: {where}{key} is missing or has the wrong type")
+        raise UsageError(f"{prefix}{where}{key} is missing or has the wrong type")
     return value
 
 
@@ -302,15 +302,15 @@ def check_state_dir(value, key):
         raise UsageError(f"config.json: {key} must match ^(/[A-Za-z0-9._-]+)+/?$ without . or .. parts")
 
 
-def removed_key(key, replacement):
-    return UsageError(f"config.json: {key} is removed: set places.cloud.{replacement} and places.local.{replacement}")
+def removed_key(where, replacement):
+    return UsageError(f"{where} is removed: set places.cloud.{replacement} and places.local.{replacement}")
 
 
 def check_places(config):
     if "dir" in config["runtime"]:
-        raise removed_key("runtime.dir", "runtime_dir")
+        raise removed_key("config.json: runtime.dir", "runtime_dir")
     if "state.dir" in flatten(config.get("values", {})):
-        raise removed_key("values.state.dir", "state_dir")
+        raise removed_key("config.json: values.state.dir", "state_dir")
     places = require(config, "places", dict, "")
     for place in PLACES:
         settings = require(places, place, dict, "places.")
@@ -318,12 +318,34 @@ def check_places(config):
         check_state_dir(require(settings, "state_dir", str, f"places.{place}."), f"places.{place}.state_dir")
 
 
+def read_config_tree(private):
+    with runtime_imports(RUNTIME_PATH):
+        config_tree = importlib.import_module("config_tree")
+        try:
+            config = config_tree.load(os.path.join(private, "config.json"))
+        except config_tree.ConfigError as error:
+            raise UsageError(f"{error} (private directory {private})") from error
+        return config, {slug: config_tree.label(private, slug) for slug in config["routines"]}
+
+
+def routine_label(private, slug):
+    with runtime_imports(RUNTIME_PATH):
+        return importlib.import_module("config_tree").label(private, slug)
+
+
+def check_routine(where, routine):
+    for key in ("id", "template", "cron"):
+        require(routine, key, str, "", where)
+    if not TEMPLATE_NAME.fullmatch(routine["template"]):
+        raise UsageError(f"{where}template must match ^[a-z0-9-]+$")
+    if not isinstance(routine.get("values", {}), dict):
+        raise UsageError(f"{where}values must be an object")
+    if "state.dir" in flatten(routine.get("values", {})):
+        raise removed_key(f"{where}values.state.dir", "state_dir")
+
+
 def load_config(private):
-    path = os.path.join(private, "config.json")
-    try:
-        config = json.loads(read_text(path))
-    except json.JSONDecodeError as error:
-        raise UsageError(f"config {path} is not JSON: {error.msg}") from error
+    config, labels = read_config_tree(private)
     if not TIMEZONE_PATTERN.fullmatch(require(config, "timezone", str, "")):
         raise UsageError(f"config.json: timezone must match ^{TIMEZONE_PATTERN.pattern}$")
     runtime = require(config, "runtime", dict, "")
@@ -338,15 +360,8 @@ def load_config(private):
     if not isinstance(config.get("values", {}), dict):
         raise UsageError("config.json: values must be an object")
     check_places(config)
-    for slug, routine in require(config, "routines", dict, "").items():
-        for key in ("id", "template", "cron"):
-            require(routine, key, str, f"routines.{slug}.")
-        if not TEMPLATE_NAME.fullmatch(routine["template"]):
-            raise UsageError(f"config.json: routines.{slug}.template must match ^[a-z0-9-]+$")
-        if not isinstance(routine.get("values", {}), dict):
-            raise UsageError(f"config.json: routines.{slug}.values must be an object")
-        if "state.dir" in flatten(routine.get("values", {})):
-            raise removed_key(f"routines.{slug}.values.state.dir", "state_dir")
+    for slug, routine in config["routines"].items():
+        check_routine(labels[slug], routine)
     return config
 
 
@@ -368,9 +383,13 @@ def flatten(tree, prefix=""):
     return flat
 
 
+def routine_values(config, routine):
+    return flatten(merge(config.get("values", {}), routine.get("values", {})))
+
+
 def build_context(config, routine, place, post):
     settings = config["places"][place]
-    context = flatten(merge(config.get("values", {}), routine.get("values", {})))
+    context = routine_values(config, routine)
     context.update(flatten({"runtime": config["runtime"]}))
     context["timezone"] = config["timezone"]
     context.update({
@@ -413,7 +432,7 @@ def template_path(private, name):
 def configured(config, slug):
     routine = config["routines"].get(slug)
     if routine is None:
-        raise UsageError(f"routine {slug} is not in config.json")
+        raise UsageError(f"routine {slug} is neither under routines in config.json nor in config/routines/{slug}.json")
     return routine
 
 
@@ -422,11 +441,10 @@ def render_routine(private, config, slug, place="cloud", post=False):
     path = template_path(private, routine["template"])
     context, own_keys = build_context(config, routine, place, post)
     rendered, used = render_text(read_text(path), context, path)
-    for key in sorted(own_keys - used):
-        print(
-            f"routines.py: warning: routines.{slug}.values.{key} is not used by template {routine['template']}",
-            file=sys.stderr,
-        )
+    unused = sorted(own_keys - used)
+    where = routine_label(private, slug) if unused else ""
+    for key in unused:
+        print(f"routines.py: warning: {where}values.{key} is not used by template {routine['template']}", file=sys.stderr)
     return rendered, used
 
 
@@ -437,9 +455,25 @@ def render_setup_script(runtime, runtime_dir):
     return render_text(read_text(path), context, path)[0]
 
 
+def marked_template(private, config, slug):
+    name = configured(config, slug)["template"]
+    return name if lint.is_marked(read_text(template_path(private, name))) else None
+
+
+def refuse_marked(name, advice):
+    if name is not None:
+        raise UsageError(f"template {name} is marked not runnable: {advice}")
+
+
 def cmd_render(args):
     private = resolve_private(args.private)
-    rendered, _ = render_routine(private, load_config(private), args.slug, args.place, args.post)
+    config = load_config(private)
+    marked = marked_template(private, config, args.slug)
+    if args.runnable:
+        refuse_marked(marked, "render it without --runnable to read it")
+    rendered, _ = render_routine(private, config, args.slug, args.place, args.post)
+    if marked is not None:
+        print(f"routines.py: warning: template {marked} is marked not runnable", file=sys.stderr)
     if args.out:
         write_bytes(args.out, rendered.encode("utf-8"))
     else:
@@ -466,7 +500,7 @@ def load_snapshot(private, config, slug):
         if not isinstance(value, kind):
             raise UsageError(f"snapshot {base}.json: {key} is missing or has the wrong type")
     if snapshot["id"] != configured(config, slug)["id"]:
-        raise UsageError(f"routine {slug}: routines.{slug}.id in config.json differs from the exported id")
+        raise UsageError(f"routine {slug}: {routine_label(private, slug)}id differs from the exported id")
     return snapshot, read_text(base + ".prompt.md")
 
 
@@ -508,7 +542,9 @@ def cmd_diff(args):
     config = load_config(private)
     exported = listed_slugs(os.path.join(private, "routines"))
     if args.slug and args.slug not in config["routines"] and args.slug not in exported:
-        raise UsageError(f"routine {args.slug} is neither in config.json nor exported")
+        raise UsageError(
+            f"routine {args.slug} is neither configured (config.json or config/routines/{args.slug}.json) nor exported"
+        )
     drift = False
     for slug in [args.slug] if args.slug else sorted(set(config["routines"]) | exported):
         if slug in config["routines"]:
@@ -531,6 +567,7 @@ def event_uuid(value):
 def cmd_body(args):
     private = resolve_private(args.private)
     config = load_config(private)
+    refuse_marked(marked_template(private, config, args.slug), "it is never pushed to a live routine")
     event = event_uuid(args.uuid)
     rendered, _ = render_routine(private, config, args.slug)
     found = load_snapshot(private, config, args.slug)
@@ -676,7 +713,31 @@ def private_findings(args):
             findings.update((error.path, line, "placeholder") for line, _ in error.problems)
     for key in sorted(set(flatten(config.get("values", {}))) - used):
         print(f"routines.py: warning: shared value {key} is not used by any configured routine", file=sys.stderr)
+    for path, line, key in literal_value_warnings(private, config):
+        print(f"routines.py: warning: {path}:{line}: holds the value of {key} as literal text", file=sys.stderr)
+    for first, second, key in repeated_value_warnings(config):
+        print(
+            f"routines.py: warning: routines {first} and {second} both set values.{key} to the same value: "
+            "move it to the shared values",
+            file=sys.stderr,
+        )
     return findings
+
+
+def literal_value_warnings(private, config):
+    contexts = {}
+    for slug in sorted(config["routines"]):
+        routine = config["routines"][slug]
+        contexts.setdefault(template_path(private, routine["template"]), []).append(routine_values(config, routine))
+    found = set()
+    for path, values_list in contexts.items():
+        text = read_text(path)
+        found.update((path, line, key) for values in values_list for line, key in lint.literal_values(text, values))
+    return sorted(found)
+
+
+def repeated_value_warnings(config):
+    return lint.repeated_values({slug: flatten(routine.get("values", {})) for slug, routine in config["routines"].items()})
 
 
 def cmd_lint(args):
@@ -701,6 +762,7 @@ def build_parser():
     render.add_argument("slug")
     render.add_argument("--place", choices=PLACES, default="cloud", help="place to render for, default cloud")
     render.add_argument("--post", action="store_true", help="post the digest from the local place")
+    render.add_argument("--runnable", action="store_true", help="exit 2 on a template marked not runnable")
     render.add_argument("--out")
     command("diff", "compare rendered routines with their snapshots").add_argument("slug", nargs="?")
     body = command("body", "print the RemoteTrigger update body")
