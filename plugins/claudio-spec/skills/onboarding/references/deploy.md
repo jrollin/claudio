@@ -34,7 +34,7 @@ One row per deployed unit: what invokes it, and why it exists. This is the cloud
 | Unit | Trigger | Source | Purpose | Evidence |
 |------|---------|--------|---------|----------|
 | `ApiGetKpis` | HTTP | API GW `GET /kpis` | serve weekly KPIs | `serverless.ts:…` |
-| `SendSkelloAppToRds` | Stream | Kinesis `skelloapp-bus` | replay CDC | `serverless.ts:315` |
+| `SendEventsToRds` | Stream | Kinesis `app-event-bus` | replay CDC | `serverless.ts:315` |
 | `NightlyRollup` | Schedule | cron | rebuild aggregates | `template.yaml:…` |
 
 Trigger types: **HTTP/API**, **queue** (SQS/Pub-Sub/Service Bus), **stream** (Kinesis/DynamoDB Streams/Kafka), **schedule/cron**, **object event** (S3/GCS), **direct invoke**. Flag disposable/one-off units (migration scaffolding) plainly so a new dev doesn't mistake them for core.

@@ -104,7 +104,7 @@ For each flow, give the diagram then a one-line caption naming the **trigger** a
 
 ```mermaid
 flowchart LR
-  kin["Kinesis<br/>skelloapp-bus"] -->|"batch of 50"| lam["Lambda<br/>SendSkelloAppToRds"] --> rds["RdsService<br/>route by table"] --> db[("Postgres")]
+  kin["Kinesis<br/>app-event-bus"] -->|"batch of 50"| lam["Lambda<br/>SendEventsToRds"] --> rds["RdsService<br/>route by table"] --> db[("Postgres")]
 ```
 *Trigger: CDC records on the Kinesis stream → replayed as idempotent upserts into Postgres.*
 
