@@ -11,7 +11,7 @@ import evaluate
 import state
 
 ROUTINE = "prod-watch"
-ADAPTER_ROLES = {"obs": "observability", "docs": "document_store"}
+ADAPTER_ROLES = {"obs": "observability", "docs": "document_store", "tracker": "issue_tracker"}
 MON = str(10**6 + 77)
 KEY = state.MONITOR_PREFIX + MON
 
@@ -212,8 +212,11 @@ MUTES_BLOCKS = [
 
 
 def notes(blocks=None):
-    page = {"id": "page-1", "title": "Sources", "last_edited": "2026-06-01T20:00:00Z", "blocks": MUTES_BLOCKS if blocks is None else blocks}
-    return collection("notes", "document_store", {"pages": [page]}, {"last_edited": "2026-06-01T20:00:00Z"}, {})
+    page = {
+        "id": "page-1", "title": "Sources", "last_edited": "2026-06-01T20:00:00Z", "link": "https://docs.example.test/page1",
+        "blocks": MUTES_BLOCKS if blocks is None else blocks,
+    }
+    return collection("notes", "document_store", {"pages": [page]}, {"pages": {"page-1": "2026-06-01T20:00:00Z"}}, {})
 
 
 def metrics_collection(name, metrics, cursor, entries):

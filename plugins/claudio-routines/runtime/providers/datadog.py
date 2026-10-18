@@ -5,7 +5,7 @@ import re
 import urllib.parse
 
 import roles
-from state import clean_text
+from state import clean_text, load_zone, local_date
 
 from . import _common
 from ._common import as_list, dig, json_object
@@ -38,6 +38,14 @@ MONITOR_ID = re.compile(r"[0-9]+")
 STATE_CAP = 50
 EVENT_MONITOR_CAP = 50
 ERROR_CLASS = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]{0,63}")
+NO_DATAPOINTS = "no datapoints"
+TREND_AGGREGATORS = {
+    "max": max,
+    "min": min,
+    "sum": sum,
+    "avg": lambda values: sum(values) / len(values),
+    "last": lambda values: values[-1],
+}
 SCRIPT_TEMPLATE = r"""import { client, v1, v2 } from "@datadog/datadog-api-client";
 
 const PARAMS_TEXT = __PARAMS_LITERAL__;
@@ -181,21 +189,29 @@ async function readEventMonitors(api, events, discovery) {
   return { capped: ids.length > params.event_monitor_cap, reads };
 }
 
-async function readMetric(api, entry) {
+async function readSeries(api, entry, span, interval) {
   const query = { dataSource: "metrics", query: entry.query, name: "a" };
+  const attributes = { ...span, interval, queries: [query], formulas: [{ formula: "a" }] };
+  const body = await api.queryTimeseriesData({ body: { data: { type: "timeseries_request", attributes } } });
+  const data = (body.data && body.data.attributes) || {};
+  return { ok: true, timeseries: { times: data.times, values: data.values } };
+}
+
+async function readMetric(api, entry) {
   const span = entry.span ? { from: entry.span.from_ms, to: entry.span.to_ms } : runSpan;
   if (entry.read === "hourly") {
-    const interval = entry.span ? params.daily_interval_ms : params.interval_ms;
-    const attributes = { ...span, interval, queries: [query], formulas: [{ formula: "a" }] };
-    const body = await api.queryTimeseriesData({ body: { data: { type: "timeseries_request", attributes } } });
-    const data = (body.data && body.data.attributes) || {};
-    return { ok: true, timeseries: { times: data.times, values: data.values } };
+    return readSeries(api, entry, span, entry.span ? params.daily_interval_ms : params.interval_ms);
   }
+  const query = { dataSource: "metrics", query: entry.query, name: "a" };
   const formula = { formula: "a", limit: { count: entry.top, order: "desc" } };
   const attributes = { ...span, queries: [{ ...query, aggregator: entry.aggregator }], formulas: [formula] };
   const body = await api.queryScalarData({ body: { data: { type: "scalar_request", attributes } } });
   const columns = (body.data && body.data.attributes && body.data.attributes.columns) || [];
   return { ok: true, scalar: { columns: columns.map((column) => ({ type: column.type, name: column.name, values: column.values })) } };
+}
+
+async function readTrend(api, entry) {
+  return readSeries(api, entry, { from: entry.trend_span.from_ms, to: entry.trend_span.to_ms }, params.interval_ms);
 }
 
 async function collect() {
@@ -216,7 +232,9 @@ async function collect() {
   const metricsApi = new v2.MetricsApi(cfg);
   const metrics = [];
   for (const entry of params.entries) {
-    metrics.push({ entry: entry.key, ...(await guarded(() => readMetric(metricsApi, entry))) });
+    const item = await guarded(() => readMetric(metricsApi, entry));
+    const trend = item.ok && entry.trend_span ? { trend: await guarded(() => readTrend(metricsApi, entry)) } : {};
+    metrics.push({ entry: entry.key, ...item, ...trend });
   }
   return { metrics };
 }
@@ -279,7 +297,7 @@ def parse(source, window, cursor, entries, responses, digests):
         monitors, capped, failure = _relay_event_monitors(data, app, call_id, ids)
         return _with_discovery(result, _with_event_monitors(discovery, monitors, capped, failure))
     items = _payload_items(data, "metrics", call_id)
-    read, statuses = _read_entries(entries, lambda entry: _relay_metric(entry, items(entry)))
+    read, statuses = _read_entries(entries, lambda entry: _relay_metric(entry, items(entry), window, call_id))
     return _metrics_result(cursor, read, statuses)
 
 
@@ -311,9 +329,9 @@ def _script_params(source, window, cursor, entries):
 def _metric_params(entry):
     fields = ("key", "query", "read", "aggregator")
     selected = {**{field: entry[field] for field in fields}, "top": entry.get("top") or 1}
-    span = entry.get("span")
-    if span:
-        selected["span"] = {"from_ms": span["from_ts"] * 1000, "to_ms": span["to_ts"] * 1000}
+    for name in ("span", "trend_span"):
+        if entry.get(name):
+            selected[name] = {"from_ms": entry[name]["from_ts"] * 1000, "to_ms": entry[name]["to_ts"] * 1000}
     return selected
 
 
@@ -407,10 +425,19 @@ def _relay_event_monitor(read, app):
     return _event_monitor_record(monitor_id, dig(_monitor_call(_relayed, read, "GET", path), "monitor"), path, app)
 
 
-def _relay_metric(entry, item):
+def _relay_metric(entry, item, window, call_id):
     hourly = entry["read"] == "hourly"
     body = _entry_call(_relayed, item, "POST", TIMESERIES_PATH if hourly else SCALAR_PATH)
-    return _metric_record(entry, {"data": {"attributes": dig(body, "timeseries" if hourly else "scalar")}})
+    record = _metric_record(entry, {"data": {"attributes": dig(body, "timeseries" if hourly else "scalar")}})
+    return _with_trend(entry, record, window, lambda: _relay_trend(entry, item, call_id))
+
+
+def _relay_trend(entry, item, call_id):
+    trend = dig(item, "trend")
+    if not isinstance(trend, dict):
+        raise SourceUnreadable(f"{TOOL} {call_id}: payload without trend for entry {entry['key']}")
+    body = _entry_call(_relayed, trend, "POST", TIMESERIES_PATH)
+    return {"data": {"attributes": dig(body, "timeseries")}}
 
 
 def _require_links_base(source):
@@ -677,13 +704,44 @@ def _iso(text):
 
 
 def _read_metric(entry, window, http):
+    return _with_trend(entry, _read_window(entry, window, http), window, lambda: _read_trend(entry, http))
+
+
+def _read_window(entry, window, http):
     lookback = entry.get("span")
-    bounds = lookback or window
-    span = {"from": bounds["from_ts"] * 1000, "to": bounds["to_ts"] * 1000}
+    span = _span_ms(lookback or window)
     if entry["read"] != "hourly":
         return _metric_record(entry, _entry_call(http.post, SCALAR_PATH, _scalar_body(entry, span)))
     body = _entry_call(http.post, TIMESERIES_PATH, _timeseries_body(entry, span, DAY_MS if lookback else HOUR_MS))
     return _metric_record(entry, body)
+
+
+def _read_trend(entry, http):
+    return _entry_call(http.post, TIMESERIES_PATH, _timeseries_body(entry, _span_ms(entry["trend_span"]), HOUR_MS))
+
+
+def _span_ms(bounds):
+    return {"from": bounds["from_ts"] * 1000, "to": bounds["to_ts"] * 1000}
+
+
+def _with_trend(entry, record, window, read):
+    if not entry.get("trend_span"):
+        return record
+    try:
+        return {**record, **_trend(entry, read(), load_zone(window["timezone"]))}
+    except EntryFailed as exc:
+        return {**record, "trend": None, "trend_reason": str(exc)}
+
+
+def _trend(entry, body, zone):
+    days = {}
+    for point in _points(body):
+        if point["value"] is not None:
+            days.setdefault(local_date(point["ts"], zone).isoformat(), []).append(point["value"])
+    if not days:
+        return {"trend": None, "trend_reason": NO_DATAPOINTS}
+    aggregate = TREND_AGGREGATORS[entry["aggregator"]]
+    return {"trend": [{"day": day, "value": aggregate(days[day])} for day in sorted(days)], "trend_reason": None}
 
 
 def _metric_record(entry, body):
@@ -723,16 +781,20 @@ def _top(body):
     return {"value": groups[0]["value"] if groups else None, "hourly": [], "groups": groups}
 
 
-def _hourly(body):
+def _points(body):
     attributes = dig(body, "data", "attributes")
     series = as_list(dig(attributes, "values"))
     first = as_list(series[0]) if series else []
     times = [_number(ts) for ts in as_list(dig(attributes, "times"))]
     if None in times:
         raise EntryFailed(f"POST {TIMESERIES_PATH}: response time is not a number")
-    points = sorted(
+    return sorted(
         ({"ts": int(ts) // 1000, "value": _number(value)} for ts, value in zip(times, first)), key=lambda point: point["ts"]
     )
+
+
+def _hourly(body):
+    points = _points(body)
     present = [point["value"] for point in points if point["value"] is not None]
     return {"value": max(present, default=None), "hourly": points, "groups": []}
 

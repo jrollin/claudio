@@ -54,6 +54,46 @@
         "cloud": "api",
         "local": "api"
       }
+    },
+    "chat": {
+      "adapter": "<chat-adapter>",
+      "api": {
+        "base_url": "https://<chat-api-host>",
+        "credentials": {
+          "token": "CHAT_TOKEN"
+        }
+      },
+      "mcp": {
+        "connectors": {
+          "cloud": "<chat-connector-name>",
+          "local": "<chat-connector-name>"
+        }
+      },
+      "transport": {
+        "cloud": "api",
+        "local": "api"
+      }
+    },
+    "issue-tracker": {
+      "adapter": "<issue-tracker-adapter>",
+      "api": {
+        "base_url": "https://<issue-tracker-api-host>",
+        "credentials": {
+          "email": "ISSUE_TRACKER_EMAIL",
+          "token": "ISSUE_TRACKER_TOKEN"
+        }
+      },
+      "links_base": "https://<issue-tracker-host>",
+      "mcp": {
+        "connectors": {
+          "cloud": "<issue-tracker-connector-name>",
+          "local": "<issue-tracker-connector-name>"
+        }
+      },
+      "transport": {
+        "cloud": "api",
+        "local": "api"
+      }
     }
   },
   "values": {

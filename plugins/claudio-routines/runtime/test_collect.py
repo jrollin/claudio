@@ -171,8 +171,18 @@ RESULTS = {
         {"metrics": {"api-p95": 420.5}},
     ),
     "document_store": (
-        {"pages": [{"id": page_id(), "title": "Sources", "last_edited": UTC_EDIT, "blocks": [{"type": "heading", "text": "Mutes", "rows": None}]}]},
-        {"last_edited": UTC_EDIT},
+        {
+            "pages": [
+                {
+                    "id": page_id(),
+                    "title": "Sources",
+                    "last_edited": UTC_EDIT,
+                    "link": "https://docs.example.test/" + page_id().replace("-", ""),
+                    "blocks": [{"type": "heading", "text": "Mutes", "rows": None}],
+                }
+            ]
+        },
+        {"pages": {page_id(): UTC_EDIT}},
     ),
 }
 
@@ -290,6 +300,9 @@ class CollectTestCase(unittest.TestCase):
     def written(self):
         with open(self.path("collection.json"), encoding="utf-8") as handle:
             return handle.read()
+
+    def added_to_window(self, first_read_from_ts=None):
+        return {"first_read_from_ts": self.window["from_ts"] if first_read_from_ts is None else first_read_from_ts, "timezone": "Europe/Paris"}
 
     def adapter_keys(self, adapter):
         return [item["key"] for item in adapter.calls[0]["entries"]]
@@ -644,7 +657,7 @@ class FetchReadTest(CollectTestCase):
 
     def test_passes_the_window(self):
         self.fetch()
-        self.assertEqual(self.obs.calls[0]["window"], self.window)
+        self.assertEqual(self.obs.calls[0]["window"], {**self.window, **self.added_to_window()})
 
     def test_passes_the_stored_monitors_cursor(self):
         self.fetch()
@@ -655,9 +668,14 @@ class FetchReadTest(CollectTestCase):
         self.assertEqual(self.obs.calls[0]["cursor"], {"metrics": {"api-p95": 380.0}})
 
     def test_passes_the_stored_cursor_of_another_role(self):
+        self.state["cursors"]["sources-page"] = {"pages": {page_id(): UTC_EDIT}}
+        self.fetch(source="sources-page", place="local")
+        self.assertEqual(self.doc.calls[0]["cursor"], {"pages": {page_id(): UTC_EDIT}})
+
+    def test_passes_a_null_cursor_when_the_stored_one_has_the_former_document_store_shape(self):
         self.state["cursors"]["sources-page"] = {"last_edited": UTC_EDIT}
         self.fetch(source="sources-page", place="local")
-        self.assertEqual(self.doc.calls[0]["cursor"], {"last_edited": UTC_EDIT})
+        self.assertIsNone(self.doc.calls[0]["cursor"])
 
     def test_passes_a_null_cursor_when_none_is_stored(self):
         self.fetch(source="sources-page", place="local")
@@ -906,13 +924,169 @@ class LookbackSpanTest(CollectTestCase):
 
     def test_leaves_the_run_window_of_the_call_unchanged(self):
         self.lookback()
-        self.assertEqual(self.obs.calls[0]["window"], self.window)
+        self.assertEqual(self.obs.calls[0]["window"], {**self.window, **self.added_to_window()})
 
     def test_does_not_hand_a_deferred_lookback_entry_to_the_adapter(self):
         self.config["routines"][ROUTINE]["query_pack"][3]["lookback_days"] = 7
         self.state["run"]["daily_metrics_on"] = PARIS_DAY
         self.fetch(source="metrics")
         self.assertEqual(self.adapter_keys(self.obs), ["api-p95"])
+
+
+class FirstReadWindowTest(CollectTestCase):
+    def handed_window(self, source="metrics", place="cloud"):
+        self.fetch(source=source, place=place)
+        adapter = self.doc if source == "sources-page" else self.obs
+        return adapter.calls[0]["window"]
+
+    def test_sets_the_first_read_start_to_the_window_start_without_first_read_days(self):
+        self.assertEqual(self.handed_window()["first_read_from_ts"], self.window["from_ts"])
+
+    def test_sets_the_first_read_start_the_given_days_before_the_window_end(self):
+        self.config["routines"][ROUTINE]["first_read_days"] = 7
+        self.assertEqual(self.handed_window()["first_read_from_ts"], WINDOW_END - 7 * 86400)
+
+    def test_sets_the_first_read_start_31_days_before_the_window_end(self):
+        self.config["routines"][ROUTINE]["first_read_days"] = 31
+        self.assertEqual(self.handed_window()["first_read_from_ts"], WINDOW_END - 31 * 86400)
+
+    def test_sets_the_first_read_start_from_the_window_end_of_a_longer_window(self):
+        self.window["from_ts"] = WINDOW_END - 5 * 86400
+        self.config["routines"][ROUTINE]["first_read_days"] = 1
+        self.assertEqual(self.handed_window()["first_read_from_ts"], WINDOW_END - 86400)
+
+    def test_hands_the_first_read_start_to_an_adapter_of_another_role(self):
+        self.config["routines"][ROUTINE]["first_read_days"] = 3
+        self.assertEqual(self.handed_window("sources-page", "local")["first_read_from_ts"], WINDOW_END - 3 * 86400)
+
+    def test_keeps_the_window_start_and_end_of_the_run(self):
+        self.config["routines"][ROUTINE]["first_read_days"] = 7
+        window = self.handed_window()
+        self.assertEqual((window["from_ts"], window["to_ts"]), (self.window["from_ts"], self.window["to_ts"]))
+
+    def test_hands_the_configured_time_zone_name(self):
+        self.assertEqual(self.handed_window()["timezone"], "Europe/Paris")
+
+    def test_hands_a_null_time_zone_to_an_adapter_of_another_role_when_none_is_configured(self):
+        del self.config["timezone"]
+        self.assertIsNone(self.handed_window("sources-page", "local")["timezone"])
+
+    def test_rejects_zero_first_read_days_with_exit_2_naming_the_key(self):
+        self.config["routines"][ROUTINE]["first_read_days"] = 0
+        code, _, err = self.fetch(source="metrics")
+        self.assertEqual((code, "first_read_days" in err), (2, True))
+
+    def test_rejects_32_first_read_days_with_exit_2(self):
+        self.config["routines"][ROUTINE]["first_read_days"] = 32
+        self.assertEqual(self.fetch(source="metrics")[0], 2)
+
+    def test_rejects_a_text_first_read_days_with_exit_2(self):
+        self.config["routines"][ROUTINE]["first_read_days"] = "7"
+        self.assertEqual(self.fetch(source="metrics")[0], 2)
+
+
+class TrendSpanTest(CollectTestCase):
+    START_OF_7_DAYS = 1779487200
+    START_OF_30_DAYS = 1777500000
+    MIDNIGHT_ENDING_7_DAYS = 1780005600
+    SPRING_END = 1775296800
+    SPRING_START = 1774738800
+    FALL_END = 1793440800
+    FALL_START = 1792879200
+
+    def setUp(self):
+        super().setUp()
+        self.state["run"]["daily_metrics_on"] = UTC_DAY
+
+    def trend(self, days=7, end=WINDOW_END):
+        self.config["routines"][ROUTINE]["query_pack"][2]["trend_days"] = days
+        self.window.update(from_ts=end - 3600, to_ts=end)
+        self.fetch(source="metrics")
+        return {item["key"]: item for item in self.obs.calls[0]["entries"]}
+
+    def test_starts_the_span_at_the_local_midnight_of_the_first_of_7_local_days(self):
+        self.assertEqual(self.trend(7)["api-p95"]["trend_span"]["from_ts"], self.START_OF_7_DAYS)
+
+    def test_starts_the_span_at_the_local_midnight_of_the_first_of_30_local_days(self):
+        self.assertEqual(self.trend(30)["api-p95"]["trend_span"]["from_ts"], self.START_OF_30_DAYS)
+
+    def test_ends_the_span_at_the_window_end(self):
+        self.assertEqual(self.trend(7)["api-p95"]["trend_span"]["to_ts"], WINDOW_END)
+
+    def test_ends_the_span_at_the_window_end_of_a_cut_window(self):
+        self.window["cut"] = {"from_ts": WINDOW_END - 7200, "to_ts": WINDOW_END - 3600}
+        self.assertEqual(self.trend(7)["api-p95"]["trend_span"], {"from_ts": self.START_OF_7_DAYS, "to_ts": WINDOW_END})
+
+    def test_counts_a_window_ending_at_a_local_midnight_in_the_new_local_day(self):
+        self.assertEqual(
+            self.trend(7, end=self.MIDNIGHT_ENDING_7_DAYS)["api-p95"]["trend_span"]["from_ts"], self.START_OF_7_DAYS
+        )
+
+    def test_starts_the_span_at_the_local_midnight_of_a_day_after_a_spring_forward(self):
+        self.assertEqual(self.trend(7, end=self.SPRING_END)["api-p95"]["trend_span"]["from_ts"], self.SPRING_START)
+
+    def test_starts_the_span_at_the_local_midnight_of_a_day_before_a_fall_back(self):
+        self.assertEqual(self.trend(7, end=self.FALL_END)["api-p95"]["trend_span"]["from_ts"], self.FALL_START)
+
+    def test_keeps_the_trend_days_on_the_entry(self):
+        self.assertEqual(self.trend(7)["api-p95"]["trend_days"], 7)
+
+    def test_gives_an_entry_without_trend_days_no_trend_span(self):
+        self.assertNotIn("trend_span", self.trend(7)["db-size"])
+
+    def test_gives_a_lookback_entry_its_span_and_no_trend_span(self):
+        self.config["routines"][ROUTINE]["query_pack"][3]["lookback_days"] = 7
+        entry = self.trend(7)["db-size"]
+        self.assertEqual(("span" in entry, "trend_span" in entry), (True, False))
+
+    def test_leaves_the_run_window_of_the_call_with_the_same_end(self):
+        self.trend(7)
+        self.assertEqual(self.obs.calls[0]["window"]["to_ts"], WINDOW_END)
+
+
+class ReportedEntriesTest(CollectTestCase):
+    OTHER_PAGE = "page-cdcdcdcd"
+
+    def fetch_pages(self, entries):
+        records, cursor = RESULTS["document_store"]
+        self.doc.result = {"records": records, "cursor": cursor, "entries": entries}
+        return self.fetch(source="sources-page", place="local")
+
+    def test_keeps_the_entries_a_document_store_adapter_reports_per_page(self):
+        reported = {page_id(): OK, self.OTHER_PAGE: {"status": "deferred", "reason": "unchanged"}}
+        self.fetch_pages(reported)
+        self.assertEqual(self.collection()["entries"], reported)
+
+    def test_keeps_a_failed_page_entry_with_its_reason(self):
+        reported = {page_id(): OK, self.OTHER_PAGE: {"status": "failed", "reason": "not found or not shared"}}
+        self.fetch_pages(reported)
+        self.assertEqual(self.collection()["entries"][self.OTHER_PAGE], reported[self.OTHER_PAGE])
+
+    def test_rejects_a_reported_ok_entry_carrying_a_reason(self):
+        self.fetch_pages({page_id(): {"status": "ok", "reason": "read"}})
+        collection = self.collection()
+        self.assertEqual(
+            (collection["read"], collection["reason"].startswith(f"adapter output invalid: entries.{page_id()}.reason")),
+            (False, True),
+        )
+
+    def test_reports_no_entry_for_a_document_store_source_not_read(self):
+        self.doc.error = SourceUnreadable("HTTP 503")
+        self.fetch(source="sources-page", place="local")
+        self.assertEqual(self.collection()["entries"], {})
+
+    def test_keeps_ignoring_an_entry_an_observability_adapter_reports_outside_its_selection(self):
+        self.adapter_result({API_KEY: OK, DB_KEY: OK, "page-cdcdcdcd": OK})
+        self.fetch()
+        self.assertEqual(sorted(self.collection()["entries"]), [API_KEY, DB_KEY])
+
+    def test_gives_the_issue_tracker_an_empty_records_shape_its_role_accepts(self):
+        probe = {
+            "schema": 1, "source": "issues", "role": "issue_tracker", "provider": "tracker", "transport": "api", "place": "cloud",
+            "window": {"from_ts": 1, "to_ts": 2}, "read": False, "reason": "not read", "cursor": None,
+            "records": collect.EMPTY_RECORDS["issue_tracker"], "entries": {},
+        }
+        self.assertIsNone(roles.validate_collection(probe))
 
 
 class RoutineRulesTest(CollectTestCase):
@@ -1099,6 +1273,144 @@ class RelayTestCase(CollectTestCase):
 
     def call_ids(self):
         return [call["id"] for call in self.plan_doc()["calls"]]
+
+
+class SavedResultUnwrapTest(RelayTestCase):
+    def blocks(self, *texts):
+        return json.dumps([{"type": "text", "text": text} for text in texts])
+
+    def plan_sees(self, saved):
+        self.plan()
+        self.respond("sources-page-1", saved)
+        self.plan()
+        return self.doc.plans[1]["responses"]["sources-page-1"]
+
+    def parse_sees(self, saved):
+        self.plan()
+        self.respond("sources-page-1", saved)
+        self.plan()
+        self.respond("sources-page-2")
+        self.plan()
+        self.parse()
+        return self.doc.parses[0]["responses"]["sources-page-1"]
+
+    def test_plan_hands_over_the_text_of_a_single_text_block(self):
+        self.assertEqual(self.plan_sees(self.blocks('{"a": 1}')), '{"a": 1}')
+
+    def test_parse_hands_over_the_text_of_a_single_text_block(self):
+        self.assertEqual(self.parse_sees(self.blocks('{"a": 1}')), '{"a": 1}')
+
+    def test_joins_the_texts_of_several_text_blocks_in_order(self):
+        self.assertEqual(self.parse_sees(self.blocks('{"a": ', "1}")), '{"a": 1}')
+
+    def test_unwraps_a_block_that_carries_other_keys(self):
+        saved = json.dumps([{"type": "text", "text": "body", "annotations": None}])
+        self.assertEqual(self.parse_sees(saved), "body")
+
+    def test_unwraps_the_text_of_a_json_array_result(self):
+        self.assertEqual(self.parse_sees(self.blocks("[1, 2]")), "[1, 2]")
+
+    def test_keeps_a_raw_response_unchanged(self):
+        self.assertEqual(self.parse_sees('{"a": 1}'), '{"a": 1}')
+
+    def test_keeps_a_list_with_a_block_of_another_type_unchanged(self):
+        saved = json.dumps([{"type": "text", "text": "a"}, {"type": "image", "data": "b"}])
+        self.assertEqual(self.parse_sees(saved), saved)
+
+    def test_keeps_a_list_with_a_block_whose_text_is_not_a_string_unchanged(self):
+        saved = json.dumps([{"type": "text", "text": 7}])
+        self.assertEqual(self.parse_sees(saved), saved)
+
+    def test_keeps_a_list_with_a_block_without_text_unchanged(self):
+        saved = json.dumps([{"type": "text"}])
+        self.assertEqual(self.parse_sees(saved), saved)
+
+    def test_keeps_a_list_of_strings_unchanged(self):
+        self.assertEqual(self.parse_sees('["text"]'), '["text"]')
+
+    def test_keeps_a_list_with_an_item_that_is_not_an_object_unchanged(self):
+        saved = json.dumps([{"type": "text", "text": "a"}, "b"])
+        self.assertEqual(self.parse_sees(saved), saved)
+
+    def test_keeps_an_empty_list_unchanged(self):
+        self.assertEqual(self.parse_sees("[]"), "[]")
+
+    def test_keeps_a_single_block_object_unchanged(self):
+        saved = json.dumps({"type": "text", "text": "a"})
+        self.assertEqual(self.parse_sees(saved), saved)
+
+    def test_keeps_text_that_looks_like_a_list_but_is_not_json_unchanged(self):
+        self.assertEqual(self.parse_sees("[not json"), "[not json")
+
+    def test_keeps_a_deeply_nested_list_unchanged(self):
+        saved = "[" * 200000
+        self.assertEqual(self.parse_sees(saved), saved)
+
+
+class WrappedResponseParityTest(RelayTestCase):
+    PAGE_SOURCE = "wiki-page"
+    METRICS_SOURCE = "dd-metrics"
+
+    def setUp(self):
+        super().setUp()
+        sources = self.config["routines"][ROUTINE]["sources"]
+        self.config["providers"]["wiki"] = {"adapter": "notion", "mcp": {"connectors": {"cloud": "wiki-cloud", "local": "wiki-local"}}}
+        self.config["providers"]["dd"] = {"adapter": "datadog", "mcp": {"connectors": {"cloud": "dd-cloud", "local": "dd-local"}}}
+        sources[self.PAGE_SOURCE] = {"provider": "wiki", "transport": {"cloud": "mcp", "local": "mcp"}, "page_id": "sources-page"}
+        sources[self.METRICS_SOURCE] = {
+            "provider": "dd", "transport": {"cloud": "mcp", "local": "mcp"}, "kind": "metrics", "scope_filter": "",
+        }
+        self.config["routines"][ROUTINE]["query_pack"].append(
+            entry("checkout-p95", self.METRICS_SOURCE, query="avg:checkout.p95{*}", read="scalar", aggregator="avg")
+        )
+
+    def parsed(self, source, saved):
+        self.plan(source)
+        self.respond(f"{source}-1", saved)
+        self.plan(source)
+        self.parse(source)
+        return self.collection()
+
+    def tool_result(self):
+        with open(os.path.join(HERE, "providers", "fixtures", "notion", "fetch_page.json"), encoding="utf-8") as handle:
+            return handle.read()
+
+    def script_result(self):
+        self.plan(self.METRICS_SOURCE)
+        digest = self.calls_doc()["calls"][f"{self.METRICS_SOURCE}-1"]
+        with open(os.path.join(HERE, "providers", "fixtures", "datadog", "relay_scalar.json"), encoding="utf-8") as handle:
+            payload = handle.read()
+        value = {"payload": payload, "checksum": roles.fnv1a32(payload), "digest": digest}
+        return json.dumps({"success": True, "outcome": "success", "value": value})
+
+    def wrap(self, text):
+        return json.dumps([{"type": "text", "text": text}])
+
+    def test_a_wrapped_tool_call_result_parses_like_the_raw_one(self):
+        raw = self.parsed(self.PAGE_SOURCE, self.tool_result())
+        wrapped = self.parsed(self.PAGE_SOURCE, self.wrap(self.tool_result()))
+        self.assertEqual((raw["read"], wrapped), (True, raw))
+
+    def test_a_wrapped_connector_script_result_parses_like_the_raw_one(self):
+        raw = self.parsed(self.METRICS_SOURCE, self.script_result())
+        wrapped = self.parsed(self.METRICS_SOURCE, self.wrap(self.script_result()))
+        self.assertEqual((raw["read"], wrapped), (True, raw))
+
+    def test_a_wrapped_connector_script_result_keeps_its_value(self):
+        wrapped = self.parsed(self.METRICS_SOURCE, self.wrap(self.script_result()))
+        self.assertEqual(wrapped["records"]["metrics"][0]["value"], 42.5)
+
+    def test_a_wrapped_connector_script_result_with_a_wrong_checksum_is_not_read(self):
+        result = json.loads(self.script_result())
+        result["value"]["checksum"] = roles.fnv1a32("other")
+        collection = self.parsed(self.METRICS_SOURCE, self.wrap(json.dumps(result)))
+        self.assertEqual((collection["read"], collection["reason"].endswith("payload checksum mismatch")), (False, True))
+
+    def test_a_wrapped_connector_script_result_with_a_wrong_digest_is_not_read(self):
+        result = json.loads(self.script_result())
+        result["value"]["digest"] = roles.fnv1a32("other")
+        collection = self.parsed(self.METRICS_SOURCE, self.wrap(json.dumps(result)))
+        self.assertEqual((collection["read"], collection["reason"].endswith("plan digest mismatch")), (False, True))
 
 
 class PlanLoopTest(RelayTestCase):

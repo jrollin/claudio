@@ -9,6 +9,7 @@ from ._errors import PAGE_CAP_PARTIAL, PartialRead, SourceUnreadable
 
 ROLE = "document_store"
 CREDENTIAL = "token"
+LINKS_BASE = "https://www.notion.so"
 API_VERSION = "2026-03-11"
 PAGES_PATH = "/v1/pages/"
 BLOCKS_PATH = "/v1/blocks/"
@@ -29,6 +30,18 @@ BLOCK_KINDS = {
     "table": "table",
 }
 FETCH_TOOL = "notion-fetch"
+HTTP_NOT_FOUND = 404
+HTTP_BAD_REQUEST = 400
+DATABASE_TYPE = "database"
+NOT_FOUND_CODE = "object_not_found"
+MINUTE_CHARS = 16
+READ = {"status": "ok", "reason": None}
+UNCHANGED = {"status": "deferred", "reason": "unchanged"}
+NOT_SHARED = {"status": "failed", "reason": "not found or not shared"}
+NOT_A_PAGE = {"status": "failed", "reason": "not a page"}
+FAILED_BY_STATUS = {HTTP_NOT_FOUND: NOT_SHARED, HTTP_BAD_REQUEST: NOT_A_PAGE}
+PAGE_TRUNCATED = "page truncated"
+TRUNCATED = {"status": "failed", "reason": f"partial: {PAGE_TRUNCATED}"}
 CONTENT_OPEN = re.compile(r"^<content>", re.M)
 CONTENT_CLOSE = "</content>"
 PROPERTIES_CLOSE = re.compile(r"^</properties>\r?$", re.M)
@@ -99,23 +112,51 @@ class _Budget:
 
 
 def fetch(source, window, cursor, entries, http):
-    return _result(_read_page(source["page_id"], _Budget(http)))
+    budget = _Budget(http)
+    if "pages" not in source:
+        page = _read_page(source["page_id"], budget)
+        return _result(source, [page], {}, {page["id"]: page["last_edited"]})
+    stored = _stored(cursor)
+    outcomes = [_fetch_listed(page_id, stored.get(page_id), budget) for page_id in source["pages"]]
+    return _listed(source, stored, outcomes)
 
 
 def plan(source, window, cursor, entries, responses, connector):
-    call_id = _call_id(source)
-    if call_id in responses:
-        return _common.ended()
-    arguments = {"id": source["page_id"]}
-    call = {"id": call_id, "connector": connector, "tool": FETCH_TOOL, "arguments": arguments, "digest": None}
-    return {"done": False, "partial": None, "calls": [call]}
+    stored = _stored(cursor)
+    for index, page_id in enumerate(_page_ids(source), 1):
+        call_id = _call_id(source, index)
+        if call_id not in responses:
+            call = {"id": call_id, "connector": connector, "tool": FETCH_TOOL, "arguments": {"id": page_id}, "digest": None}
+            return {"done": False, "partial": None, "calls": [call]}
+        if "pages" in source and _source_unreadable(page_id, responses, call_id, stored.get(page_id)):
+            break
+    return _common.ended()
+
+
+def _source_unreadable(page_id, responses, call_id, stored):
+    try:
+        _parse_listed(page_id, _response(responses, call_id), stored)
+    except SourceUnreadable:
+        return True
+    return False
 
 
 def parse(source, window, cursor, entries, responses, digests):
-    body = _response(responses, _call_id(source))
-    unknown = body.get("unknown_block_count")
-    if body.get("truncated") is True or (isinstance(unknown, int) and unknown > 0):
-        raise PartialRead("page truncated")
+    page_ids = _page_ids(source)
+    if "pages" not in source:
+        page = _page_from_response(page_ids[0], _response(responses, _call_id(source, 1)))
+        return _result(source, [page], {}, {page["id"]: page["last_edited"]})
+    stored = _stored(cursor)
+    outcomes = [
+        _parse_listed(page_id, _response(responses, _call_id(source, index)), stored.get(page_id))
+        for index, page_id in enumerate(page_ids, 1)
+    ]
+    return _listed(source, stored, outcomes)
+
+
+def _page_from_response(page_id, body):
+    if _truncated(body):
+        raise PartialRead(PAGE_TRUNCATED)
     text = body.get("text")
     if not isinstance(text, str):
         raise SourceUnreadable(f"{FETCH_TOOL}: response without text")
@@ -123,22 +164,84 @@ def parse(source, window, cursor, entries, responses, digests):
     if last_edited is None:
         raise SourceUnreadable(f"{FETCH_TOOL}: response without a valid page_last_edited_at")
     title = body.get("title")
-    return _result(
-        {
-            "id": source["page_id"],
-            "title": title if isinstance(title, str) else "",
-            "last_edited": last_edited,
-            "blocks": _markdown_blocks(_content_lines(text)),
-        }
-    )
+    return {
+        "id": page_id,
+        "title": title if isinstance(title, str) else "",
+        "last_edited": last_edited,
+        "blocks": _markdown_blocks(_content_lines(text)),
+    }
 
 
-def _result(page):
-    return {"records": {"pages": [page]}, "cursor": {"last_edited": page["last_edited"]}, "entries": {}}
+def _truncated(body):
+    unknown = body.get("unknown_block_count")
+    return body.get("truncated") is True or (isinstance(unknown, int) and unknown > 0)
 
 
-def _call_id(source):
-    return source["name"] + "-1"
+def _page_ids(source):
+    return source["pages"] if "pages" in source else [source["page_id"]]
+
+
+def _stored(cursor):
+    stored = dig(cursor, "pages")
+    return stored if isinstance(stored, dict) else {}
+
+
+def _same_minute(edited, stored):
+    return edited is not None and stored is not None and edited[:MINUTE_CHARS] == stored[:MINUTE_CHARS]
+
+
+def _fetch_listed(page_id, stored, http):
+    try:
+        body, last_edited = _metadata(page_id, http)
+    except SourceUnreadable as error:
+        if error.status not in FAILED_BY_STATUS:
+            raise
+        return dict(FAILED_BY_STATUS[error.status]), None
+    if dig(body, "in_trash") is True or dig(body, "archived") is True:
+        return dict(NOT_SHARED), None
+    if _same_minute(last_edited, stored):
+        return dict(UNCHANGED), None
+    return dict(READ), _page(page_id, body, last_edited, http)
+
+
+def _parse_listed(page_id, body, stored):
+    if _not_found(body):
+        return dict(NOT_SHARED), None
+    if dig(body, "metadata", "type") == DATABASE_TYPE:
+        return dict(NOT_A_PAGE), None
+    if _same_minute(utc_text(body.get("page_last_edited_at")), stored):
+        return dict(UNCHANGED), None
+    if _truncated(body):
+        return dict(TRUNCATED), None
+    return dict(READ), _page_from_response(page_id, body)
+
+
+def _not_found(body):
+    reported = body.get("status") == HTTP_NOT_FOUND or body.get("code") == NOT_FOUND_CODE
+    return reported and not isinstance(body.get("text"), str)
+
+
+def _listed(source, stored, outcomes):
+    page_ids = source["pages"]
+    pages = [page for _, page in outcomes if page is not None]
+    read = {page["id"]: page["last_edited"] for page in pages}
+    kept = {page_id: read.get(page_id, stored.get(page_id)) for page_id in page_ids}
+    entries = {page_id: entry for page_id, (entry, _) in zip(page_ids, outcomes)}
+    return _result(source, pages, entries, {page_id: edited for page_id, edited in kept.items() if edited is not None})
+
+
+def _result(source, pages, entries, cursor):
+    records = [{**page, "link": _link(source, page["id"])} for page in pages]
+    return {"records": {"pages": records}, "cursor": {"pages": cursor}, "entries": entries}
+
+
+def _link(source, page_id):
+    base = (dig(source, "provider_config", "links_base") or LINKS_BASE).rstrip("/")
+    return f"{base}/{page_id.replace('-', '')}"
+
+
+def _call_id(source, index):
+    return f"{source['name']}-{index}"
 
 
 def _response(responses, call_id):
@@ -263,11 +366,20 @@ def _other():
 
 
 def _read_page(page_id, http):
+    body, last_edited = _metadata(page_id, http)
+    return _page(page_id, body, last_edited, http)
+
+
+def _metadata(page_id, http):
     path = PAGES_PATH + quote(page_id)
     body = http.get(path)
     last_edited = utc_text(dig(body, "last_edited_time"))
     if last_edited is None:
         raise SourceUnreadable(f"GET {path}: response without a valid last_edited_time")
+    return body, last_edited
+
+
+def _page(page_id, body, last_edited, http):
     items = _children(page_id, http)
     return {
         "id": page_id,

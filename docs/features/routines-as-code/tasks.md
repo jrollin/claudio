@@ -3,7 +3,7 @@
 ---
 feature: routines-as-code
 spec_version: 1
-total_tasks: 52
+total_tasks: 59
 phases:
   - name: "Leak guard"
     tasks: [T-1, T-2, T-3]
@@ -27,6 +27,8 @@ phases:
     tasks: [T-34, T-35, T-36, T-37, T-38, T-39, T-40, T-41, T-42, T-43, T-44, T-45]
   - name: "Config split and mirrors"
     tasks: [T-46, T-47, T-48, T-49, T-50, T-51, T-52]
+  - name: "Tribe digest collectors"
+    tasks: [T-53, T-54, T-55, T-56, T-57, T-58, T-59]
 depends_on: []
 ---
 
@@ -571,6 +573,97 @@ Runs in a local session; nothing is pushed to a live routine, and the private re
 - **Blocked by**: T-46
 - **Rules**: BR-25
 - **Status**: Complete
+
+## Phase 12: Tribe digest collectors
+
+T-53 lands first: it sets the record, cursor and option contracts the adapters of T-54 to T-57 fill, which run in parallel on separate files.
+
+### T-53: Contracts for the tribe collectors
+- `roles.py`:
+  - the `issue_tracker` options (`filter`, optional `query` and `open_sprints`), records and cursor, outside `ROLES` until T-54 adds the role with its adapter;
+  - chat records with `thread_ts`;
+  - document store `pages` option (exclusive with `page_id`), page `link`, cursor `{pages: {id: edit time}}`;
+  - metric records with omittable `trend` and `trend_reason`;
+  - pack entries with `trend_days` (7 to 31, `scalar` or `hourly`, never with `lookback_days`, aggregator `max`, `min`, `sum`, `avg` or `last`).
+- `collect.py`:
+  - `EMPTY_RECORDS` for the issue tracker;
+  - the routine's `first_read_days` (1 to 31) adds `first_read_from_ts` to the window handed to adapters, the window start without it;
+  - entry spans for `trend_days`, over the last local days of the config timezone;
+  - `timezone` in the window handed to adapters, and adapter entries passed through for chat and document store sources;
+  - one read start helper in `providers/_common.py`: a stored cursor later than `first_read_from_ts`, else `first_read_from_ts`.
+- `evaluate.py` takes the sources page only from a source that sets `page_id`.
+- Existing adapters keep passing their tests: the chat adapter emits `thread_ts: null`, the document store adapter emits `link` and the new cursor; the evaluator's sources page facts read the new page record.
+- Tests: every new rejection with its key path, `first_read_from_ts` with and without the key, the unchanged Prod watch collections, the sources page facts.
+- **Refs**: US-27, US-28, US-29, US-30, US-31, TD-39, TD-40, TD-41, TD-42, TD-43
+- **Files**: `plugins/claudio-routines/runtime/roles.py` (modify), `plugins/claudio-routines/runtime/collect.py` (modify), `plugins/claudio-routines/runtime/evaluate.py` (modify), `plugins/claudio-routines/runtime/providers/_common.py` (modify), `plugins/claudio-routines/runtime/providers/test_common.py` (new), `plugins/claudio-routines/runtime/providers/<chat vendor>.py` (modify), `plugins/claudio-routines/runtime/providers/<document store vendor>.py` (modify), `plugins/claudio-routines/runtime/test_roles.py` (modify), `plugins/claudio-routines/runtime/test_collect.py` (modify), `plugins/claudio-routines/runtime/evaluate_support.py` (modify), `plugins/claudio-routines/runtime/test_evaluate.py` (modify), provider tests and fixtures as the record changes need
+- **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime`
+- **Rules**: BR-50, BR-52, BR-53
+- **Status**: Complete
+
+### T-54: Read the issue tracker over both transports
+- `issue_tracker` added to `ROLES`, `EMPTY_RECORDS` and the test role maps, with the adapter module for the issue tracker vendor (TD-39): updated read with the 1-hour overlap, the 24-hour query margin and the exact bound filter, open-sprint read, merge by key, page cap, connector plan in the full view with the site from `links_base`, response parser shared by both transports, UTC times, links, not-found filter as source not read.
+- `providers/README.md`: the adapter's section (calls, connector, credentials, read-only scope, hosts, where each place reads the variables), as the conformance test requires.
+- Tests: fixtures for both transports from one data set, transport equality, overlap and bound, zone mismatch over-read, open sprints with none and several, newest update wins, no person field, page cap, a filter not found, the conformance test.
+- **Refs**: US-27, TD-39
+- **Files**: `plugins/claudio-routines/runtime/providers/<issue tracker vendor>.py` (new), `plugins/claudio-routines/runtime/providers/test_<issue tracker vendor>.py` (new), `plugins/claudio-routines/runtime/providers/fixtures/<issue tracker vendor>/` (new), `plugins/claudio-routines/runtime/providers/README.md` (modify), `plugins/claudio-routines/runtime/test_roles.py` (modify), `plugins/claudio-routines/runtime/evaluate_support.py` (modify)
+- **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime && python3 scripts/leak_check.py --tree`
+- **Blocked by**: T-53
+- **Rules**: BR-24, BR-28, BR-49, BR-50, BR-52
+- **Status**: Complete
+
+### T-55: Read chat thread replies
+- Chat adapter (TD-40): roots from the history read (reply count over the API, the thread marker line over the connector, removed from the text), replies of roots in the window up to the window end, thread text parser with the history guards, one record per channel and ts with the thread copy winning, one budget of 50 history pages and thread reads, per-channel failed entries for not found, archived and not joined, cursor at the window end for an empty channel, first-read start for a channel with no cursor.
+- Tests: both transports from one data set, broadcast reply deduplication, a root older than the window, a reply after the window end, a forged reply header, a failed channel next to read ones, another error failing the source, the empty channel cursor, the first-read start.
+- **Refs**: US-28, TD-40
+- **Files**: `plugins/claudio-routines/runtime/providers/<chat vendor>.py` (modify), `plugins/claudio-routines/runtime/providers/test_<chat vendor>.py` (modify), `plugins/claudio-routines/runtime/providers/fixtures/<chat vendor>/` (modify)
+- **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime`
+- **Blocked by**: T-53
+- **Rules**: BR-14, BR-48, BR-50, BR-52
+- **Status**: Complete
+
+### T-56: Read changed documents
+- Document store adapter (TD-41): a `pages` source reads each page's edit time over the API and fetches each page over the connector, keeps only pages whose edit minute differs from the cursor, per-page entries (`ok`, `deferred` unchanged, `failed` not found or not shared), cursor per page, page links, request and call caps.
+- Tests: both transports from one data set, the minute tie, a page with no cursor, a missing page next to read ones, the cap, the sources page unchanged.
+- **Refs**: US-29, TD-41
+- **Files**: `plugins/claudio-routines/runtime/providers/<document store vendor>.py` (modify), `plugins/claudio-routines/runtime/providers/test_<document store vendor>.py` (modify), `plugins/claudio-routines/runtime/providers/fixtures/<document store vendor>/` (modify)
+- **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime`
+- **Blocked by**: T-53
+- **Rules**: BR-28, BR-51
+- **Status**: Complete
+
+### T-57: Read trend windows
+- Observability adapter (TD-42): one guarded hourly read per entry with `trend_days` (HTTP errors other than 401 and 403 set `trend_reason`), from the local day start of the span to the window end, local-day buckets with the entry's aggregator, absent days, clock-change days, `trend_reason` on failure, both transports, the connector script and its golden fixture.
+- Tests: both transports from one data set, each aggregator, a spring-forward and a fall-back day, an empty day, a failed trend next to a read window value, the script parameters digest.
+- **Refs**: US-30, TD-42
+- **Files**: `plugins/claudio-routines/runtime/providers/<observability vendor>.py` (modify), `plugins/claudio-routines/runtime/providers/test_<observability vendor>.py` (modify), `plugins/claudio-routines/runtime/providers/test_<observability vendor>_relay.py` (modify), `plugins/claudio-routines/runtime/providers/<observability vendor>_support.py` (modify), `plugins/claudio-routines/runtime/providers/fixtures/<observability vendor>/` (modify)
+- **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime`
+- **Blocked by**: T-53
+- **Rules**: BR-32, BR-53
+- **Status**: Complete
+
+### T-58: Example, docs and version
+- `example/config.json` with the chat and issue tracker providers; `example/config/routines/tribe-digest.json` with sources by role, `first_read_days` and a trend entry, placeholders only.
+- `providers/README.md`: thread reads, page lists and their connector cost, trend reads. Plugin README: the issue tracker role, the new source options, `first_read_days`.
+- Plugin 0.3.0, marketplace 2.15.0.
+- Tests: the example loads and validates for every source of the tribe routine, its skeleton still renders.
+- **Refs**: US-31, TD-43
+- **Files**: `plugins/claudio-routines/example/config.json` (modify), `plugins/claudio-routines/example/config/routines/tribe-digest.json` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify), `plugins/claudio-routines/README.md` (modify), `plugins/claudio-routines/skills/routines/scripts/test_routines.py` (modify), `plugins/claudio-routines/.claude-plugin/plugin.json` (modify), `.claude-plugin/marketplace.json` (modify)
+- **Verify**: `for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
+- **Blocked by**: T-54, T-55, T-56, T-57
+- **Status**: Complete
+
+### T-59: Configure the tribe sources and replay the reference windows
+Runs in a local session with the chat, issue tracker, document store and observability connectors; nothing is posted or written to any tool.
+1. Add the chat and issue tracker providers to the private `config.json`, and the sources, `first_read_days` and trend entries to the two tribe routine files, from their sources pages.
+2. Check that both renders still equal their live prompts.
+3. Collect every source of each tribe routine over its reference window (`plan`, saved responses, `parse`).
+4. Write the compare script and, after checking each unmatched record, the reasons file.
+- **Refs**: US-31, TD-43, TD-44
+- **Files**: none in this repository; the private repository's `config.json`, two routine files and `reference/` change, and the collections stay in a temporary directory
+- **Verify**: `python3 plugins/claudio-routines/skills/routines/scripts/routines.py diff && python3 "$CLAUDIO_PRIVATE_DIR/reference/compare_collections.py" --digest connect --collections <replay dir>/connect && python3 "$CLAUDIO_PRIVATE_DIR/reference/compare_collections.py" --digest scheduling --collections <replay dir>/scheduling`
+- **Blocked by**: T-58
+- **Rules**: BR-48, BR-50
+- **Status**: Complete (both reference windows covered, 0 unexplained: connect issues 8/12, pages 1/10, channels 4/7 found; scheduling issues 44/48, pages 0/7, channels 9/11 found; every other cited record has a verified reason. The replay found and fixed: thread pagination wording, newest-first thread pages, trailing message metadata, exclusive bounds, truncated listed pages, a listed database, the open-sprint query scope and harness-saved results)
 
 ## Related Features
 

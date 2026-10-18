@@ -141,21 +141,29 @@ async function readEventMonitors(api, events, discovery) {
   return { capped: ids.length > params.event_monitor_cap, reads };
 }
 
-async function readMetric(api, entry) {
+async function readSeries(api, entry, span, interval) {
   const query = { dataSource: "metrics", query: entry.query, name: "a" };
+  const attributes = { ...span, interval, queries: [query], formulas: [{ formula: "a" }] };
+  const body = await api.queryTimeseriesData({ body: { data: { type: "timeseries_request", attributes } } });
+  const data = (body.data && body.data.attributes) || {};
+  return { ok: true, timeseries: { times: data.times, values: data.values } };
+}
+
+async function readMetric(api, entry) {
   const span = entry.span ? { from: entry.span.from_ms, to: entry.span.to_ms } : runSpan;
   if (entry.read === "hourly") {
-    const interval = entry.span ? params.daily_interval_ms : params.interval_ms;
-    const attributes = { ...span, interval, queries: [query], formulas: [{ formula: "a" }] };
-    const body = await api.queryTimeseriesData({ body: { data: { type: "timeseries_request", attributes } } });
-    const data = (body.data && body.data.attributes) || {};
-    return { ok: true, timeseries: { times: data.times, values: data.values } };
+    return readSeries(api, entry, span, entry.span ? params.daily_interval_ms : params.interval_ms);
   }
+  const query = { dataSource: "metrics", query: entry.query, name: "a" };
   const formula = { formula: "a", limit: { count: entry.top, order: "desc" } };
   const attributes = { ...span, queries: [{ ...query, aggregator: entry.aggregator }], formulas: [formula] };
   const body = await api.queryScalarData({ body: { data: { type: "scalar_request", attributes } } });
   const columns = (body.data && body.data.attributes && body.data.attributes.columns) || [];
   return { ok: true, scalar: { columns: columns.map((column) => ({ type: column.type, name: column.name, values: column.values })) } };
+}
+
+async function readTrend(api, entry) {
+  return readSeries(api, entry, { from: entry.trend_span.from_ms, to: entry.trend_span.to_ms }, params.interval_ms);
 }
 
 async function collect() {
@@ -176,7 +184,9 @@ async function collect() {
   const metricsApi = new v2.MetricsApi(cfg);
   const metrics = [];
   for (const entry of params.entries) {
-    metrics.push({ entry: entry.key, ...(await guarded(() => readMetric(metricsApi, entry))) });
+    const item = await guarded(() => readMetric(metricsApi, entry));
+    const trend = item.ok && entry.trend_span ? { trend: await guarded(() => readTrend(metricsApi, entry)) } : {};
+    metrics.push({ entry: entry.key, ...item, ...trend });
   }
   return { metrics };
 }

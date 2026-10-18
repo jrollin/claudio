@@ -1,0 +1,4 @@
+{
+  "messages": "=== THREAD PARENT MESSAGE ===\nFrom: Ada Example <ada@example.test> (U1)\nTime: 2025-10-09 09:26:40 UTC\nMessage TS: 1760002000.000200\nRelease notes:\n- api 1.2\n- web 3.4\nReactions: :+1: 2\nFiles: notes.txt\n\n=== THREAD REPLIES (1 total) ===\n\n--- Reply 1 of 1 ---\nFrom: Bea Example <bea@example.test> (U2)\nTime: 2025-10-09 09:31:40 UTC\nMessage TS: 1760002300.000230\nThanks, merging\nReactions: :+1: 1\n",
+  "pagination_info": "There are no more messages in this thread."
+}

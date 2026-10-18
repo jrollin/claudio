@@ -20,7 +20,7 @@ WINDOW = {"from_ts": 1760000000, "to_ts": 1760010800}
 TRANSPORT = {"cloud": "api", "local": "api"}
 PAGE_ID = "sources-page"
 SOURCE = {"name": "sources", "provider": "docs", "transport": TRANSPORT, "page_id": PAGE_ID}
-STORED = {"last_edited": "2026-08-01T09:00:00Z"}
+STORED = {"pages": {"sources-page": "2026-08-01T09:00:00Z"}}
 PAGE_PATH = "/v1/pages/sources-page"
 BLOCKS_PATH = "/v1/blocks/sources-page/children"
 TABLE_PATH = "/v1/blocks/mutes-table/children"
@@ -185,7 +185,19 @@ class PageTest(unittest.TestCase):
     def test_cursor_is_the_page_last_edited(self):
         _, result = read_full_page()
 
-        self.assertEqual(result["cursor"], {"last_edited": "2026-09-04T14:30:00Z"})
+        self.assertEqual(result["cursor"], {"pages": {"sources-page": "2026-09-04T14:30:00Z"}})
+
+    def test_page_link_uses_the_default_host_and_the_id_without_dashes(self):
+        _, result = read_full_page()
+
+        self.assertEqual(result["records"]["pages"][0]["link"], "https://www.notion.so/sourcespage")
+
+    def test_page_link_uses_the_links_base_of_the_provider(self):
+        source = {**SOURCE, "provider_config": {"links_base": "https://docs.example.test/"}}
+
+        _, result = run(*(ok(name) for name in FULL_PAGE), source=source)
+
+        self.assertEqual(result["records"]["pages"][0]["link"], "https://docs.example.test/sourcespage")
 
     def test_has_no_entries(self):
         _, result = read_full_page()
@@ -547,7 +559,14 @@ class RelayPageTest(unittest.TestCase):
         self.assertEqual(result["records"]["pages"][0]["blocks"], [paragraph("Body")])
 
     def test_zero_unknown_blocks_read_the_page(self):
-        self.assertEqual(relay(fetched(unknown_block_count=0))["cursor"], {"last_edited": "2026-09-04T14:30:00Z"})
+        self.assertEqual(relay(fetched(unknown_block_count=0))["cursor"], {"pages": {"sources-page": "2026-09-04T14:30:00Z"}})
+
+    def test_page_link_uses_the_links_base_of_the_provider(self):
+        source = {**RELAY_SOURCE, "provider_config": {"links_base": "https://docs.example.test"}}
+
+        result = notion.parse(source, WINDOW, STORED, [], {CALL_ID: saved("fetch_page.json")}, {CALL_ID: None})
+
+        self.assertEqual(result["records"]["pages"][0]["link"], "https://docs.example.test/sourcespage")
 
     def test_collection_passes_the_role_schema(self):
         result = relay(saved("fetch_page.json"))
@@ -829,6 +848,695 @@ class RequestCapTest(unittest.TestCase):
         with self.assertRaises(_http.PartialRead) as caught:
             run(*page_with_tables(49))
         self.assertEqual(str(caught.exception), "partial: request cap")
+
+
+ONE, TWO, THREE = "page-one", "page-two", "page-three"
+LIST_SOURCE = {"name": "docs", "provider": "docs", "transport": TRANSPORT, "pages": [ONE, TWO, THREE]}
+LIST_RELAY_SOURCE = {**LIST_SOURCE, "transport": {"cloud": "mcp", "local": "mcp"}}
+TWO_PAGES = {**LIST_SOURCE, "pages": [ONE, TWO]}
+DOCUMENTS = {
+    ONE: {
+        "title": "First page",
+        "edited": "2026-09-04T14:30:41.123Z",
+        "blocks": [("heading", "Overview"), ("paragraph", "Alpha"), ("list", "Beta")],
+    },
+    TWO: {"title": "Second page", "edited": "2026-09-05T08:15:59.000Z", "blocks": [("paragraph", "Gamma")]},
+    THREE: {"title": "Third page", "edited": "2026-09-06T21:00:00.000Z", "blocks": [("heading", "Notes"), ("paragraph", "Delta")]},
+}
+API_TYPES = {"heading": "heading_1", "paragraph": "paragraph", "list": "bulleted_list_item"}
+MARKDOWN = {"heading": "# ", "paragraph": "", "list": "- "}
+SAME_MINUTE_AS_ONE = "2026-09-04T14:30:07Z"
+SAME_MINUTE_AS_TWO = "2026-09-05T08:15:02Z"
+SAME_MINUTE_AS_THREE = "2026-09-06T21:00:30Z"
+MINUTE_BEFORE_ONE = "2026-09-04T14:29:59Z"
+MINUTE_AFTER_ONE = "2026-09-04T14:31:00Z"
+READ = {"status": "ok", "reason": None}
+TRUNCATED = {"status": "failed", "reason": "partial: page truncated"}
+NOT_A_PAGE = {"status": "failed", "reason": "not a page"}
+UNCHANGED = {"status": "deferred", "reason": "unchanged"}
+NOT_SHARED = {"status": "failed", "reason": "not found or not shared"}
+
+
+def stored_pages(**by_page):
+    return {"pages": {page_id.replace("_", "-"): edited for page_id, edited in by_page.items()}}
+
+
+def api_meta(page_id):
+    document = DOCUMENTS[page_id]
+    title = [{"type": "text", "plain_text": document["title"]}]
+    properties = {"Name": {"id": "title", "type": "title", "title": title}}
+    page = json.loads(fixture("page.json"))
+    return served_json({**page, "last_edited_time": document["edited"], "properties": properties})
+
+
+def api_blocks(page_id):
+    items = [
+        {"object": "block", "id": f"{page_id}-{index}", "type": API_TYPES[kind], API_TYPES[kind]: {"rich_text": [{"plain_text": text}]}}
+        for index, (kind, text) in enumerate(DOCUMENTS[page_id]["blocks"])
+    ]
+    return served_json({"results": items, "has_more": False})
+
+
+def api_read(page_id):
+    return [api_meta(page_id), api_blocks(page_id)]
+
+
+def connector_page(page_id):
+    document = DOCUMENTS[page_id]
+    content = "\n".join(MARKDOWN[kind] + text for kind, text in document["blocks"])
+    body = json.loads(with_content(content))
+    return json.dumps({**body, "title": document["title"], "page_last_edited_at": document["edited"]})
+
+
+def blocks_of(page_id):
+    return [block(kind, text) for kind, text in DOCUMENTS[page_id]["blocks"]]
+
+
+def page_flagged(**flags):
+    page = json.loads(fixture("page.json"))
+    return FakeResponse(json.dumps({**page, **flags}).encode("utf-8"))
+
+
+def listed_over_api(cursor, *outcomes, source=LIST_SOURCE):
+    opener = FakeOpener(outcomes)
+    return opener, notion.fetch(source, WINDOW, cursor, [], client(opener))
+
+
+def listed_responses(*texts):
+    return {f"docs-{number}": text for number, text in enumerate(texts, 1)}
+
+
+def listed_plan(*texts):
+    return notion.plan(LIST_RELAY_SOURCE, WINDOW, None, [], listed_responses(*texts), CONNECTOR)
+
+
+def listed_over_relay(cursor, *texts):
+    responses = listed_responses(*texts)
+    return notion.parse(LIST_RELAY_SOURCE, WINDOW, cursor, [], responses, {call_id: None for call_id in responses})
+
+
+def truncated_page(page_id, **changes):
+    return json.dumps({**json.loads(connector_page(page_id)), "truncated": True, **changes})
+
+
+def listed_failure(test, cursor, *texts):
+    with test.assertRaises(_http.SourceUnreadable) as caught:
+        listed_over_relay(cursor, *texts)
+    return caught.exception
+
+
+class ListedApiTest(unittest.TestCase):
+    def test_reads_each_changed_page_in_the_configured_order(self):
+        opener, _ = listed_over_api(None, *api_read(ONE), *api_read(TWO), *api_read(THREE))
+
+        self.assertEqual(
+            [endpoint(request)[1] for request in opener.requests],
+            [
+                "/v1/pages/page-one",
+                "/v1/blocks/page-one/children",
+                "/v1/pages/page-two",
+                "/v1/blocks/page-two/children",
+                "/v1/pages/page-three",
+                "/v1/blocks/page-three/children",
+            ],
+        )
+
+    def test_records_follow_the_configured_page_order(self):
+        _, result = listed_over_api(None, *api_read(ONE), *api_read(TWO), *api_read(THREE))
+
+        self.assertEqual([page["id"] for page in result["records"]["pages"]], [ONE, TWO, THREE])
+
+    def test_record_holds_the_title_edit_time_link_and_blocks(self):
+        _, result = listed_over_api(None, *api_read(ONE), *api_read(TWO), *api_read(THREE))
+
+        self.assertEqual(
+            result["records"]["pages"][0],
+            {
+                "id": ONE,
+                "title": "First page",
+                "last_edited": "2026-09-04T14:30:41Z",
+                "link": "https://www.notion.so/pageone",
+                "blocks": blocks_of(ONE),
+            },
+        )
+
+    def test_page_without_a_cursor_is_read_whole(self):
+        _, result = listed_over_api(stored_pages(page_two=SAME_MINUTE_AS_TWO), *api_read(ONE), api_meta(TWO), *api_read(THREE))
+
+        self.assertEqual(result["entries"][ONE], READ)
+
+    def test_no_stored_cursor_reads_every_page(self):
+        _, result = listed_over_api({"pages": {}}, *api_read(ONE), *api_read(TWO), *api_read(THREE))
+
+        self.assertEqual(result["entries"], {ONE: READ, TWO: READ, THREE: READ})
+
+    def test_page_edited_in_the_cursor_minute_is_unchanged(self):
+        _, result = listed_over_api(stored_pages(page_one=SAME_MINUTE_AS_ONE), api_meta(ONE), *api_read(TWO), *api_read(THREE))
+
+        self.assertEqual(result["entries"][ONE], UNCHANGED)
+
+    def test_unchanged_page_gives_no_record(self):
+        _, result = listed_over_api(stored_pages(page_one=SAME_MINUTE_AS_ONE), api_meta(ONE), *api_read(TWO), *api_read(THREE))
+
+        self.assertEqual([page["id"] for page in result["records"]["pages"]], [TWO, THREE])
+
+    def test_unchanged_page_costs_only_its_metadata_request(self):
+        opener, _ = listed_over_api(stored_pages(page_one=SAME_MINUTE_AS_ONE), api_meta(ONE), *api_read(TWO), *api_read(THREE))
+
+        self.assertEqual(len(opener.requests), 5)
+
+    def test_unchanged_page_keeps_its_stored_edit_time(self):
+        _, result = listed_over_api(stored_pages(page_one=SAME_MINUTE_AS_ONE), api_meta(ONE), *api_read(TWO), *api_read(THREE))
+
+        self.assertEqual(result["cursor"]["pages"][ONE], SAME_MINUTE_AS_ONE)
+
+    def test_page_edited_in_a_later_minute_than_its_cursor_is_read(self):
+        _, result = listed_over_api(stored_pages(page_one=MINUTE_BEFORE_ONE), *api_read(ONE), *api_read(TWO), *api_read(THREE))
+
+        self.assertEqual(result["entries"][ONE], READ)
+
+    def test_page_edited_in_an_earlier_minute_than_its_cursor_is_read(self):
+        _, result = listed_over_api(stored_pages(page_one=MINUTE_AFTER_ONE), *api_read(ONE), *api_read(TWO), *api_read(THREE))
+
+        self.assertEqual(result["entries"][ONE], READ)
+
+    def test_read_page_moves_its_cursor_to_its_edit_time(self):
+        _, result = listed_over_api(stored_pages(page_one=MINUTE_BEFORE_ONE), *api_read(ONE), *api_read(TWO), *api_read(THREE))
+
+        self.assertEqual(result["cursor"]["pages"][ONE], "2026-09-04T14:30:41Z")
+
+    def test_missing_page_is_a_failed_entry(self):
+        _, result = listed_over_api(None, *api_read(ONE), status(404), *api_read(THREE))
+
+        self.assertEqual(result["entries"], {ONE: READ, TWO: NOT_SHARED, THREE: READ})
+
+    def test_other_pages_are_still_read_next_to_a_missing_one(self):
+        _, result = listed_over_api(None, *api_read(ONE), status(404), *api_read(THREE))
+
+        self.assertEqual([page["id"] for page in result["records"]["pages"]], [ONE, THREE])
+
+    def test_missing_page_keeps_its_stored_edit_time(self):
+        _, result = listed_over_api(stored_pages(page_two=SAME_MINUTE_AS_TWO), *api_read(ONE), status(404), *api_read(THREE))
+
+        self.assertEqual(result["cursor"]["pages"][TWO], SAME_MINUTE_AS_TWO)
+
+    def test_missing_page_never_read_has_no_cursor(self):
+        _, result = listed_over_api(None, *api_read(ONE), status(404), *api_read(THREE))
+
+        self.assertEqual(sorted(result["cursor"]["pages"]), [ONE, THREE])
+
+    def test_cursor_follows_the_configured_pages_only(self):
+        _, result = listed_over_api(stored_pages(page_gone=SAME_MINUTE_AS_ONE), *api_read(ONE), *api_read(TWO), *api_read(THREE))
+
+        self.assertEqual(list(result["cursor"]["pages"]), [ONE, TWO, THREE])
+
+    def test_forbidden_page_makes_the_source_unreadable(self):
+        with self.assertRaises(_http.SourceUnreadable) as caught:
+            listed_over_api(None, *api_read(ONE), status(403))
+        self.assertEqual(str(caught.exception), "HTTP 403 GET /v1/pages/page-two")
+
+    def test_unauthorized_page_makes_the_source_unreadable(self):
+        with self.assertRaises(_http.SourceUnreadable) as caught:
+            listed_over_api(None, *api_read(ONE), status(401))
+        self.assertEqual(str(caught.exception), "HTTP 401 GET /v1/pages/page-two")
+
+    def test_database_id_is_a_failed_entry(self):
+        _, result = listed_over_api(None, *api_read(ONE), status(400), *api_read(THREE))
+
+        self.assertEqual(result["entries"], {ONE: READ, TWO: NOT_A_PAGE, THREE: READ})
+
+    def test_other_pages_are_still_read_next_to_a_database(self):
+        opener, result = listed_over_api(None, *api_read(ONE), status(400), *api_read(THREE))
+
+        self.assertEqual((len(opener.requests), [page["id"] for page in result["records"]["pages"]]), (5, [ONE, THREE]))
+
+    def test_database_id_keeps_its_stored_edit_time(self):
+        cursor = stored_pages(page_two=SAME_MINUTE_AS_TWO)
+
+        _, result = listed_over_api(cursor, *api_read(ONE), status(400), *api_read(THREE))
+
+        self.assertEqual(result["cursor"]["pages"][TWO], SAME_MINUTE_AS_TWO)
+
+    def test_database_id_never_read_has_no_cursor(self):
+        _, result = listed_over_api(None, *api_read(ONE), status(400), *api_read(THREE))
+
+        self.assertEqual(list(result["cursor"]["pages"]), [ONE, THREE])
+
+    def test_database_collection_passes_the_role_schema(self):
+        _, result = listed_over_api(None, *api_read(ONE), status(400), *api_read(THREE))
+
+        self.assertIsNone(roles.validate_collection({**collection(result), "source": "docs"}))
+
+    def test_page_in_the_trash_is_a_failed_entry(self):
+        _, result = listed_over_api(None, *api_read(ONE), page_flagged(in_trash=True), *api_read(THREE))
+
+        self.assertEqual(result["entries"], {ONE: READ, TWO: NOT_SHARED, THREE: READ})
+
+    def test_archived_page_is_a_failed_entry(self):
+        _, result = listed_over_api(None, *api_read(ONE), page_flagged(archived=True), *api_read(THREE))
+
+        self.assertEqual(result["entries"][TWO], NOT_SHARED)
+
+    def test_page_in_the_trash_is_not_read(self):
+        opener, result = listed_over_api(None, *api_read(ONE), page_flagged(in_trash=True), *api_read(THREE))
+
+        self.assertEqual((len(opener.requests), [page["id"] for page in result["records"]["pages"]]), (5, [ONE, THREE]))
+
+    def test_page_in_the_trash_in_the_cursor_minute_is_a_failed_entry(self):
+        cursor = stored_pages(page_two="2026-09-04T14:30:07Z")
+
+        _, result = listed_over_api(cursor, *api_read(ONE), page_flagged(in_trash=True), *api_read(THREE))
+
+        self.assertEqual((result["entries"][TWO], result["cursor"]["pages"][TWO]), (NOT_SHARED, "2026-09-04T14:30:07Z"))
+
+    def test_page_flags_set_to_false_do_not_hide_the_page(self):
+        _, result = listed_over_api(None, *api_read(ONE), page_flagged(in_trash=False, archived=False), api_blocks(TWO), *api_read(THREE))
+
+        self.assertEqual(result["entries"][TWO], READ)
+
+    def test_returned_entries_are_not_shared_between_calls(self):
+        _, first = listed_over_api(None, *api_read(ONE), *api_read(TWO), *api_read(THREE))
+        first["entries"][ONE]["status"] = "failed"
+
+        _, second = listed_over_api(None, *api_read(ONE), *api_read(TWO), *api_read(THREE))
+
+        self.assertEqual(second["entries"][ONE], READ)
+
+    def test_returned_entries_of_unchanged_and_missing_pages_are_copies(self):
+        cursor = stored_pages(page_one=SAME_MINUTE_AS_ONE)
+        _, first = listed_over_api(cursor, api_meta(ONE), status(404), *api_read(THREE))
+        first["entries"][ONE]["reason"] = "changed"
+        first["entries"][TWO]["reason"] = "changed"
+
+        _, second = listed_over_api(cursor, api_meta(ONE), status(404), *api_read(THREE))
+
+        self.assertEqual((second["entries"][ONE], second["entries"][TWO]), (UNCHANGED, NOT_SHARED))
+
+    def test_server_error_makes_the_source_unreadable(self):
+        with self.assertRaises(_http.SourceUnreadable) as caught:
+            listed_over_api(None, status(503), status(503))
+        self.assertEqual(str(caught.exception), "HTTP 503 GET /v1/pages/page-one")
+
+    def test_missing_block_list_makes_the_source_unreadable(self):
+        with self.assertRaises(_http.SourceUnreadable) as caught:
+            listed_over_api(None, api_meta(ONE), status(404))
+        self.assertEqual(str(caught.exception), "HTTP 404 GET /v1/blocks/page-one/children")
+
+    def test_junk_edit_time_makes_the_source_unreadable(self):
+        with self.assertRaises(_http.SourceUnreadable) as caught:
+            listed_over_api(None, *api_read(ONE), page_edited("yesterday"))
+        self.assertEqual(str(caught.exception), "GET /v1/pages/page-two: response without a valid last_edited_time")
+
+    def test_collection_passes_the_role_schema(self):
+        _, result = listed_over_api(stored_pages(page_two=SAME_MINUTE_AS_TWO), *api_read(ONE), api_meta(TWO), status(404))
+
+        self.assertIsNone(roles.validate_collection({**collection(result), "source": "docs"}))
+
+
+class ListedRequestCapTest(unittest.TestCase):
+    def test_requests_are_counted_across_the_pages_of_a_source(self):
+        opener, _ = listed_over_api(stored_pages(page_two=SAME_MINUTE_AS_TWO), *page_with_tables(47), api_meta(TWO), source=TWO_PAGES)
+
+        self.assertEqual(len(opener.requests), 50)
+
+    def test_pages_that_take_more_than_50_requests_together_are_a_partial_read(self):
+        with self.assertRaises(_http.PartialRead) as caught:
+            listed_over_api(None, *page_with_tables(47), *api_read(TWO), source=TWO_PAGES)
+        self.assertEqual(str(caught.exception), "partial: request cap")
+
+    def test_a_missing_page_counts_as_a_request(self):
+        cursor = stored_pages(page_three=SAME_MINUTE_AS_THREE)
+
+        with self.assertRaises(_http.PartialRead) as caught:
+            listed_over_api(cursor, *page_with_tables(47), status(404), api_meta(THREE))
+        self.assertEqual(str(caught.exception), "partial: request cap")
+
+
+class ListedPlanTest(unittest.TestCase):
+    def test_first_step_fetches_the_first_page(self):
+        self.assertEqual(
+            listed_plan()["calls"],
+            [{"id": "docs-1", "connector": CONNECTOR, "tool": "notion-fetch", "arguments": {"id": ONE}, "digest": None}],
+        )
+
+    def test_next_step_fetches_the_next_page(self):
+        self.assertEqual(
+            listed_plan(connector_page(ONE))["calls"],
+            [{"id": "docs-2", "connector": CONNECTOR, "tool": "notion-fetch", "arguments": {"id": TWO}, "digest": None}],
+        )
+
+    def test_last_step_fetches_the_last_page(self):
+        calls = listed_plan(connector_page(ONE), connector_page(TWO))["calls"]
+
+        self.assertEqual([(call["id"], call["arguments"]) for call in calls], [("docs-3", {"id": THREE})])
+
+    def test_a_step_is_not_done_while_a_page_is_pending(self):
+        self.assertEqual(listed_plan(connector_page(ONE))["done"], False)
+
+    def test_saved_pages_end_the_plan(self):
+        step = listed_plan(connector_page(ONE), connector_page(TWO), connector_page(THREE))
+
+        self.assertEqual(step, {"done": True, "partial": None, "calls": []})
+
+    def test_plan_stops_after_a_response_that_makes_the_source_unreadable(self):
+        step = listed_plan(connector_page(ONE), saved("fetch_unauthorized.json"))
+
+        self.assertEqual(step, {"done": True, "partial": None, "calls": []})
+
+    def test_plan_stops_after_a_restricted_resource_response(self):
+        step = listed_plan(saved("fetch_restricted_resource.json"))
+
+        self.assertEqual(step["done"], True)
+
+    def test_plan_goes_on_after_a_truncated_page(self):
+        step = listed_plan(truncated_page(ONE))
+
+        self.assertEqual([call["id"] for call in step["calls"]], ["docs-2"])
+
+    def test_plan_goes_on_after_a_database(self):
+        step = listed_plan(connector_page(ONE), saved("fetch_database.json"))
+
+        self.assertEqual([call["id"] for call in step["calls"]], ["docs-3"])
+
+    def test_plan_goes_on_after_a_page_with_unknown_blocks(self):
+        step = listed_plan(truncated_page(ONE, truncated=False, unknown_block_count=3))
+
+        self.assertEqual([call["id"] for call in step["calls"]], ["docs-2"])
+
+    def test_plan_stops_after_a_response_that_is_not_json(self):
+        self.assertEqual(listed_plan("not json")["done"], True)
+
+    def test_plan_goes_on_after_a_not_found_response(self):
+        step = listed_plan(connector_page(ONE), saved("fetch_object_not_found.json"))
+
+        self.assertEqual([call["id"] for call in step["calls"]], ["docs-3"])
+
+    def test_plan_goes_on_after_an_unchanged_truncated_page(self):
+        cursor = stored_pages(page_one=SAME_MINUTE_AS_ONE)
+
+        step = notion.plan(LIST_RELAY_SOURCE, WINDOW, cursor, [], listed_responses(truncated_page(ONE)), CONNECTOR)
+
+        self.assertEqual([call["id"] for call in step["calls"]], ["docs-2"])
+
+    def test_a_pending_page_is_asked_even_when_a_later_one_is_saved(self):
+        step = notion.plan(LIST_RELAY_SOURCE, WINDOW, None, [], {"docs-2": connector_page(TWO)}, CONNECTOR)
+
+        self.assertEqual([call["id"] for call in step["calls"]], ["docs-1"])
+
+
+class ListedRelayTest(unittest.TestCase):
+    def test_records_follow_the_configured_page_order(self):
+        result = listed_over_relay(None, connector_page(ONE), connector_page(TWO), connector_page(THREE))
+
+        self.assertEqual([page["id"] for page in result["records"]["pages"]], [ONE, TWO, THREE])
+
+    def test_record_holds_the_title_edit_time_link_and_blocks(self):
+        result = listed_over_relay(None, connector_page(ONE), connector_page(TWO), connector_page(THREE))
+
+        self.assertEqual(
+            result["records"]["pages"][0],
+            {
+                "id": ONE,
+                "title": "First page",
+                "last_edited": "2026-09-04T14:30:41Z",
+                "link": "https://www.notion.so/pageone",
+                "blocks": blocks_of(ONE),
+            },
+        )
+
+    def test_page_without_a_cursor_is_read_whole(self):
+        result = listed_over_relay(stored_pages(page_two=SAME_MINUTE_AS_TWO), connector_page(ONE), connector_page(TWO), connector_page(THREE))
+
+        self.assertEqual(result["entries"][ONE], READ)
+
+    def test_page_edited_in_the_cursor_minute_is_unchanged(self):
+        result = listed_over_relay(stored_pages(page_one=SAME_MINUTE_AS_ONE), connector_page(ONE), connector_page(TWO), connector_page(THREE))
+
+        self.assertEqual(result["entries"][ONE], UNCHANGED)
+
+    def test_unchanged_page_gives_no_record(self):
+        result = listed_over_relay(stored_pages(page_one=SAME_MINUTE_AS_ONE), connector_page(ONE), connector_page(TWO), connector_page(THREE))
+
+        self.assertEqual([page["id"] for page in result["records"]["pages"]], [TWO, THREE])
+
+    def test_unchanged_page_keeps_its_stored_edit_time(self):
+        result = listed_over_relay(stored_pages(page_one=SAME_MINUTE_AS_ONE), connector_page(ONE), connector_page(TWO), connector_page(THREE))
+
+        self.assertEqual(result["cursor"]["pages"][ONE], SAME_MINUTE_AS_ONE)
+
+    def test_page_edited_in_a_later_minute_than_its_cursor_is_read(self):
+        result = listed_over_relay(stored_pages(page_one=MINUTE_BEFORE_ONE), connector_page(ONE), connector_page(TWO), connector_page(THREE))
+
+        self.assertEqual(result["entries"][ONE], READ)
+
+    def test_unchanged_truncated_page_is_not_a_partial_read(self):
+        result = listed_over_relay(stored_pages(page_one=SAME_MINUTE_AS_ONE), truncated_page(ONE), connector_page(TWO), connector_page(THREE))
+
+        self.assertEqual(result["entries"][ONE], UNCHANGED)
+
+    def test_changed_truncated_page_is_a_failed_entry(self):
+        result = listed_over_relay(None, truncated_page(ONE), connector_page(TWO), connector_page(THREE))
+
+        self.assertEqual(result["entries"], {ONE: TRUNCATED, TWO: READ, THREE: READ})
+
+    def test_database_response_is_a_failed_entry(self):
+        result = listed_over_relay(None, connector_page(ONE), saved("fetch_database.json"), connector_page(THREE))
+
+        self.assertEqual(result["entries"], {ONE: READ, TWO: NOT_A_PAGE, THREE: READ})
+
+    def test_other_pages_are_still_read_next_to_a_database_response(self):
+        result = listed_over_relay(None, connector_page(ONE), saved("fetch_database.json"), connector_page(THREE))
+
+        self.assertEqual([page["id"] for page in result["records"]["pages"]], [ONE, THREE])
+
+    def test_database_response_keeps_the_stored_edit_time(self):
+        cursor = stored_pages(page_two=SAME_MINUTE_AS_TWO)
+
+        result = listed_over_relay(cursor, connector_page(ONE), saved("fetch_database.json"), connector_page(THREE))
+
+        self.assertEqual(result["cursor"]["pages"][TWO], SAME_MINUTE_AS_TWO)
+
+    def test_database_response_never_read_has_no_cursor(self):
+        result = listed_over_relay(None, connector_page(ONE), saved("fetch_database.json"), connector_page(THREE))
+
+        self.assertEqual(list(result["cursor"]["pages"]), [ONE, THREE])
+
+    def test_page_response_without_an_edit_time_still_makes_the_source_unreadable(self):
+        body = json.loads(connector_page(TWO))
+        del body["page_last_edited_at"]
+        body["metadata"] = {"type": "page"}
+
+        error = listed_failure(self, None, connector_page(ONE), json.dumps(body), connector_page(THREE))
+
+        self.assertEqual(str(error), "notion-fetch: response without a valid page_last_edited_at")
+
+    def test_page_with_unknown_blocks_is_a_failed_entry(self):
+        page = truncated_page(ONE, truncated=False, unknown_block_count=2)
+
+        result = listed_over_relay(None, page, connector_page(TWO), connector_page(THREE))
+
+        self.assertEqual(result["entries"][ONE], TRUNCATED)
+
+    def test_page_with_zero_unknown_blocks_is_read(self):
+        page = truncated_page(ONE, truncated=False, unknown_block_count=0)
+
+        result = listed_over_relay(None, page, connector_page(TWO), connector_page(THREE))
+
+        self.assertEqual(result["entries"][ONE], READ)
+
+    def test_other_pages_are_still_read_next_to_a_truncated_one(self):
+        result = listed_over_relay(None, connector_page(ONE), truncated_page(TWO), connector_page(THREE))
+
+        self.assertEqual([page["id"] for page in result["records"]["pages"]], [ONE, THREE])
+
+    def test_truncated_page_keeps_its_stored_edit_time(self):
+        cursor = stored_pages(page_one=MINUTE_BEFORE_ONE)
+
+        result = listed_over_relay(cursor, truncated_page(ONE), connector_page(TWO), connector_page(THREE))
+
+        self.assertEqual(result["cursor"]["pages"][ONE], MINUTE_BEFORE_ONE)
+
+    def test_truncated_page_never_read_has_no_cursor(self):
+        result = listed_over_relay(None, truncated_page(ONE), connector_page(TWO), connector_page(THREE))
+
+        self.assertEqual(list(result["cursor"]["pages"]), [TWO, THREE])
+
+    def test_every_page_truncated_still_reads_the_source(self):
+        result = listed_over_relay(None, truncated_page(ONE), truncated_page(TWO), truncated_page(THREE))
+
+        self.assertEqual((result["records"], result["cursor"]), ({"pages": []}, {"pages": {}}))
+
+    def test_truncated_collection_passes_the_role_schema(self):
+        result = listed_over_relay(None, truncated_page(ONE), connector_page(TWO), connector_page(THREE))
+
+        self.assertIsNone(roles.validate_collection({**collection(result), "source": "docs", "transport": "mcp"}))
+
+    def test_response_reporting_object_not_found_is_a_failed_entry(self):
+        result = listed_over_relay(None, connector_page(ONE), saved("fetch_object_not_found.json"), connector_page(THREE))
+
+        self.assertEqual(result["entries"], {ONE: READ, TWO: NOT_SHARED, THREE: READ})
+
+    def test_response_reporting_a_restricted_resource_makes_the_source_unreadable(self):
+        error = listed_failure(self, None, connector_page(ONE), saved("fetch_restricted_resource.json"), connector_page(THREE))
+
+        self.assertEqual(str(error), "notion-fetch: response without text")
+
+    def test_response_with_only_a_forbidden_status_makes_the_source_unreadable(self):
+        error = listed_failure(self, None, connector_page(ONE), json.dumps({"status": 403}), connector_page(THREE))
+
+        self.assertEqual(str(error), "notion-fetch: response without text")
+
+    def test_response_with_only_a_restricted_resource_code_makes_the_source_unreadable(self):
+        error = listed_failure(self, None, connector_page(ONE), json.dumps({"code": "restricted_resource"}), connector_page(THREE))
+
+        self.assertEqual(str(error), "notion-fetch: response without text")
+
+    def test_not_found_shape_next_to_a_text_is_a_page(self):
+        body = {**json.loads(connector_page(TWO)), "status": 404}
+
+        result = listed_over_relay(None, connector_page(ONE), json.dumps(body), connector_page(THREE))
+
+        self.assertEqual(result["entries"][TWO], READ)
+
+    def test_returned_entries_are_not_shared_between_calls(self):
+        cursor = stored_pages(page_one=SAME_MINUTE_AS_ONE)
+        first = listed_over_relay(cursor, connector_page(ONE), saved("fetch_object_not_found.json"), connector_page(THREE))
+        for entry in first["entries"].values():
+            entry["reason"] = "changed"
+
+        second = listed_over_relay(cursor, connector_page(ONE), saved("fetch_object_not_found.json"), connector_page(THREE))
+
+        self.assertEqual(second["entries"], {ONE: UNCHANGED, TWO: NOT_SHARED, THREE: READ})
+
+    def test_response_with_only_a_not_found_status_is_a_failed_entry(self):
+        result = listed_over_relay(None, connector_page(ONE), json.dumps({"status": 404}), connector_page(THREE))
+
+        self.assertEqual(result["entries"][TWO], NOT_SHARED)
+
+    def test_response_with_only_an_object_not_found_code_is_a_failed_entry(self):
+        result = listed_over_relay(None, connector_page(ONE), json.dumps({"code": "object_not_found"}), connector_page(THREE))
+
+        self.assertEqual(result["entries"][TWO], NOT_SHARED)
+
+    def test_other_pages_are_still_read_next_to_a_missing_one(self):
+        result = listed_over_relay(None, connector_page(ONE), saved("fetch_object_not_found.json"), connector_page(THREE))
+
+        self.assertEqual([page["id"] for page in result["records"]["pages"]], [ONE, THREE])
+
+    def test_missing_page_keeps_its_stored_edit_time(self):
+        result = listed_over_relay(stored_pages(page_two=SAME_MINUTE_AS_TWO), connector_page(ONE), saved("fetch_object_not_found.json"), connector_page(THREE))
+
+        self.assertEqual(result["cursor"]["pages"][TWO], SAME_MINUTE_AS_TWO)
+
+    def test_missing_page_never_read_has_no_cursor(self):
+        result = listed_over_relay(None, connector_page(ONE), saved("fetch_object_not_found.json"), connector_page(THREE))
+
+        self.assertEqual(sorted(result["cursor"]["pages"]), [ONE, THREE])
+
+    def test_unauthorized_response_makes_the_source_unreadable(self):
+        error = listed_failure(self, None, connector_page(ONE), saved("fetch_unauthorized.json"), connector_page(THREE))
+
+        self.assertEqual(str(error), "notion-fetch: response without text")
+
+    def test_missing_response_names_the_call(self):
+        error = listed_failure(self, None, connector_page(ONE))
+
+        self.assertEqual(str(error), "notion-fetch: no response docs-2")
+
+    def test_response_without_an_edit_time_makes_the_source_unreadable(self):
+        body = json.loads(connector_page(TWO))
+        del body["page_last_edited_at"]
+
+        error = listed_failure(self, None, connector_page(ONE), json.dumps(body), connector_page(THREE))
+
+        self.assertEqual(str(error), "notion-fetch: response without a valid page_last_edited_at")
+
+    def test_collection_passes_the_role_schema(self):
+        result = listed_over_relay(stored_pages(page_one=SAME_MINUTE_AS_ONE), connector_page(ONE), saved("fetch_object_not_found.json"), connector_page(THREE))
+
+        self.assertIsNone(roles.validate_collection({**collection(result), "source": "docs", "transport": "mcp"}))
+
+
+class ListedTransportEqualityTest(unittest.TestCase):
+    CURSOR = stored_pages(page_two=SAME_MINUTE_AS_TWO, page_three=MINUTE_BEFORE_ONE)
+
+    def over_both(self):
+        _, over_api = listed_over_api(self.CURSOR, *api_read(ONE), api_meta(TWO), *api_read(THREE))
+        over_relay = listed_over_relay(self.CURSOR, connector_page(ONE), connector_page(TWO), connector_page(THREE))
+        return over_api, over_relay
+
+    def test_both_transports_give_the_same_records(self):
+        over_api, over_relay = self.over_both()
+
+        self.assertEqual(state.dump(over_relay["records"]), state.dump(over_api["records"]))
+
+    def test_both_transports_give_the_same_cursor(self):
+        over_api, over_relay = self.over_both()
+
+        self.assertEqual(state.dump(over_relay["cursor"]), state.dump(over_api["cursor"]))
+
+    def test_both_transports_give_the_same_entries(self):
+        over_api, over_relay = self.over_both()
+
+        self.assertEqual(state.dump(over_relay["entries"]), state.dump(over_api["entries"]))
+
+    def test_both_transports_give_the_same_collection_next_to_a_database(self):
+        cursor = stored_pages(page_two=SAME_MINUTE_AS_TWO)
+        _, over_api = listed_over_api(cursor, *api_read(ONE), status(400), *api_read(THREE))
+        over_relay = listed_over_relay(cursor, connector_page(ONE), saved("fetch_database.json"), connector_page(THREE))
+
+        self.assertEqual(state.dump(over_relay), state.dump(over_api))
+
+    def test_the_data_set_has_a_read_an_unchanged_and_a_second_read_page(self):
+        over_api, _ = self.over_both()
+
+        self.assertEqual(over_api["entries"], {ONE: READ, TWO: UNCHANGED, THREE: READ})
+
+    def test_both_transports_give_the_same_collection_next_to_a_missing_page(self):
+        cursor = stored_pages(page_two=SAME_MINUTE_AS_TWO)
+        _, over_api = listed_over_api(cursor, *api_read(ONE), status(404), *api_read(THREE))
+        over_relay = listed_over_relay(cursor, connector_page(ONE), saved("fetch_object_not_found.json"), connector_page(THREE))
+
+        self.assertEqual(state.dump(over_relay), state.dump(over_api))
+
+
+class SourcesPageCursorTest(unittest.TestCase):
+    SAME_MINUTE = stored_pages(sources_page="2026-09-04T14:30:07Z")
+
+    def test_sources_page_is_read_whole_over_the_api_when_its_edit_minute_is_the_cursor(self):
+        opener = FakeOpener([ok("page.json"), ok("blocks_empty.json")])
+
+        result = notion.fetch(SOURCE, WINDOW, self.SAME_MINUTE, [], client(opener))
+
+        self.assertEqual((len(opener.requests), len(result["records"]["pages"]), result["entries"]), (2, 1, {}))
+
+    def test_sources_page_is_read_whole_over_the_connector_when_its_edit_minute_is_the_cursor(self):
+        result = notion.parse(RELAY_SOURCE, WINDOW, self.SAME_MINUTE, [], {CALL_ID: saved("fetch_page.json")}, {CALL_ID: None})
+
+        self.assertEqual((len(result["records"]["pages"]), result["entries"]), (1, {}))
+
+    def test_sources_page_cursor_is_per_page_id(self):
+        result = notion.parse(RELAY_SOURCE, WINDOW, None, [], {CALL_ID: saved("fetch_page.json")}, {CALL_ID: None})
+
+        self.assertEqual(result["cursor"], {"pages": {PAGE_ID: "2026-09-04T14:30:00Z"}})
+
+    def test_not_found_response_does_not_become_an_entry_for_a_sources_page(self):
+        with self.assertRaises(_http.SourceUnreadable) as caught:
+            notion.parse(RELAY_SOURCE, WINDOW, None, [], {CALL_ID: saved("fetch_object_not_found.json")}, {CALL_ID: None})
+        self.assertEqual(str(caught.exception), "notion-fetch: response without text")
+
+    def test_database_response_does_not_become_an_entry_for_a_sources_page(self):
+        with self.assertRaises(_http.SourceUnreadable) as caught:
+            notion.parse(RELAY_SOURCE, WINDOW, None, [], {CALL_ID: saved("fetch_database.json")}, {CALL_ID: None})
+        self.assertEqual(str(caught.exception), "notion-fetch: response without a valid page_last_edited_at")
+
+    def test_database_id_makes_the_sources_page_unreadable_over_the_api(self):
+        with self.assertRaises(_http.SourceUnreadable) as caught:
+            run(status(400))
+        self.assertEqual(str(caught.exception), f"HTTP 400 GET {PAGE_PATH}")
+
+    def test_sources_page_plan_stays_one_call(self):
+        self.assertEqual([call["id"] for call in relay_plan({})["calls"]], [CALL_ID])
 
 
 if __name__ == "__main__":

@@ -1,4 +1,6 @@
 PAGE_CAP_PARTIAL = "page cap"
+CALL_CAP = 50
+CALL_CAP_PARTIAL = "call cap"
 
 
 class SourceUnreadable(Exception):

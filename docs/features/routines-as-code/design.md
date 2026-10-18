@@ -444,7 +444,7 @@ Bump procedure, documented in the plugin README:
 - `read`, and `reason` (null when read).
 - `cursor`: the newest position reached, in the role's cursor shape. The state stores the observability cursors only (`cursors.observability`); a source of another role reads from the window start.
 - `records`: in the role's record schema (Data Model), shared by every provider of the role (AC-13.7).
-- `entries`: per query pack entry of the source, `ok`, `deferred` or `failed` with a reason, so the evaluator can defer one entry without dropping the source.
+- `entries`: per query pack entry of the source, or per channel or page of a chat or document store source (TD-40, TD-41), `ok`, `deferred` or `failed` with a reason, so the evaluator can defer one entry without dropping the source.
 
 A source not read still gets a collection, with `read` false, a reason (control characters replaced by spaces, at most 200 characters) and empty records, and the command exits 0: a source not read is data for the run, not an error (AC-13.3). A partial read (page cap, size cap, partial response) sets `read` false with a reason starting `partial:` (AC-13.4, BR-28). An entry that fails on its own is `failed` in `entries`, and the source stays read (BR-32).
 
@@ -900,6 +900,152 @@ Feature rules:
 
 **Rationale**: a secret pasted into the private config fails every command before it reaches a prompt, a collection or a commit.
 
+### TD-39: Issue tracker role and adapter
+
+**Choice**:
+- Role `issue_tracker`, added to `ROLES`, `ROLE_OPTIONS`, `ROLE_SCHEMAS` and `EMPTY_RECORDS`. Source options:
+  - `filter`: the saved filter id, digits only;
+  - `query`: optional text that narrows the filter;
+  - `open_sprints`: optional boolean.
+- One adapter module under `providers/`, with `ROLE = "issue_tracker"` and the credentials `email` and `token` (basic authentication). Its README section follows the conformance headings.
+- Reads, over both transports, issue search results in one JSON shape: key, summary, type, status, priority, creation and update times, a next-page token and a last-page flag.
+  - The exact bound is the cursor minus 1 hour, or the read start of TD-43 when the source has no cursor.
+  - The updated read selects the filter's issues, narrowed by the query, updated at or after the exact bound minus 24 hours, written in UTC. The tracker reads query dates in its user's zone, so the 24-hour margin covers any zone.
+  - The collector then keeps only the issues whose parsed update time is at or after the exact bound (BR-49).
+  - With `open_sprints`, a second read selects every issue of the filter in an open sprint, with no time bound. The query narrows the updated read only, since the live digests read the whole open sprint.
+  - Results merge by key, and the newest update wins. `in_open_sprint` is true for the keys of the second read. Records are sorted by key.
+- The `api` transport posts the issue search with the fields above, 100 per page, following the next-page token up to the page cap of 20. Reaching the cap is `partial: page cap` (BR-28).
+- The `mcp` transport plans one search tool call per page with the same query, fields, page size and token, in the tool's full view, since its default view drops the update time. Its site argument is the provider's `links_base`, which a connector-only provider must set, as for the observability adapter. The model saves each response unchanged (AC-15.2), and the collector's 50-call cap bounds the plan.
+- Times with an offset become UTC `Z` strings. The cursor is `{"updated": <newest update read>}`, the stored cursor when no issue is read, and `{"updated": null}` with neither.
+- A filter the tracker reports as not found or forbidden makes the source not read, since a source has one filter.
+- Links are the tracker's issue links under `links_base`, or `base_url`.
+
+**Alternatives considered**:
+- A separate sprint API: rejected, the connector exposes only issue search, and a second read path per transport would break parity.
+- A configured tracker timezone for the query bound: rejected, the 24-hour margin and the exact filter need no setting.
+- Collecting assignee and reporter: rejected, BR-52.
+- An exact query bound in UTC: rejected, the tracker reads query dates in its user's zone and would miss up to that offset.
+
+**Rationale**: one record schema for both transports. The overlap and the exact filter in code make the read independent of the tracker user's timezone.
+
+### TD-40: Chat thread replies
+
+**Choice**:
+- A chat message record holds `thread_ts`:
+  - a thread root with at least one reply carries its own ts;
+  - a reply carries its root's ts;
+  - any other message carries null.
+- Both transports know the roots with replies from the history read. The providers README names the field of each transport. The connector's thread marker line is removed from the message text, so both transports give the same text.
+- For each root whose ts lies in the window, the collector reads its replies up to the window end:
+  - `api`: the chat API's thread replies call, bounded by the window end, following its page cursor;
+  - `mcp`: one thread read call of the connector per page, in its detailed format.
+- The connector's thread text is parsed with the history parser's guards: a reply's ts is later than its root and not later than the window end, and each ts is new. Thread pages come newest first, each repeating the parent block, so replies ascend within a page and only need to be new across pages. The providers README describes the format.
+- Records are keyed by channel and ts. A reply also shown in the channel history gives one record, and the thread read's copy wins, so it carries its root's ts. A reply seen only in the history carries null on both transports (AC-28.4).
+- The author is the user or bot id. Names and emails in the connector text are dropped (BR-52).
+- The connector's trailing metadata lines of a message (reactions, files, the thread marker, in any order) are removed from its text, since the `api` text never holds them; the root is detected from the marker among them.
+- Both transports read a window with both bounds exclusive, since the connector's history read excludes a message at either bound.
+- One budget bounds a source on both transports: 50 history pages and thread reads in all. Reaching it is `partial: call cap` (BR-28).
+- Records are sorted by channel order, then ts.
+- Channel failures:
+  - A channel that the tool reports as not found, archived or not joined is a failed entry, keyed by the channel id, and the other channels are still read (AC-28.7).
+  - Any other failure keeps making the source not read (AC-28.8).
+- The cursor holds, per channel, the newest history ts read. It is the window end, as `"<to_ts>.000000"`, for a channel with no message, and the stored ts for a failed channel.
+- A channel with no cursor starts at the first-read start (TD-43).
+
+**Alternatives considered**:
+- Reading every message's thread: rejected, one call per message on busy channels, for nothing.
+- Replies of older threads: deferred to Phase 13, which cites threads from the state.
+
+**Rationale**: thread replies hold most decisions and reported problems, and both transports find them without a read per message.
+
+### TD-41: Changed documents
+
+**Choice**:
+- A document store source sets either `page_id` (the sources page, read every run) or `pages`, a list of page ids. Setting both, or neither, is a config error.
+- The page record holds `link`, the store's page link under `links_base` or the store's default host, for both kinds.
+- The cursor is `{"pages": {<page id>: <edit time>}}` for both kinds. No migration is needed: the state keeps no document store cursor (TD-18). A failed or unchanged page keeps its stored edit time. Records follow the configured page order.
+- The evaluator takes its sources page only from a source that sets `page_id`.
+- `api`: the page metadata call gives each page's edit time. Only a page whose edit time differs from its cursor at minute precision is read in full (BR-51).
+- `mcp`: the connector has no edit-time call, so each listed page is fetched, and a page whose edit minute equals its cursor is left out of the records. The cost grows with the number of pages, and the README says so.
+- Per page, the entry is:
+  - `ok` when the page is read;
+  - `deferred` with the reason `unchanged`;
+  - `failed` with the reason `not found or not shared`;
+  - `failed` with the reason `partial: page truncated`, when the connector returns a changed page truncated; the other pages are still read. The single sources page keeps its rule: truncated means the source is not read.
+- The source's request cap (`api`, 50 requests: the metadata and block reads of about 10 pages) and call cap (`mcp`, 50 calls, one per page) make it not read when reached (AC-29.6). The README advises at most 10 pages per source, so both transports stay under their caps.
+
+**Alternatives considered**:
+- The connector's search to get edit times: rejected, a page cannot be looked up by id there, and search times are rounded per result.
+- A separate role for changed pages: rejected, same records and adapter.
+
+**Rationale**: the `api` transport reads only what changed, both transports give the same records, and the sources page keeps its contract.
+
+### TD-42: Trend windows
+
+**Choice**:
+- A `scalar` or `hourly` metric entry may set `trend_days`, from 7 to 31.
+- `roles.py` rejects `trend_days` in these cases:
+  - on a `top` or monitor entry;
+  - next to `lookback_days`;
+  - with an aggregator other than `max`, `min`, `sum`, `avg` or `last`.
+- `collect.py` hands the entry a `trend_span` `{from_ts, to_ts}` covering the last `trend_days` local days, the window end's day included: from local midnight `trend_days - 1` days before the window end's local date, to the window end. The adapter reads the entry's query once more as an hourly timeseries over that span. Each hourly point lands in its local day of the config timezone.
+- A day's value is the aggregator over that day's points. A day with no point is absent. A 23-hour or 25-hour day aggregates the hours it has.
+- The metric record of an entry with a trend span holds `trend` (a list of `{day, value}`, `day` as local `YYYY-MM-DD`) and `trend_reason`; other records omit both, like `daily`:
+  - `trend_reason` is null when the trend read succeeds;
+  - `trend` is null and `trend_reason` holds the cause when the trend read fails or returns no point.
+- The trend read is guarded on its own: an HTTP error on it, other than 401 or 403 which keep failing the source, sets `trend_reason` and leaves the window value read.
+- A day's value applies the entry's aggregator to the hourly values the read returns, so `avg` is a mean of hourly values. `excluded_hours` does not apply to trends.
+- A 31-day span reads about 750 points per entry. The connector script runs the trend reads one after another, within its timeout.
+- The tribe features turn `trend_reason` into the entry's blind spot (AC-30.6), with the tribe judgment.
+- The entry's status still comes from its window read only (BR-53).
+- The connector script runs the same reads: the trend spans sit in its digested parameters, and the golden script fixture holds them.
+
+**Alternatives considered**:
+- The provider's daily rollup: rejected, it aligns days to UTC, and AC-30.5 asks for local days.
+- Widening `lookback_days` to every entry: rejected, a lookback replaces the window value, while a trend sits next to it.
+
+**Rationale**: local days match the hour buckets of the features (TD-26). A failed trend never hides the entry's window value.
+
+### TD-43: First-read span and the tribe digest sources
+
+**Choice**:
+- A routine file may set `first_read_days`, from 1 to 31.
+- `collect.py` adds `first_read_from_ts` (window end minus that span) and `timezone` (the config timezone) to the window it hands the adapters. Without the key, `first_read_from_ts` is the window start, so Prod watch keeps its windows. `roles.validate_config` checks the key.
+- Read start, one helper for every adapter: a stored cursor later than `first_read_from_ts` wins, else the read starts at `first_read_from_ts`.
+- Collections stay stateless for these roles in this phase: the state keeps no chat, issue tracker or document store cursor (TD-18), so each collection starts at `first_read_from_ts`. The tribe state of the next phase stores them.
+- The chat and issue tracker adapters start a channel or a filter with no cursor at `first_read_from_ts`, never earlier (BR-50). The run window keeps BR-13 and BR-20.
+- `config.json` holds the chat and issue tracker providers, each with its default transport. The two tribe digest routine files list:
+  - their channels, their issue filter and its narrowing query;
+  - their document pages;
+  - their monitors and metric sources;
+  - a query pack whose metric entries set `trend_days: 30`.
+- The mirror template references no source, so the render and the live prompt stay the same (AC-31.5).
+- The public `example/config/routines/tribe-digest.json` shows the same shape, with placeholders.
+
+**Alternatives considered**:
+- A first-read span per source: rejected, the live digests use one span for every source.
+- Reusing the run window as the first read: rejected, a new channel would then read less than the live digest reads.
+
+**Rationale**: a new channel or filter reads the same span as the live digests, and Prod watch keeps its windows.
+
+### TD-44: Replay coverage check
+
+**Choice**: the replay runs in a local session, like T-43, over the window of each reference digest:
+- The collections are written by `collect.py` (`plan`, saved responses, `parse`).
+- A compare script in the private repository's `reference/` directory reads:
+  - the citations of each reference digest: issue keys, document page ids and chat channel ids, taken from the raw page;
+  - the collections;
+  - a reasons file.
+- It prints one line per cited record: found, or the reason that the reasons file gives from the fixed list of AC-31.6.
+- It exits 1 when a record has neither.
+- The model running the replay writes the reasons file after checking each unmatched record.
+
+**Alternatives considered**:
+- A public coverage command: rejected, citations and reasons are company data, and no runtime step needs them.
+- Inferring reasons in the script: rejected, "moved out of the filter" and "deleted" need a lookup that only the session can make.
+
+**Rationale**: the check measures the collectors against what the live digests cited, before any judgment exists.
+
 ## Implementation Considerations
 
 ### Data Model
@@ -966,9 +1112,10 @@ Role record schemas, shared by every provider of a role (AC-13.7):
 
 | Role | Source options | Records | Cursor |
 |---|---|---|---|
-| observability | `kind` (`monitors` or `metrics`), `scope_filter` (the alert event search query of a `monitors` source; ignored by a `metrics` source), `discovery_query` (`monitors` only) | `monitors` kind: `monitors` `{id, name, state, priority, link}`, alert `events` `{ts_ms, link, monitor}` after the cursor (no title: the features use only the monitor and the time), `discovered` `{id, name, state, priority, link}` (search results and event-named monitors) and `discovery` `{read, reason}` with an optional `event_monitors_capped`; `metrics` kind: `metrics` `{key, value, hourly [{ts, value}], daily [{ts, value}], groups [{group, value}]}`, `daily` for lookback entries only | `events_ts_ms` and `monitors` for `monitors`, `metrics` for `metrics` |
-| document store | `page_id` (`^[A-Za-z0-9-]+$`) | `pages`: `{id, title, last_edited, blocks [{type, text, rows}]}` | `last_edited` |
-| chat channel | `channels` | `messages`: `{channel, ts, author, text, link}` | newest `ts` per channel |
+| observability | `kind` (`monitors` or `metrics`), `scope_filter` (the alert event search query of a `monitors` source; ignored by a `metrics` source), `discovery_query` (`monitors` only) | `monitors` kind: `monitors` `{id, name, state, priority, link}`, alert `events` `{ts_ms, link, monitor}` after the cursor (no title: the features use only the monitor and the time), `discovered` `{id, name, state, priority, link}` (search results and event-named monitors) and `discovery` `{read, reason}` with an optional `event_monitors_capped`; `metrics` kind: `metrics` `{key, value, hourly [{ts, value}], daily [{ts, value}], groups [{group, value}], trend [{day, value}] or null, trend_reason}`, `daily` for lookback entries only, `trend` for entries with `trend_days` (TD-42) | `events_ts_ms` and `monitors` for `monitors`, `metrics` for `metrics` |
+| document store | `page_id` (`^[A-Za-z0-9-]+$`), or `pages` (a list of page ids, TD-41) | `pages`: `{id, title, last_edited, link, blocks [{type, text, rows}]}` | `pages` (edit time per page id) |
+| chat channel | `channels` | `messages`: `{channel, ts, thread_ts, author, text, link}` (TD-40) | newest history `ts` per channel |
+| issue tracker | `filter`, optional `query` and `open_sprints` (TD-39) | `issues`: `{key, title, type, status, priority, created, updated, link, in_open_sprint}` | `updated` |
 | code host | `repos`, `query` (a non-empty `query` makes the source not read: neither transport supports it) | `pull_requests`: `{repo, number, title, author, state, draft, created_at, updated_at, merged_at, link}`; `issues`: `{repo, number, title, author, state, created_at, updated_at, link}` | newest `updated_at` |
 
 A role's records hold only the fields both transports return, so `api` and `mcp` give the same records (AC-13.2): the chat connector's history has no thread fields, and the code host connector's issue list has no closing time.
@@ -979,7 +1126,7 @@ Entry statuses in a collection's `entries`: `ok`, `deferred`, `failed`, and `mis
 
 Features, base, rules, judgment and analysis files: TD-26 and TD-27. They stay in the run's temporary directory (NFR-8).
 
-Plan file (TD-21): `{"done", "partial", "calls": [{"id", "connector", "tool", "arguments"}]}`. Per responses directory, `calls.json` keeps `{"calls": {id: digest or null}, "done", "partial"}` across plan steps, so `parse` knows every planned call, its expected digest, and whether the loop ended. A code script's result is `{"payload", "checksum", "digest"}`. Each source has its own responses directory.
+Plan file (TD-21): `{"done", "partial", "calls": [{"id", "connector", "tool", "arguments"}]}`. Per responses directory, `calls.json` keeps `{"calls": {id: digest or null}, "done", "partial"}` across plan steps, so `parse` knows every planned call, its expected digest, and whether the loop ended. A code script's result is `{"payload", "checksum", "digest"}`. Each source has its own responses directory. A saved response that holds the harness's file wrapper, a JSON list of `{"type": "text", "text"}` blocks, is unwrapped to the joined texts before any check, since the model copies a harness-saved result unchanged.
 
 ### API / Interface
 
@@ -1229,6 +1376,36 @@ sequenceDiagram
     end
 ```
 
+### Collect a chat source with threads
+
+```mermaid
+sequenceDiagram
+    participant C as collect.py
+    participant A as chat adapter
+    participant T as chat tool or connector
+    C->>A: fetch or plan, with first_read_from_ts and the stored cursor
+    loop each listed channel
+        A->>T: history from the cursor, or from the first-read start
+        alt not found, archived or not joined
+            T-->>A: error
+            A->>A: failed entry for the channel, cursor kept
+        else other error
+            T-->>A: error
+            break source not read
+                A-->>C: not read, empty records
+            end
+        else messages
+            T-->>A: messages, with reply counts
+            loop each root in the window with replies
+                A->>T: thread replies up to the window end
+                T-->>A: replies
+            end
+        end
+    end
+    A->>A: one record per channel and ts, cursor per channel
+    A-->>C: records, cursor, entries
+```
+
 ## File Inventory
 
 | File | Action | Purpose |
@@ -1307,8 +1484,16 @@ sequenceDiagram
 | `plugins/claudio-routines/README.md` | modify | Config split: layout, provider default transport, template list with run status |
 | `plugins/claudio-routines/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` | modify | Config split: version bump |
 | `plugins/claudio-routines/runtime/providers/README.md` | modify | Secret guard: credentials hold variable names, connector-only providers set no `api` block (TD-38) |
+| `plugins/claudio-routines/runtime/roles.py`, `collect.py`, `evaluate.py`, `providers/_common.py` | modify | Tribe collectors: issue tracker role, `thread_ts`, document `pages` and `link`, `trend_days` checks, `first_read_days`, `first_read_from_ts`, `timezone`, the read start helper, per-source entries, the sources page from `page_id` sources only (TD-39 to TD-43) |
+| `plugins/claudio-routines/runtime/providers/<issue tracker vendor>.py`, `test_<issue tracker vendor>.py`, `fixtures/<issue tracker vendor>/` | new | Tribe collectors: issue tracker adapter over both transports (TD-39) |
+| `plugins/claudio-routines/runtime/providers/<chat vendor>.py`, `test_<chat vendor>.py`, `fixtures/<chat vendor>/` | modify | Tribe collectors: thread replies, per-channel failed entries, cursor at the window end (TD-40) |
+| `plugins/claudio-routines/runtime/providers/<document store vendor>.py`, `test_<document store vendor>.py`, `fixtures/<document store vendor>/` | modify | Tribe collectors: page lists, per-page cursor and entries, page links (TD-41) |
+| `plugins/claudio-routines/runtime/providers/<observability vendor>.py`, its tests, support module and fixtures | modify | Tribe collectors: trend reads over both transports, golden script (TD-42) |
+| `plugins/claudio-routines/runtime/providers/README.md` | modify | Tribe collectors: issue tracker section, thread reads, page lists, trend reads |
+| `plugins/claudio-routines/runtime/test_roles.py`, `test_collect.py`, `evaluate_support.py`, `test_evaluate.py` | modify | Tribe collectors: role schemas, first-read span, page `link` in the sources page collection |
+| `plugins/claudio-routines/example/config.json`, `example/config/routines/tribe-digest.json`, `README.md`, `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` | modify | Tribe collectors: example sources, docs, version bump |
 
-Tasks create the private repository files (`config.json`, `config/routines/*.json`, `templates/prod-watch.md`, `templates/prod-watch-runtime.md`, `templates/tribe-digest.md`, `templates/chat-recap.md`, `templates/weekly-status.md`, `routines/*`) outside this repository; this inventory never lists their content.
+Tasks create the private repository files (`config.json`, `config/routines/*.json`, `templates/prod-watch.md`, `templates/prod-watch-runtime.md`, `templates/tribe-digest.md`, `templates/chat-recap.md`, `templates/weekly-status.md`, `routines/*`, `reference/` compare script and reasons) outside this repository; this inventory never lists their content.
 
 ## Non-Functional Requirements
 

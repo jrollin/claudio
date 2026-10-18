@@ -33,6 +33,10 @@ from providers.datadog_support import (
     QUEUE,
     STORED_TS,
     TO_MS,
+    TREND_FROM_MS,
+    TREND_SERIES,
+    TREND_SPAN,
+    TREND_WINDOW,
     WINDOW,
     collection,
     configured,
@@ -48,8 +52,11 @@ from providers.datadog_support import (
     ok,
     run,
     search_page,
+    series,
+    series_response,
     served,
     status,
+    trended,
 )
 
 CONNECTOR = "obs-connector"
@@ -64,8 +71,8 @@ CHECKOUT_ERRORS = found(201, name="Checkout errors", priority=1)
 DISK_USAGE = found(203, "Warn", name="Disk usage")
 
 
-def first_call(source, entries, cursor):
-    return datadog.plan(source, WINDOW, cursor, entries, {}, CONNECTOR)["calls"][0]
+def first_call(source, entries, cursor, window=WINDOW):
+    return datadog.plan(source, window, cursor, entries, {}, CONNECTOR)["calls"][0]
 
 
 def embedded(call):
@@ -85,14 +92,14 @@ def script_value(payload, digest):
     return {"payload": payload, "checksum": roles.fnv1a32(payload), "digest": digest}
 
 
-def parse_text(source, entries, cursor, text):
-    call = first_call(source, entries, cursor)
-    return datadog.parse(source, WINDOW, cursor, entries, {call["id"]: text}, {call["id"]: call["digest"]})
+def parse_text(source, entries, cursor, text, window=WINDOW):
+    call = first_call(source, entries, cursor, window)
+    return datadog.parse(source, window, cursor, entries, {call["id"]: text}, {call["id"]: call["digest"]})
 
 
-def relay(source, entries, cursor, document):
-    digest = first_call(source, entries, cursor)["digest"]
-    return parse_text(source, entries, cursor, wrapped(script_value(stringified(document), digest)))
+def relay(source, entries, cursor, document, window=WINDOW):
+    digest = first_call(source, entries, cursor, window)["digest"]
+    return parse_text(source, entries, cursor, wrapped(script_value(stringified(document), digest)), window)
 
 
 def relay_fixture(name):
@@ -139,7 +146,8 @@ def relay_discovery(search):
     return relay(DISCOVERING, [], FRESH, with_discovery(search))
 
 
-STUB_MODULE = """
+STUB_MODULE = """import { writeFileSync } from "node:fs";
+
 const fake = JSON.parse(process.env.FAKE);
 const failure = (code) => Object.assign(new Error("stubbed"), { code });
 class MonitorsApi {
@@ -157,9 +165,14 @@ class EventsApi {
     return fake.events || { data: [], meta: { page: {} } };
   }
 }
+let timeseriesCalls = 0;
 class MetricsApi {
   async queryTimeseriesData() {
-    return fake.timeseries;
+    timeseriesCalls += 1;
+    writeFileSync("timeseries_calls", String(timeseriesCalls));
+    const next = fake.sequence ? fake.sequence[timeseriesCalls - 1] : fake.timeseries;
+    if (next.error) throw failure(next.error);
+    return next;
   }
   async queryScalarData() {
     return fake.scalar;
@@ -204,8 +217,8 @@ class RelayScriptExecutionTest(unittest.TestCase):
         with open(os.path.join(package, "index.js"), "w", encoding="utf-8") as handle:
             handle.write(STUB_MODULE)
 
-    def relayed(self, source, entries, cursor, fake):
-        call = first_call(source, entries, cursor)
+    def relayed(self, source, entries, cursor, fake, window=WINDOW):
+        call = first_call(source, entries, cursor, window)
         head = call["arguments"]["code"].rsplit(SCRIPT_RETURN, 1)[0]
         script = os.path.join(self.dir, "script.mjs")
         with open(script, "w", encoding="utf-8") as handle:
@@ -214,7 +227,7 @@ class RelayScriptExecutionTest(unittest.TestCase):
             ["node", script], cwd=self.dir, env={**os.environ, "FAKE": json.dumps(fake)}, capture_output=True, text=True, timeout=30, check=False
         )
         self.assertEqual((done.returncode, done.stderr), (0, ""))
-        return parse_text(source, entries, cursor, wrapped(json.loads(done.stdout)))
+        return parse_text(source, entries, cursor, wrapped(json.loads(done.stdout)), window)
 
     def test_paged_discovery_with_a_priority_lookup_and_a_missing_monitor_equals_the_api_transport(self):
         search = [
@@ -305,6 +318,51 @@ class RelayScriptExecutionTest(unittest.TestCase):
 
         self.assertEqual(relayed, api)
         self.assertEqual(relayed["records"]["metrics"][0]["daily"][0]["value"], 12.5)
+
+    def test_trend_reads_equal_the_api_transport(self):
+        entries = [trended(HOURLY, "max"), trended(P95, "avg")]
+        sdk = {"data": {"attributes": TREND_SERIES}}
+        fake = {"monitors": {}, "search": [], "sequence": [json.loads(fixture("timeseries.json")), sdk, sdk], "scalar": json.loads(fixture("scalar.json"))}
+
+        relayed = self.relayed(METRICS, entries, NO_METRICS, fake, TREND_WINDOW)
+        _, api = run(
+            METRICS, entries, NO_METRICS, ok("timeseries.json"), series_response(TREND_SERIES), ok("scalar.json"), series_response(TREND_SERIES), window=TREND_WINDOW
+        )
+
+        self.assertEqual(relayed, api)
+        self.assertEqual([len(record["trend"]) for record in relayed["records"]["metrics"]], [2, 2])
+
+    def test_failed_trend_read_equals_the_api_transport(self):
+        entries = [trended(HOURLY, "max")]
+        fake = {"monitors": {}, "search": [], "sequence": [json.loads(fixture("timeseries.json")), {"error": 500}]}
+
+        relayed = self.relayed(METRICS, entries, NO_METRICS, fake, TREND_WINDOW)
+        _, api = run(METRICS, entries, NO_METRICS, ok("timeseries.json"), status(500), status(500), window=TREND_WINDOW)
+
+        self.assertEqual(relayed, api)
+        self.assertEqual(relayed["records"]["metrics"][0]["trend_reason"], "HTTP 500 POST /api/v2/query/timeseries")
+
+    def test_unauthorized_trend_read_fails_the_source_like_the_api_transport(self):
+        entries = [trended(HOURLY, "max")]
+        fake = {"monitors": {}, "search": [], "sequence": [json.loads(fixture("timeseries.json")), {"error": 401}]}
+
+        with self.assertRaises(_http.SourceUnreadable) as relayed:
+            self.relayed(METRICS, entries, NO_METRICS, fake, TREND_WINDOW)
+        with self.assertRaises(_http.SourceUnreadable) as api:
+            run(METRICS, entries, NO_METRICS, ok("timeseries.json"), status(401), window=TREND_WINDOW)
+
+        self.assertEqual((str(relayed.exception), relayed.exception.status), (str(api.exception), api.exception.status))
+
+
+    def test_failed_window_read_skips_the_trend_read(self):
+        entries = [trended(HOURLY, "max")]
+        fake = {"monitors": {}, "search": [], "sequence": [{"error": 400}, {"data": {"attributes": TREND_SERIES}}]}
+
+        relayed = self.relayed(METRICS, entries, NO_METRICS, fake, TREND_WINDOW)
+
+        with open(os.path.join(self.dir, "timeseries_calls"), encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), "1")
+        self.assertEqual(relayed["entries"], {"queue-hourly": failed("HTTP 400 POST /api/v2/query/timeseries")})
 
 
 class PlanTest(unittest.TestCase):
@@ -403,6 +461,22 @@ class PlanTest(unittest.TestCase):
                 {"key": "errors-by-service", "query": QUERY, "read": "top", "aggregator": "sum", "top": 5},
             ],
         )
+
+    def test_trend_entry_embeds_its_span_in_milliseconds(self):
+        call = first_call(METRICS, [trended(P95, "avg")], NO_METRICS)
+
+        self.assertEqual(json.loads(json.loads(embedded(call)))["entries"][0]["trend_span"], {"from_ms": TREND_FROM_MS, "to_ms": TO_MS})
+
+    def test_entries_without_a_trend_embed_no_span(self):
+        call = first_call(METRICS, [P95], NO_METRICS)
+
+        self.assertNotIn("trend_span", json.loads(json.loads(embedded(call)))["entries"][0])
+
+    def test_trend_span_is_covered_by_the_plan_digest(self):
+        plain = first_call(METRICS, [trended(P95, "avg")], NO_METRICS)["digest"]
+        longer = {**trended(P95, "avg"), "trend_span": {**TREND_SPAN, "from_ts": TREND_SPAN["from_ts"] - 86400}}
+
+        self.assertNotEqual(first_call(METRICS, [longer], NO_METRICS)["digest"], plain)
 
     def test_events_start_at_the_window_without_a_stored_cursor(self):
         call = first_call(MONITORS, [], FRESH)
@@ -545,6 +619,98 @@ class RelayEquivalenceTest(unittest.TestCase):
         document = {"metrics": [relay_fixture("relay_daily.json")["metrics"][0], window]}
 
         self.assertEqual(state.dump(relay(METRICS, entries, NO_METRICS, document)), state.dump(api))
+
+
+def relayed_series(document):
+    return {"ok": True, "timeseries": document}
+
+
+def with_trend(item, trend):
+    return {**item, "trend": trend}
+
+
+class RelayTrendTest(unittest.TestCase):
+    HOURLY = trended(HOURLY, "max")
+
+    def window_item(self):
+        return relay_fixture("relay_hourly.json")["metrics"][0]
+
+    def relayed(self, trend, entries=None):
+        document = {"metrics": [with_trend(self.window_item(), trend)]}
+        return relay(METRICS, entries or [self.HOURLY], NO_METRICS, document, TREND_WINDOW)
+
+    def test_trends_of_both_read_kinds_match_the_api(self):
+        entries = [self.HOURLY, trended(P95, "avg")]
+        document = {
+            "metrics": [
+                with_trend(self.window_item(), relayed_series(TREND_SERIES)),
+                with_trend(relay_fixture("relay_scalar.json")["metrics"][0], relayed_series(TREND_SERIES)),
+            ]
+        }
+        _, api = run(
+            METRICS, entries, NO_METRICS, ok("timeseries.json"), series_response(TREND_SERIES), ok("scalar.json"), series_response(TREND_SERIES), window=TREND_WINDOW
+        )
+
+        relayed = relay(METRICS, entries, NO_METRICS, document, TREND_WINDOW)
+
+        self.assertEqual(state.dump(relayed), state.dump(api))
+        self.assertEqual(
+            [[point["value"] for point in record["trend"]] for record in relayed["records"]["metrics"]], [[5.0, 4.0], [9.0, 7.0]]
+        )
+
+    def test_failed_trend_matches_the_api_and_keeps_the_window_value(self):
+        _, api = run(METRICS, [self.HOURLY], NO_METRICS, ok("timeseries.json"), status(500), status(500), window=TREND_WINDOW)
+        failure = {"ok": False, "status": 500, "error": "ApiException"}
+
+        relayed = self.relayed(failure)
+
+        self.assertEqual(state.dump(relayed), state.dump(api))
+        self.assertEqual((relayed["records"]["metrics"][0]["value"], relayed["entries"]), (7.25, {"queue-hourly": OK}))
+
+    def test_series_without_a_point_matches_the_api(self):
+        _, api = run(METRICS, [self.HOURLY], NO_METRICS, ok("timeseries.json"), series_response(series()), window=TREND_WINDOW)
+
+        relayed = self.relayed(relayed_series(series()))
+
+        self.assertEqual(state.dump(relayed), state.dump(api))
+        self.assertEqual(relayed["records"]["metrics"][0]["trend_reason"], "no datapoints")
+
+    def test_unauthorized_trend_makes_the_source_unreadable(self):
+        with self.assertRaises(_http.SourceUnreadable) as caught:
+            self.relayed({"ok": False, "status": 401, "error": "ApiException"})
+
+        self.assertEqual((str(caught.exception), caught.exception.status), ("HTTP 401 POST /api/v2/query/timeseries", 401))
+
+    def test_trend_error_without_a_status_makes_the_source_unreadable(self):
+        with self.assertRaises(_http.SourceUnreadable) as caught:
+            self.relayed({"ok": False, "status": None, "error": "FetchError"})
+
+        self.assertEqual(str(caught.exception), "POST /api/v2/query/timeseries: FetchError")
+
+    def test_payload_without_a_trend_makes_the_source_unreadable(self):
+        with self.assertRaises(_http.SourceUnreadable) as caught:
+            relay(METRICS, [self.HOURLY], NO_METRICS, {"metrics": [self.window_item()]}, TREND_WINDOW)
+
+        self.assertEqual(str(caught.exception), "execute_code metrics-1: payload without trend for entry queue-hourly")
+
+    def test_failed_window_read_needs_no_trend_in_the_payload(self):
+        document = {"metrics": [{"entry": "queue-hourly", "ok": False, "status": 400, "error": "ApiException"}]}
+
+        result = relay(METRICS, [self.HOURLY], NO_METRICS, document, TREND_WINDOW)
+
+        self.assertEqual(result["entries"], {"queue-hourly": failed("HTTP 400 POST /api/v2/query/timeseries")})
+
+    def test_entry_without_a_trend_span_ignores_a_trend_in_the_payload(self):
+        document = {"metrics": [with_trend(self.window_item(), relayed_series(TREND_SERIES))]}
+
+        result = relay(METRICS, [HOURLY], NO_METRICS, document, TREND_WINDOW)
+
+        self.assertEqual(set(result["records"]["metrics"][0]), {"key", "value", "hourly", "groups"})
+
+    def test_collection_passes_the_role_schema(self):
+        result = self.relayed(relayed_series(TREND_SERIES))
+
+        self.assertIsNone(roles.validate_collection(collection(METRICS, result)))
 
 
 class RelayDiscoveryTest(unittest.TestCase):

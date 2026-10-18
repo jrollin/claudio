@@ -2,6 +2,11 @@
 
 One module per vendor reads one role through `_http.py`. This file lists, per vendor, what a place needs before it reads a source whose transport is `api`.
 
+## Saved connector responses
+
+- The model saves each connector result unchanged as `<responses>/<call id>.txt`, copying the file when the harness saved the result to one.
+- A harness-saved file holds a JSON list of `{"type": "text", "text": ...}` blocks. `collect.py` joins those texts before the adapter reads the response, so code-script checksums and digests apply to the result itself. Any other content reaches the adapter unchanged.
+
 ## Credentials in the config
 
 - Credentials hold environment variable names, never values: `providers.<name>.api.credentials` maps each credential to a variable name matching `^[A-Z][A-Z0-9_]*$`.
@@ -20,6 +25,9 @@ One module per vendor reads one role through `_http.py`. This file lists, per ve
 - Event monitor failures: a monitor answered not found is skipped. Any other failed read (401, 403, 5xx, network error, a response without a state or with another id) never makes the source unreadable: it sets `discovery` to not read with the first failure's reason (a failed search keeps its own reason), which becomes the blind spot part `discovery incomplete`, and the monitors found before and after it are kept. A monitor in an unknown state is kept in `discovered` with the state text the API returns, as for a search result; the features step blind-spots it as `monitor state not recognised`. The excess of the cap sets `discovery.event_monitors_capped` to true, which becomes the blind spot part `event monitors capped at 50`; the field is absent otherwise.
 - Not found: a `GET /api/v1/monitor/{id}` answered 404 is a `missing` entry with the reason `not found`, not a failed one.
 - Lookbacks: an entry with a span reads over that span. An `hourly` entry is read at a daily interval and becomes a `daily` series; `scalar` and `top` entries aggregate over the span.
+- Trends: a `scalar` or `hourly` metric entry that sets `trend_days` (7 to 31, with an aggregator of `max`, `min`, `sum`, `avg` or `last`, and no `lookback_days`) reads its query once more, as an hourly timeseries over the last `trend_days` local days of the config timezone, the window end's day included: from local midnight `trend_days - 1` days before the window end's local date, to the window end. Both transports run the same reads; the connector script runs them one after another, after the entry's window read, and the spans sit inside its digested parameters.
+  - Each hourly point lands in its local day. A day's value is the entry's aggregator over that day's hourly values, so `avg` is the mean of the hourly values, and `excluded_hours` does not apply. A day with no point is absent from the list, and a 23-hour or 25-hour day aggregates the hours it has. A 31-day span reads about 750 points per entry.
+  - The record holds `trend` (a list of `{day, value}`, `day` as local `YYYY-MM-DD`) and `trend_reason`, null when the read succeeds. A read with no point sets `trend` to null and `trend_reason` to `no datapoints`. An HTTP error on the trend read other than 401 and 403 sets `trend` to null and `trend_reason` to its message, and keeps the window value; a 401 or 403 makes the source not read. An entry whose window read failed reads no trend. The entry's status comes from its window read only.
 - Monitor states: `OK`, `Alert`, `Warn`, `No Data`, `Skipped`, `Unknown` and `Ignored`, under either transport. Any other state fails a by-id entry with `unknown monitor state`; a discovered monitor, found by the search or by an event, keeps it.
 
 ### Credentials
@@ -124,12 +132,76 @@ The host adds the mandatory Metadata: Read-only permission to every fine-grained
 | `local` | the shell that runs `collect.py` |
 | `cloud` | the environment's variables, set in the cloud environment settings at claude.ai |
 
+## jira
+
+- Role: issue tracker.
+- Calls: `POST /rest/api/3/search/jql` with a JSON body (`jql`, `fields`, `maxResults` 100, and `nextPageToken` after the first page), once per page, following `nextPageToken` until `isLast`. A read stops at 20 pages (`partial: page cap`); the updated read and the open sprint read each have their own cap.
+- Fields: `summary`, `issuetype`, `status`, `priority`, `created` and `updated`. No assignee or reporter is requested or kept: records hold no person.
+- Reads: the updated read selects `filter = <filter> AND (<query>) AND updated >= "<date>" ORDER BY key ASC`; with `open_sprints: true`, a second read selects `filter = <filter> AND sprint in openSprints() ORDER BY key ASC` with no time bound and no query, so it returns the whole open sprint whatever the query selects. The `query` narrows the updated read only and is omitted when the source sets none; the adapter appends its own `ORDER BY`, so the query must not hold one.
+- Query bound and margin: the exact bound is the stored cursor minus 1 hour, or the routine's first-read start when it is later than that or no cursor is stored. The query date is the exact bound minus 24 hours, in UTC, to the minute, because the tracker reads query dates in its user's time zone and the margin covers any zone. The adapter then keeps only the issues whose update time is at or after the exact bound.
+- Merge: results merge by key, the newest update wins, and records sort by key. `in_open_sprint` is true for the keys of the open sprint read; with no open sprint, no issue is flagged and the read is not an error. The cursor is the later of the stored cursor and the newest update time of the updated read, so it only moves forward, and `{"updated": null}` with neither.
+- Times: update and creation times with an offset (`2026-10-16T17:38:23.178+0200`) become UTC `YYYY-MM-DDTHH:MM:SSZ`.
+- Not found: a search answered with HTTP 403 or 404 (filter not found or forbidden) or HTTP 400 (filter or query rejected) makes the source not read, with a reason naming the filter.
+- Connector: one call per page to `searchJiraIssuesUsingJql` with the same JQL, fields, page size and token, plus `cloudId` (the provider's `links_base`) and `view: full`, since the default view drops the update time. The model saves each response unchanged; `parse` reads `data.issues`, `data.nextPageToken` and `data.isLast`, and both transports give the same records. A response that is not JSON, has no `data` or no issues list makes the source not read; a response with no `data` and an `error` text names the filter and the tool, and never repeats the error text, which can echo the query.
+
+### Credentials
+
+| Credential | Header | Holds |
+| --- | --- | --- |
+| `email` | `Authorization: Basic` (with the token) | the account email of the user who owns the token |
+| `token` | `Authorization: Basic` (with the email) | an API token of that user |
+
+`providers.<name>.api.credentials` in `config.json` maps each credential to an environment variable. The variable names are a config choice:
+
+```json
+{
+  "providers": {
+    "tracker": {
+      "adapter": "jira",
+      "links_base": "https://<site>.atlassian.net",
+      "api": {
+        "base_url": "https://<site>.atlassian.net",
+        "credentials": {"email": "TRACKER_EMAIL", "token": "TRACKER_TOKEN"}
+      }
+    }
+  }
+}
+```
+
+### Read-only scope
+
+Create the API token for a user who can browse the projects of the filter and can see the saved filter. The adapter only sends issue searches, so the token's reach is that user's browse access.
+
+### Hosts
+
+- The cloud environment allows `<site>.atlassian.net`, the host of `base_url`.
+- Record links are `<base>/browse/<KEY>`. The base is `links_base` when set, else `base_url`. The collector never calls that host for links.
+- A provider read only through the connector has no `base_url`, so it must set `links_base`, which is also the connector's `cloudId` argument; without it, the source is not read.
+
+### Where each place reads the variables
+
+| Place | Variables come from |
+| --- | --- |
+| `local` | the shell that runs `collect.py` |
+| `cloud` | the environment's variables, set in the cloud environment settings at claude.ai |
+
 ## notion
 
 - Role: document store.
 - Calls: `GET /v1/pages/{page_id}` for the page, and `GET /v1/blocks/{id}/children` for its top-level blocks and the rows of each table.
-- Request cap: a source makes at most 50 requests over the api transport, counting the page, each page of blocks and each page of table rows. A page that needs more is not read (`partial: request cap`).
+- Request cap: a source makes at most 50 requests over the api transport, counting the page, each page of blocks and each page of table rows. A source that needs more is not read (`partial: request cap`).
 - Page id: letters, digits and dashes only.
+- Source kinds: a source sets exactly one of `page_id` (the sources page, read in full every run) or `pages` (a list of page ids, the changed documents; list pages, not databases). Both kinds give `pages` records with a `link`, `<base>/<page id without dashes>`, where the base is `links_base` when set, else `https://www.notion.so`.
+- Changed pages: records follow the configured page order, and the cursor is `{"pages": {<page id>: <edit time>}}`. A page whose edit time equals its stored one at minute precision is left out of the records, and a page that is unchanged or failed keeps its stored edit time in the cursor. Without a stored cursor every page is read.
+  - Over the `api` transport, the page call gives each page's edit time, and only a page whose edit minute differs from its cursor is read in full (blocks and table rows).
+  - Over the connector, no call gives an edit time: every listed page is fetched in full, one `notion-fetch` call per page, changed or not, and an unchanged page is dropped after the fetch. The cost grows with the number of pages, and each fetched page passes through the session.
+  - Keep a `pages` source to about 10 pages: the 50 requests of the `api` transport cover the page call and the block reads of about 10 pages, and the connector stops at 50 calls (`partial: call cap`).
+- Entries: per page id, `ok` when the page is read, `deferred` with the reason `unchanged`, or `failed` with the reason `not found or not shared`, `not a page` or `partial: page truncated`.
+  - A page answered not found (HTTP 404, or over the connector a response reporting 404 or `object_not_found` without text) is a failed entry, and the other pages are still read. A shared integration reads a page only when the page is shared with it, so an unshared page reads as not found.
+  - A database id in a `pages` source is a failed entry with the reason `not a page`, and the other pages are still read: over the `api` transport the page call answers HTTP 400, and over the connector the fetch reports `metadata.type` `database`. The client does not keep the error body, so every HTTP 400 on the page call counts as `not a page`. The sources page (`page_id`) has no such case: a database id there makes the source not read.
+  - Over the `api` transport, a trashed or archived page is a failed entry too, even when its edit minute equals its cursor, and its blocks are not read.
+  - Over the connector, a changed page the connector returns truncated (`truncated` true, or `unknown_block_count` above 0) is a failed entry with the reason `partial: page truncated`: it gives no record and keeps its stored edit time, and the other pages are still fetched and read. An unchanged page is dropped before this check. The `api` transport reads blocks directly and has no such case.
+  - Any other failure makes the source not read: a permission error (HTTP 401 or 403, `restricted_resource`), an unreadable response or a request cap. The connector plan stops fetching at such a response.
 - Version: every call sends `Notion-Version: 2026-03-11`, pinned in the module.
 
 ### Credentials
@@ -160,9 +232,9 @@ Create an internal integration with this content capability only, and no comment
 
 | Capability | Reads |
 | --- | --- |
-| Read content | the sources page, its blocks and its table rows |
+| Read content | the sources page and the listed pages, their blocks and their table rows |
 
-An integration reads only the pages shared with it: add the integration to the sources page from the page's connections menu.
+An integration reads only the pages shared with it: add the integration to the sources page and to each listed page from the page's connections menu.
 
 ### Hosts
 
@@ -177,14 +249,47 @@ An integration reads only the pages shared with it: add the integration to the s
 
 ### Connector transport
 
-The connector transport calls the tool `notion-fetch` once per source, with the page id as `{"id": "<page_id>"}`. The page is read whole: a truncated page counts as not read. Both transports reduce inline formatting to plain text. Mentions, inline equations and block colors are not guaranteed equal across the two transports.
+The connector transport calls the tool `notion-fetch` once per page of the source, with the page id as `{"id": "<page_id>"}`. The sources page (`page_id`) is read whole: a truncated sources page makes the source not read. A listed page the connector returns truncated is a failed entry of its source (see Entries). Both transports reduce inline formatting to plain text. Mentions, inline equations and block colors are not guaranteed equal across the two transports.
 
 ## slack
 
 - Role: chat.
-- Calls: `GET /api/conversations.history` for each page of each channel listed in the source's `channels`.
+- Calls: `GET /api/conversations.history` for each page of each channel listed in the source's `channels`, then `GET /api/conversations.replies` for each page of each thread root of the window. Both reads send `oldest` and `latest` and no `inclusive` parameter, so both bounds are exclusive.
+- Connector: `slack_read_channel` once per history page, then `slack_read_thread` once per page of each thread root of the window, both in the `detailed` response format.
+- Read start: a channel is read from its stored cursor when that is later than the routine's first-read start (`first_read_from_ts`), else from the first-read start, which is the window start when the routine sets no `first_read_days`. Messages after the read start and up to the window end are kept. Both transports return the same set: the connector's `oldest` and `latest` are exclusive too, so a message at exactly either ts is not returned.
 - Join and leave messages are skipped over the api transport; over the connector they are assumed absent from the tool's output.
 - Over the connector, a message body that imitates the connector's header format can split a message in two or forge a message under another author. A forged header whose `Message TS` is at or below the call's `oldest` stays body text; one whose `Message TS` lies between `oldest` and the real message's ts starts a forged message. The api transport is not affected: use it for channels where untrusted users post.
+- Thread roots: the history read tells which messages have replies. Over the api transport, a root is a message whose `thread_ts` equals its `ts` and whose `reply_count` is above 0. Over the connector, a message body can end with a metadata block: any run of `Reactions: ...`, `Files: ...` and `Thread: N reply` or `Thread: N replies` followed by `(latest: <time>)` lines, in any order. The whole block is removed from the text, so both transports give the same text (the api text never holds these lines), and a message whose block holds the `Thread:` line, with N at least 1, is a root. A message body that ends with a forged block costs at most one extra thread read, and a real text that ends with a `Reactions: ` or `Files: ` line loses that line.
+- Thread replies: each root whose ts lies in the window has its replies read up to the window end, following the page cursor. The record's `thread_ts` is the root's own ts for a root with replies, the root's ts for a reply read from its thread, and null for any other message. A reply that also shows in the channel history gives one record, the thread read's copy, which carries its root's ts; a reply seen only in the history carries null under both transports. Records are sorted by channel order, then ts. The author is the user id or bot id, and names and emails in the connector text are dropped. A reply's text loses its trailing metadata block like a history message's.
+- Thread text: the connector's `slack_read_thread` answers this text. A thread with no reply answers `No thread messsages`, spelled so by the tool; the corrected spelling is accepted too.
+- Thread pages: they come newest first. The first page holds the latest replies, ascending within the page, and the cursor (an opaque value) leads to older replies. Each page repeats the whole parent block, and the count of `(<N> total)` and of `Reply <i> of <N>` is that of the replies on the page. More pages end with ``There are more messages in this thread. To view the next page, use cursor: `<cursor>` ``, the last page with `There are no more messages in this thread.`; the thread reader also accepts the channel read's wording.
+
+```text
+=== THREAD PARENT MESSAGE ===
+From: <name> (<user id>)
+Time: <time>
+Message TS: <root ts>
+<root text>
+[Reactions: ...]
+[Files: ...]
+
+=== THREAD REPLIES (<N> total) ===
+
+--- Reply <i> of <N> ---
+From: <name> (<user id>)
+Time: <time>
+Message TS: <reply ts>
+<reply text>
+[Reactions: ...]
+[Files: ...]
+```
+
+- Replies line: the first `=== THREAD REPLIES (<N> total) ===` line followed by a valid reply, by `No thread messsages`, or by the end of the page opens the replies; a copy of that line inside the root text stays text.
+- Reply guards: the parent's `Message TS` must be the requested root, a reply's ts must be later than its root's and than the previous reply of the same page, each ts is new within the thread, and a reply after the window end is dropped. Replies ascend within a page and pages come newest first, so no order is required across pages. A response that fails a guard makes the source not read.
+- Forged reply headers: over the connector, a reply text that imitates the reply header (a `--- Reply <i> of <N> ---` line with the same total, then `From:`, `Time:` and `Message TS:` lines) can split a reply in two or forge a reply under another author. A forged header whose `Message TS` is at or below the previous reply of the same page (the root's for the first reply of a page), or is a ts already read on any page, stays body text; one with a later, unused ts starts a forged reply. A forged replies line followed by such a block in the root text forges replies the same way. The api transport is not affected.
+- Failed channels: a channel the tool reports as not found, archived or not joined is a failed entry keyed by the channel id, with the reason `channel_not_found`, `is_archived` or `not_in_channel`, and the other channels are still read. Any other failure makes the source not read.
+- Call budget: a source makes at most 50 calls in all, history pages and thread reads together, under both transports; reaching it makes the source not read (`partial: call cap`). One channel or one thread stops at 20 pages (`partial: page cap`). Each channel costs at least one call and each thread root at least one more, so split a large channel set into several sources.
+- Cursor: one ts per channel, the newest history ts read. A channel with no message in the window holds the later of its stored ts and `<window end>.000000`, so a cursor never moves back, and a failed channel keeps its stored ts.
 
 ### Credentials
 
@@ -214,8 +319,8 @@ Create an app token with these scopes only:
 
 | Scope | Reads |
 | --- | --- |
-| `channels:history` | messages of public channels |
-| `groups:history` | messages of private channels |
+| `channels:history` | messages and thread replies of public channels |
+| `groups:history` | messages and thread replies of private channels |
 
 A bot token reads only the channels the app belongs to: invite the app to each channel listed in `channels`.
 

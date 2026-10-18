@@ -1,12 +1,13 @@
 import json
 import re
+from datetime import date
 from urllib.parse import urlsplit
 
 from state import (
-    LABEL_CAP, MONITOR_PREFIX, PLACES, SOURCES, TRANSPORTS, Nullable, Omittable, is_integer, is_label, is_number, join,
+    LABEL_CAP, MONITOR_PREFIX, PLACES, SOURCES, TRANSPORTS, Nullable, Omittable, is_integer, is_label, is_number, join, parses,
 )
 
-ROLES = ("observability", "document_store", "chat", "code_host")
+ROLES = ("observability", "document_store", "chat", "code_host", "issue_tracker")
 KINDS = SOURCES
 READS = ("scalar", "top", "hourly")
 SCHEDULES = ("every_run", "daily")
@@ -16,6 +17,10 @@ READ_STATUSES = ("ok", "missing")
 MONITOR_STATES = ("OK", "Alert", "Warn", "No Data", "Skipped", "Unknown", "Ignored")
 RULE_CAP = 500
 LOOKBACK_CAP = 31
+TREND_MIN = 7
+TREND_CAP = 31
+FIRST_READ_CAP = 31
+TREND_AGGREGATORS = ("max", "min", "sum", "avg", "last")
 COLLECTION_SCHEMA = 1
 FNV_OFFSET = 2166136261
 FNV_PRIME = 16777619
@@ -24,6 +29,8 @@ ENV_VAR = re.compile(r"[A-Z][A-Z0-9_]*")
 REPO_SEGMENT = r"[A-Za-z0-9_.-]*[A-Za-z0-9_-][A-Za-z0-9_.-]*"
 REPO = re.compile(REPO_SEGMENT + "/" + REPO_SEGMENT)
 PAGE_ID = re.compile(r"[A-Za-z0-9-]+")
+DIGITS = re.compile(r"[0-9]+")
+DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 UTC_Z = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z")
 
 
@@ -62,6 +69,10 @@ def _matches(pattern):
     return lambda value: isinstance(value, str) and pattern.fullmatch(value) is not None
 
 
+def _is_day(value):
+    return _matches(DAY)(value) and parses(date.fromisoformat, value)
+
+
 def _is_pinned_url(value):
     if not isinstance(value, str) or "?" in value or "#" in value:
         return False
@@ -80,6 +91,8 @@ NUMBER = Rule(is_number, "must be a finite number")
 BOOLEAN = Rule(lambda value: isinstance(value, bool), "must be a boolean")
 ABSOLUTE = Rule(lambda value: isinstance(value, str) and value.startswith("/"), "must be an absolute path")
 UTC_TIME = Rule(_matches(UTC_Z), "must be a UTC timestamp ending in Z")
+DAY_TEXT = Rule(_is_day, "must be a day like 2026-01-31")
+PAGE_ID_TEXT = Rule(_matches(PAGE_ID), "must match ^[A-Za-z0-9-]+$")
 
 PLACE = {"runtime_dir": ABSOLUTE, "state_dir": ABSOLUTE}
 SOURCE = {"provider": TEXT, "transport": {"cloud": Choice(TRANSPORTS), "local": Choice(TRANSPORTS)}}
@@ -93,14 +106,22 @@ API = {
 }
 ROLE_OPTIONS = {
     "observability": {"kind": Choice(KINDS), "scope_filter": STRING, "discovery_query": Omittable(STRING)},
-    "document_store": {"page_id": Rule(_matches(PAGE_ID), "must match ^[A-Za-z0-9-]+$")},
+    "document_store": {"page_id": Omittable(PAGE_ID_TEXT), "pages": Omittable(ListOf(PAGE_ID_TEXT, non_empty=True))},
     "chat": {"channels": ListOf(TEXT, non_empty=True)},
     "code_host": {
         "repos": ListOf(Rule(_matches(REPO), "must be an owner/name repository"), non_empty=True),
         "query": Omittable(STRING),
     },
+    "issue_tracker": {
+        "filter": Rule(_matches(DIGITS), "must be a filter id of digits only"),
+        "query": Omittable(STRING),
+        "open_sprints": Omittable(BOOLEAN),
+    },
 }
 
+FIRST_READ_DAYS = Omittable(
+    Rule(lambda value: is_integer(value) and 1 <= value <= FIRST_READ_CAP, f"must be an integer from 1 to {FIRST_READ_CAP}")
+)
 RULE = Rule(
     lambda value: isinstance(value, str) and value.strip() != "" and len(value) <= RULE_CAP,
     f"must be non-blank text of at most {RULE_CAP} characters",
@@ -120,13 +141,17 @@ ENTRY = {
 }
 MONITOR_ENTRY = {"monitor": MONITOR_ID}
 METRIC_ENTRY = {"query": TEXT, "read": Choice(READS), "aggregator": TEXT}
+TREND_DAYS = Omittable(
+    Rule(lambda value: is_integer(value) and TREND_MIN <= value <= TREND_CAP, f"must be an integer from {TREND_MIN} to {TREND_CAP}")
+)
 READ_FIELDS = {
-    "scalar": {},
+    "scalar": {"trend_days": TREND_DAYS},
     "top": {"top": Rule(lambda value: is_integer(value) and value >= 1, "must be an integer of at least 1")},
     "hourly": {
         "excluded_hours": Omittable(
             ListOf(Rule(lambda value: is_integer(value) and 0 <= value <= 23, "must be a local hour from 0 to 23"))
-        )
+        ),
+        "trend_days": TREND_DAYS,
     },
 }
 SCHEDULE_FIELDS = {
@@ -172,6 +197,8 @@ METRICS_SCHEMA = (
                 "hourly": ListOf(BUCKET),
                 "daily": Omittable(ListOf(BUCKET)),
                 "groups": ListOf({"group": STRING, "value": Nullable(NUMBER)}),
+                "trend": Omittable(Nullable(ListOf({"day": DAY_TEXT, "value": NUMBER}))),
+                "trend_reason": Omittable(Nullable(STRING)),
             }
         )
     },
@@ -186,11 +213,12 @@ ROLE_SCHEMAS = {
                     "id": STRING,
                     "title": STRING,
                     "last_edited": UTC_TIME,
+                    "link": STRING,
                     "blocks": ListOf({"type": Choice(BLOCK_TYPES), "text": STRING, "rows": Nullable(ListOf(ListOf(STRING)))}),
                 }
             )
         },
-        {"last_edited": Nullable(UTC_TIME)},
+        {"pages": MapOf(UTC_TIME)},
     ),
     "chat": (
         {
@@ -198,6 +226,7 @@ ROLE_SCHEMAS = {
                 {
                     "channel": STRING,
                     "ts": STRING,
+                    "thread_ts": Nullable(STRING),
                     "author": STRING,
                     "text": STRING,
                     "link": STRING,
@@ -236,6 +265,24 @@ ROLE_SCHEMAS = {
             ),
         },
         {"updated_at": Nullable(STRING)},
+    ),
+    "issue_tracker": (
+        {
+            "issues": ListOf(
+                {
+                    "key": STRING,
+                    "title": STRING,
+                    "type": STRING,
+                    "status": STRING,
+                    "priority": Nullable(STRING),
+                    "created": UTC_TIME,
+                    "updated": UTC_TIME,
+                    "link": STRING,
+                    "in_open_sprint": BOOLEAN,
+                }
+            )
+        },
+        {"updated": Nullable(UTC_TIME)},
     ),
 }
 
@@ -293,7 +340,9 @@ def validate_config(config, routine, place, role_of=None):
     providers = _config_field(config, "", "providers", {})
     routines = _config_field(config, "", "routines", {})
     routine_path = f"routines.{routine}"
-    sources = _config_field(_config_field(routines, "routines", routine, {}), routine_path, "sources", MapOf({}, non_empty=True))
+    chosen = _config_field(routines, "routines", routine, {})
+    _conform(chosen, {"first_read_days": FIRST_READ_DAYS}, routine_path, ConfigError, exact=False)
+    sources = _config_field(chosen, routine_path, "sources", MapOf({}, non_empty=True))
     for name in sorted(sources):
         if SOURCE_NAME.fullmatch(name) is None:
             raise ConfigError(f"{routine_path}.sources.{name}: the source name must match ^[a-z][a-z0-9-]*$")
@@ -323,6 +372,8 @@ def _validate_source(source, path, providers, place, role_of):
     _conform(source, ROLE_OPTIONS[role], path, ConfigError, exact=False)
     if role == "observability" and source["kind"] != "monitors" and "discovery_query" in source:
         raise ConfigError(f"{path}.discovery_query: only a monitors source takes a discovery query")
+    if role == "document_store" and ("page_id" in source) == ("pages" in source):
+        raise ConfigError(f"{path}: a document store source sets exactly one of page_id and pages")
 
 
 def validate_pack(pack, sources, routine=None, *, rules):
@@ -377,6 +428,15 @@ def _validate_metric_entry(entry, path):
     _conform(entry, spec, path, PackError, exact=True)
     if "excluded_hours" in entry and "lookback_days" in entry:
         raise PackError(f"{path}.excluded_hours: must be absent when lookback_days is set: a daily rollup has no hours")
+    if "trend_days" in entry:
+        _validate_trend_entry(entry, path)
+
+
+def _validate_trend_entry(entry, path):
+    if "lookback_days" in entry:
+        raise PackError(f"{path}.trend_days: must be absent when lookback_days is set: a trend sits next to the window value")
+    if entry["aggregator"] not in TREND_AGGREGATORS:
+        raise PackError(f"{path}.aggregator: must be one of " + ", ".join(TREND_AGGREGATORS) + " when trend_days is set")
 
 
 def _validate_group_prefixes(pack, path):

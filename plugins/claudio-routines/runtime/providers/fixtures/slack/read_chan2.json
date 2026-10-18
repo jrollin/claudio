@@ -1,4 +1,4 @@
 {
-  "messages": "Channel: #alerts (CHAN2)\n\n=== Message from Ada Example ada@example.test (U1) at 2025-10-09 10:00:00 UTC === \nMessage TS: 1760004000.000400\n=== incident review ===\nall clear\n",
+  "messages": "Channel: #alerts (CHAN2)\n\n=== Message from Bea Example bea@example.test (U2) at 2025-10-09 10:15:00 UTC === \nMessage TS: 1760004500.000450\nSee thread\n\n=== Message from Ada Example ada@example.test (U1) at 2025-10-09 10:00:00 UTC === \nMessage TS: 1760004000.000400\n=== incident review ===\nall clear\n",
   "pagination_info": "There are no more messages available."
 }

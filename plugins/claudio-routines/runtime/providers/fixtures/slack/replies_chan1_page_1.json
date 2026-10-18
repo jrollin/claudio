@@ -1,0 +1,24 @@
+{
+  "ok": true,
+  "messages": [
+    {
+      "type": "message",
+      "user": "U1",
+      "text": "Release notes:\n- api 1.2\n- web 3.4",
+      "ts": "1760002000.000200",
+      "thread_ts": "1760002000.000200",
+      "reply_count": 2
+    },
+    {
+      "type": "message",
+      "user": "U2",
+      "text": "Thanks, merging",
+      "ts": "1760002300.000230",
+      "thread_ts": "1760002000.000200"
+    }
+  ],
+  "has_more": true,
+  "response_metadata": {
+    "next_cursor": "cursor-thread-2"
+  }
+}

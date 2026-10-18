@@ -23,7 +23,7 @@ Manage claude.ai routines (scheduled cloud agents) as code:
 | Digest | `runtime/digest.py` | Renders the posted message as Markdown from the change summary, the next state, the run record and the base file; the model posts it unchanged |
 | Features | `runtime/features.py` | Computes the features, base and rules files of one run; decides nothing |
 | Judgment | `runtime/judgment.py` | Checks the judgment and the analysis against the features, and builds the facts |
-| Roles | `runtime/roles.py` | Config and query pack checks, and the record schema of each role |
+| Roles | `runtime/roles.py` | Config and query pack checks, and the record schema of each of the five roles: observability tool, document store, chat channel, code host and issue tracker |
 | Provider adapters | `runtime/providers/` | One module per vendor, each with an `api` and an `mcp` transport; see [the providers README](runtime/providers/README.md) |
 
 The real templates and every value that names a company resource live in a private repository, never here.
@@ -137,6 +137,7 @@ A routine is one file, `config/routines/<slug>.json`, or one entry `routines.<sl
 | `id` | Routine id, from the export; unique among the routines |
 | `template` | Template name, without `.md` |
 | `cron` | Cron expression pushed by sync |
+| `first_read_days` | Optional integer from 1 to 31: how many days before the window end a chat channel or an issue tracker filter with no stored cursor starts reading; without it, they start at the window start |
 | `values` | Values of that routine only, applied over the shared `values` |
 | `sources.<source>` | One source of the routine; `<source>` matches `^[a-z][a-z0-9-]*$` and names its collection file |
 | `sources.<source>.provider` | A key of `providers` |
@@ -165,10 +166,14 @@ A source also holds the options of its provider's role:
 | Observability tool | `kind` | `monitors` or `metrics` |
 | Observability tool | `scope_filter` | Query of the alert event search of a `monitors` source, such as `source:alert env:prod`; a `metrics` source ignores it, since its pack queries carry their own scope |
 | Observability tool | `discovery_query` | Optional monitor search query of a `monitors` source: the monitors it finds are judged under `monitor-<id>` even when the pack lacks them; without it nothing is discovered; a `metrics` source refuses it |
-| Document store | `page_id` | The sources page that holds the mutes table: a top-level `Mutes` heading followed by a table with the columns `key` and `until` (or `silence until`, never both), never nested inside a toggle heading |
-| Chat channel | `channels` | A non-empty list of channels |
+| Document store | `page_id` | The sources page that holds the mutes table: a top-level `Mutes` heading followed by a table with the columns `key` and `until` (or `silence until`, never both), never nested inside a toggle heading; a source sets exactly one of `page_id` and `pages` |
+| Document store | `pages` | A non-empty list of page ids whose changes are collected: a page is read in full when its edit time moved, and its entry is `unchanged` or `not found or not shared` otherwise; keep it to about 10 pages, since a connector source fetches every listed page |
+| Chat channel | `channels` | A non-empty list of channels; the replies of each thread whose root lies in the window are read too |
 | Code host | `repos` | A non-empty list of `owner/name` repositories |
 | Code host | `query` | Optional search query; a source with a non-empty one is not read, since neither transport takes a search query |
+| Issue tracker | `filter` | The saved filter id, digits only |
+| Issue tracker | `query` | Optional text that narrows the filter, written in the tracker's query language and holding no ordering |
+| Issue tracker | `open_sprints` | Optional boolean: also read the filter's issues that sit in an open sprint, whatever their update time, and flag them `in_open_sprint` |
 
 Query pack entry fields:
 
@@ -186,6 +191,7 @@ Query pack entry fields:
 | `top` | metric with `read` `top` | Number of groups to read; each group is judged under its own key |
 | `excluded_hours` | metric with `read` `hourly` | Optional list of local hours, 0 to 23, whose buckets never count toward the value |
 | `lookback_days` | metric with `schedule` `daily` | Optional span of 1 to 31 days, ending at the window end, read as daily buckets or aggregated; not with `excluded_hours` |
+| `trend_days` | metric with `read` `scalar` or `hourly` | Optional span of 7 to 31 local days, the window end's day included: the query is read once more as an hourly series and kept as one value per local day, next to the window value; the aggregator is `max`, `min`, `sum`, `avg` or `last`, and the entry sets no `lookback_days`. A failed trend read leaves the window value and sets `trend_reason` |
 
 Entries match this schema exactly: `severity`, `urgency` and `threshold` are rejected (`collect.py` and `evaluate.py` exit 3 naming the key path). The model sets severity and urgency per run, from the rules.
 
@@ -217,6 +223,12 @@ Reads:
 - A source that cannot be read is marked not read, with a reason, and the other sources are still collected.
 - A failed read never switches to the other transport.
 - A relay loop ends after 20 pages of one query, a repeated cursor or 50 calls for one source; the source is then not read, with a reason starting `partial:`.
+- An observability source writes one entry per query pack entry, a document store `pages` source one per page, and a chat source one per failed channel: `ok`, `deferred` or `failed` with a reason, so one failed entry leaves the others read.
+
+Where the collectors stand:
+- A tribe digest routine lists chat, issue tracker, document store and observability sources, and collects each one by role, outside any run.
+- The state keeps no chat, issue tracker or document store cursor, so each chat and issue tracker collection starts at the first-read span (`first_read_days`), or at the window start without it, and a document store reads every listed page.
+- The tribe digests collect and stop there: the evaluator computes no feature for these sources, no digest renders them, and the `tribe-digest` template stays a not-runnable skeleton.
 
 Credentials:
 - Credentials live only in environment variables; the config names each variable, never its value.

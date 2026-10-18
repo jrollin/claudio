@@ -2648,9 +2648,9 @@ class ShippedFilesTest(Case):
     def test_example_full_load_passes_the_id_clash_check_for_every_routine(self):
         self.assertEqual(sorted(self.example()["routines"]), ["chat-recap", "prod-watch", "tribe-digest", "weekly-status"])
 
-    def test_example_skeleton_routines_hold_no_sources(self):
+    def test_example_skeleton_routines_without_collectors_hold_no_sources(self):
         configured = self.example()["routines"]
-        self.assertEqual(["sources" in configured[slug] for slug in ("chat-recap", "tribe-digest", "weekly-status")], [False, False, False])
+        self.assertEqual(["sources" in configured[slug] for slug in ("chat-recap", "weekly-status")], [False, False])
 
     def test_example_shared_values_hold_the_digest_channel_and_the_owner(self):
         self.assertEqual(sorted(self.example_file("config.json")["values"]), ["chat", "owner"])
@@ -2674,7 +2674,20 @@ class ShippedFilesTest(Case):
     def test_example_loads_through_the_secret_guard_with_secret_named_credential_keys(self):
         providers = self.example()["providers"]
         names = sorted(name for provider in providers.values() for name in provider["api"]["credentials"])
-        self.assertEqual(names, ["api_key", "app_key", "token"])
+        self.assertEqual(names, ["api_key", "app_key", "email", "token", "token", "token"])
+
+    def test_example_holds_one_provider_per_role(self):
+        self.assertEqual(sorted(self.example_file("config.json")["providers"]), ["chat", "document-store", "issue-tracker", "observability"])
+
+    def test_example_issue_tracker_provider_sets_a_links_base_and_both_credentials(self):
+        provider = self.example_file("config.json")["providers"]["issue-tracker"]
+        self.assertEqual(
+            (provider["links_base"], sorted(provider["api"]["credentials"])),
+            ("https://<issue-tracker-host>", ["email", "token"]),
+        )
+
+    def test_example_chat_provider_sets_the_token_credential(self):
+        self.assertEqual(self.example_file("config.json")["providers"]["chat"]["api"]["credentials"], {"token": "CHAT_TOKEN"})
 
     def test_example_credentials_hold_environment_variable_names(self):
         providers = self.example()["providers"]
@@ -2726,6 +2739,88 @@ class ShippedFilesTest(Case):
     def test_example_holds_routine_rules_and_a_discovery_query_placeholder(self):
         routine = self.example()["routines"]["prod-watch"]
         self.assertEqual((len(routine["rules"]), routine["sources"]["monitors"]["discovery_query"]), (3, "<monitor-search-query>"))
+
+
+    def tribe(self):
+        return self.example()["routines"]["tribe-digest"]
+
+    def test_example_tribe_routine_loads_alone_with_its_five_sources(self):
+        routine = self.example("tribe-digest")["routines"]["tribe-digest"]
+        self.assertEqual(sorted(routine["sources"]), ["changed-pages", "channels", "issues", "metrics", "monitors"])
+
+    def test_example_tribe_sources_point_at_one_provider_per_role(self):
+        providers = {name: source["provider"] for name, source in self.tribe()["sources"].items()}
+        self.assertEqual(
+            providers,
+            {
+                "channels": "chat",
+                "issues": "issue-tracker",
+                "changed-pages": "document-store",
+                "monitors": "observability",
+                "metrics": "observability",
+            },
+        )
+
+    def test_example_tribe_sources_take_their_provider_default_transport(self):
+        transports = [source["transport"] for source in self.tribe()["sources"].values()]
+        self.assertEqual(transports, [{"cloud": "api", "local": "api"}] * len(transports))
+
+    def test_example_tribe_routine_sets_a_first_read_span(self):
+        self.assertEqual(self.tribe()["first_read_days"], 7)
+
+    def test_example_tribe_chat_source_lists_two_channels(self):
+        self.assertEqual(self.tribe()["sources"]["channels"]["channels"], ["<chat-channel-id-1>", "<chat-channel-id-2>"])
+
+    def test_example_tribe_issue_source_sets_a_digits_only_filter_a_query_and_open_sprints(self):
+        source = self.tribe()["sources"]["issues"]
+        self.assertEqual((source["filter"], source["query"], source["open_sprints"]), ("10000", "<issue-query>", True))
+
+    def test_example_tribe_page_source_lists_two_pages_and_no_page_id(self):
+        source = self.tribe()["sources"]["changed-pages"]
+        self.assertEqual((source["pages"], "page_id" in source), (["<document-page-id-1>", "<document-page-id-2>"], False))
+
+    def test_example_tribe_observability_sources_read_monitors_and_metrics(self):
+        sources = self.tribe()["sources"]
+        self.assertEqual([sources[name]["kind"] for name in ("monitors", "metrics")], ["monitors", "metrics"])
+
+    def test_example_tribe_routine_passes_the_collector_config_check_in_the_cloud(self):
+        self.assertIsNone(runtime_module("roles").validate_config(self.example(), "tribe-digest", "cloud"))
+
+    def test_example_tribe_routine_passes_the_collector_config_check_locally(self):
+        self.assertIsNone(runtime_module("roles").validate_config(self.example(), "tribe-digest", "local"))
+
+    def test_example_tribe_one_routine_load_passes_the_collector_config_check(self):
+        self.assertIsNone(runtime_module("roles").validate_config(self.example("tribe-digest"), "tribe-digest", "local"))
+
+    def test_example_tribe_query_pack_passes_the_pack_check(self):
+        routine = self.tribe()
+        sources = {name: dict(routine["sources"][name], role="observability") for name in ("monitors", "metrics")}
+        self.assertIsNone(
+            runtime_module("roles").validate_pack(routine["query_pack"], sources, routine="tribe-digest", rules=routine.get("rules", []))
+        )
+
+    def test_example_tribe_query_pack_holds_one_hourly_metric_entry_with_a_trend(self):
+        pack = self.tribe()["query_pack"]
+        self.assertEqual([(entry["source"], entry["read"], entry["trend_days"]) for entry in pack], [("metrics", "hourly", 30)])
+
+    def test_example_tribe_trend_entry_carries_a_rule_and_no_threshold_fields(self):
+        entry = self.tribe()["query_pack"][0]
+        self.assertEqual(("rule" in entry, {"severity", "urgency", "threshold"} & set(entry)), (True, set()))
+
+    def test_example_tribe_skeleton_renders_with_no_placeholder_left_in_both_places(self):
+        left = [place for place in ("cloud", "local") if "{{" in self.render_example_routine("tribe-digest", place)]
+        self.assertEqual(left, [])
+
+    def test_example_tribe_render_ignores_its_sources_and_pack(self):
+        config = self.example()
+        bare = {key: value for key, value in self.tribe().items() if key not in ("sources", "query_pack", "first_read_days")}
+        path = os.path.join(SHIPPED_TEMPLATES, "tribe-digest.md")
+
+        def render(routine):
+            context, _ = routines.build_context(config, routine, "cloud", False)
+            return routines.render_text(read(path), context, path)[0]
+
+        self.assertEqual(render(self.tribe()), render(bare))
 
 
 class SaveBlockExecutionTest(Case):

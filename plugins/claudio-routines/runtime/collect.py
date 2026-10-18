@@ -1,9 +1,11 @@
 import argparse
 import errno
+import json
 import os
 import re
 import stat
 import sys
+from datetime import datetime, time, timedelta
 from urllib.parse import urlsplit
 
 import config_tree
@@ -13,11 +15,9 @@ import state
 from config import adapter_role, config_directory, load_zone, read_routine
 from providers._common import ended
 from providers._http import BODY_CAP
-from providers._errors import CredentialsMissing, PartialRead, SourceUnreadable
+from providers._errors import CALL_CAP, CALL_CAP_PARTIAL, CredentialsMissing, PartialRead, SourceUnreadable
 
 NOT_REPORTED = "not reported by the adapter"
-CALL_CAP = 50
-CALL_CAP_PARTIAL = "call cap"
 NO_NEW_CALL = "no new call"
 PLAN_NOT_DONE = "plan not done"
 NO_RESPONSE = "no response saved (connector missing or relay not run)"
@@ -34,7 +34,9 @@ EMPTY_RECORDS = {
     "document_store": {"pages": []},
     "chat": {"messages": []},
     "code_host": {"pull_requests": [], "issues": []},
+    "issue_tracker": {"issues": []},
 }
+
 STEP_SPEC = {
     "done": state.BOOLEAN,
     "partial": state.Nullable(state.TEXT),
@@ -99,12 +101,21 @@ def check_fetch_window(document):
         raise state.Rejected("expected a boolean at retry_known_gaps")
 
 
-def local_day(config, timestamp):
+def config_zone(config):
     name = config.get("timezone")
     if not isinstance(name, str):
         raise roles.ConfigError("timezone: must be a time zone name")
-    zone = load_zone(name, f"timezone: unknown time zone {name}")
-    return state.local_date(timestamp, zone).isoformat()
+    return load_zone(name, f"timezone: unknown time zone {name}")
+
+
+def first_read_from(routine, window):
+    days = routine.get("first_read_days")
+    return window["from_ts"] if days is None else window["to_ts"] - days * DAY_SECONDS
+
+
+def trend_from(zone, end_ts, days):
+    first_day = state.local_date(end_ts, zone) - timedelta(days=days - 1)
+    return int(datetime.combine(first_day, time.min, tzinfo=zone).timestamp())
 
 
 def select_entries(entries, run_state, window, today):
@@ -133,11 +144,13 @@ def first_monitors_source(routine, role_by_source):
     return min(names, default=None)
 
 
-def with_span(entry, window):
-    days = entry.get("lookback_days")
-    if days is None:
-        return entry
-    return {**entry, "span": {"from_ts": window["to_ts"] - days * DAY_SECONDS, "to_ts": window["to_ts"]}}
+def with_span(entry, window, zone):
+    spans = {}
+    if "lookback_days" in entry:
+        spans["span"] = {"from_ts": window["to_ts"] - entry["lookback_days"] * DAY_SECONDS, "to_ts": window["to_ts"]}
+    if "trend_days" in entry:
+        spans["trend_span"] = {"from_ts": trend_from(zone, window["to_ts"], entry["trend_days"]), "to_ts": window["to_ts"]}
+    return {**entry, **spans}
 
 
 def stored_cursor(cursors, name, role, kind):
@@ -177,10 +190,14 @@ class Draft:
             "entries": {**failed, **self.deferred},
         }
 
-    def read(self, result):
-        reported = result["entries"]
+    def read_entries(self, reported):
+        if self.base["role"] != "observability":
+            return reported
         missing = {"status": "failed", "reason": NOT_REPORTED}
-        entries = {entry["key"]: reported[entry["key"]] if entry["key"] in reported else missing for entry in self.selected}
+        return {entry["key"]: reported[entry["key"]] if entry["key"] in reported else missing for entry in self.selected}
+
+    def read(self, result):
+        entries = self.read_entries(result["entries"])
         return {
             **self.base,
             "read": True,
@@ -216,6 +233,7 @@ def prepare(args, transport):
     config, routine, role_by_source = load_routine(args)
     source = transport_source(routine, args, transport)
     window = state.load(args.window, "window", check_fetch_window)
+    window = {**window, "first_read_from_ts": first_read_from(routine, window), "timezone": config.get("timezone")}
     run_state = state.load(args.state, "state", state.check_state)
     role = role_by_source[args.source]
     selected, deferred, kind = [], {}, role
@@ -225,8 +243,9 @@ def prepare(args, transport):
         entries = [entry for entry in pack if entry["source"] == args.source]
         if args.source == first_monitors_source(routine, role_by_source):
             entries += tracked_monitors(run_state["items"], pack)
-        selected, deferred = select_entries(entries, run_state, window, local_day(config, window["to_ts"]))
-        selected = [with_span(entry, window) for entry in selected]
+        zone = config_zone(config)
+        selected, deferred = select_entries(entries, run_state, window, state.local_date(window["to_ts"], zone).isoformat())
+        selected = [with_span(entry, window, zone) for entry in selected]
     base = {
         "schema": roles.COLLECTION_SCHEMA,
         "source": args.source,
@@ -311,9 +330,26 @@ def read_response(directory, call_id):
     except OSError as error:
         raise state.InputError(f"responses: cannot read {path}: {error.strerror}") from error
     try:
-        return data.decode("utf-8")
+        text = data.decode("utf-8")
     except UnicodeDecodeError:
         raise SourceUnreadable(f"response {call_id} is not UTF-8 text") from None
+    return unwrapped(text)
+
+
+def unwrapped(text):
+    if not text.lstrip().startswith("["):
+        return text
+    try:
+        blocks = json.loads(text)
+    except (ValueError, RecursionError):
+        return text
+    if isinstance(blocks, list) and blocks and all(is_text_block(block) for block in blocks):
+        return "".join(block["text"] for block in blocks)
+    return text
+
+
+def is_text_block(block):
+    return isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
 
 
 def read_responses(directory, call_ids):
