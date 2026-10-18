@@ -1,0 +1,4 @@
+{
+  "messages": "Channel: #alerts (CHAN2)\n\n=== Message from Ada Example ada@example.test (U1) at 2025-10-09 10:00:00 UTC === \nMessage TS: 1760004000.000400\n=== incident review ===\nall clear\n",
+  "pagination_info": "There are no more messages available."
+}

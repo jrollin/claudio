@@ -1,0 +1,4 @@
+{"metrics": [{"entry": "errors-by-service", "ok": true, "scalar": {"columns": [
+  {"type": "group", "name": "service", "values": [["web"], ["api"], ["jobs"], ["batch", "eu"]]},
+  {"type": "number", "name": "a", "values": [120, 300, null, 120]}
+]}}]}

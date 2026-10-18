@@ -1,0 +1,4 @@
+{"data": {"type": "scalar_response", "attributes": {"columns": [
+  {"name": "service", "type": "group", "values": [["web"], ["api"], ["jobs"], ["batch", "eu"]]},
+  {"name": "a", "type": "number", "values": [120.0, 300.0, null, 120.0], "meta": {"unit": null}}
+]}}}

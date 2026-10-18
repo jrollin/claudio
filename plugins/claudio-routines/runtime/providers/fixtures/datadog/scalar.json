@@ -1,0 +1,1 @@
+{"data": {"type": "scalar_response", "attributes": {"columns": [{"name": "a", "type": "number", "values": [42.5], "meta": {"unit": null}}]}}}

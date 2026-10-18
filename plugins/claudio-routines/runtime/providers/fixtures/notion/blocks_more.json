@@ -1,0 +1,3 @@
+{"object": "list", "type": "block", "block": {}, "has_more": true, "next_cursor": "cursor-next", "results": [
+  {"object": "block", "id": "b-divider", "type": "divider", "has_children": false, "divider": {}}
+]}

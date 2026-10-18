@@ -1,0 +1,6 @@
+{"object": "list", "type": "block", "block": {}, "has_more": false, "next_cursor": null, "results": [
+  {"object": "block", "id": "t-header", "type": "table_row", "has_children": false, "table_row": {"cells": [[{"plain_text": "key"}], [{"plain_text": "until"}]]}},
+  {"object": "block", "id": "t-checkout", "type": "table_row", "has_children": false, "table_row": {"cells": [[{"plain_text": "checkout-p95", "annotations": {"code": true}}], [{"plain_text": "2026-10-30"}]]}},
+  {"object": "block", "id": "t-search", "type": "table_row", "has_children": false, "table_row": {"cells": [[{"plain_text": "search & index"}], [{"plain_text": "2026-11-01"}]]}},
+  {"object": "block", "id": "t-blank", "type": "table_row", "has_children": false, "table_row": {"cells": [[], [{"plain_text": "2026-11-02"}]]}}
+]}

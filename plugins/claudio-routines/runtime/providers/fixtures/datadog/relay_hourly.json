@@ -1,0 +1,4 @@
+{"metrics": [{"entry": "queue-hourly", "ok": true, "timeseries": {
+  "times": [1760000000000, 1760003600000, 1760007200000],
+  "values": [[3.5, null, 7.25]]
+}}]}

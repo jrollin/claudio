@@ -1,0 +1,33 @@
+{
+  "issues": [
+    {
+      "number": 14,
+      "title": "Importer times out",
+      "state": "OPEN",
+      "user": {
+        "login": "carol-dev",
+        "id": 103,
+        "type": "User"
+      },
+      "created_at": "2026-09-04T13:00:00Z",
+      "updated_at": "2026-09-04T14:00:00Z"
+    },
+    {
+      "number": 9,
+      "title": "Typo on the settings page",
+      "state": "CLOSED",
+      "user": {
+        "login": "dana-dev",
+        "id": 104,
+        "type": "User"
+      },
+      "created_at": "2026-08-28T10:00:00Z",
+      "updated_at": "2026-09-04T11:00:00Z"
+    }
+  ],
+  "pageInfo": {
+    "hasNextPage": false,
+    "endCursor": "cursor-app-1"
+  },
+  "totalCount": 2
+}

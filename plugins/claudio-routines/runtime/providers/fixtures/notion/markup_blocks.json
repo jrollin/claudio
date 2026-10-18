@@ -1,0 +1,11 @@
+{"object": "list", "type": "block", "block": {}, "has_more": false, "next_cursor": null, "results": [
+  {"object": "block", "id": "m-mutes", "type": "heading_2", "has_children": true, "heading_2": {"rich_text": [{"plain_text": "Mutes"}], "is_toggleable": true, "color": "default"}},
+  {"object": "block", "id": "markup-table", "type": "table", "has_children": true, "table": {"table_width": 2, "has_column_header": true, "has_row_header": false}},
+  {"object": "block", "id": "m-break", "type": "paragraph", "has_children": false, "paragraph": {"rich_text": [{"plain_text": "\nafter a break"}]}},
+  {"object": "block", "id": "m-color", "type": "paragraph", "has_children": false, "paragraph": {"rich_text": [{"plain_text": "Careful", "annotations": {"color": "red"}}, {"plain_text": " with this"}]}},
+  {"object": "block", "id": "m-equation", "type": "equation", "has_children": false, "equation": {"expression": "E = mc^2"}},
+  {"object": "block", "id": "m-image", "type": "image", "has_children": false, "image": {"type": "external", "external": {"url": "https://docs.example.test/diagram.png"}, "caption": []}},
+  {"object": "block", "id": "m-fence", "type": "code", "has_children": false, "code": {"rich_text": [{"plain_text": "```\ninner\n```"}], "language": "markdown"}},
+  {"object": "block", "id": "m-ampersand", "type": "paragraph", "has_children": false, "paragraph": {"rich_text": [{"plain_text": "R&D and x&ampy, &copy kept"}]}},
+  {"object": "block", "id": "m-item", "type": "bulleted_list_item", "has_children": false, "bulleted_list_item": {"rich_text": [{"plain_text": "Blue item"}], "color": "blue"}}
+]}
