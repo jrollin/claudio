@@ -3,7 +3,7 @@
 ---
 feature: routines-as-code
 spec_version: 1
-total_tasks: 74
+total_tasks: 75
 phases:
   - name: "Leak guard"
     tasks: [T-1, T-2, T-3]
@@ -37,6 +37,8 @@ phases:
     tasks: [T-71]
   - name: "Monitor priority and seed fixes"
     tasks: [T-72, T-73, T-74]
+  - name: "Cloud run fixes"
+    tasks: [T-75]
 depends_on: []
 ---
 
@@ -831,6 +833,16 @@ Runs in a local session with the chat, issue tracker, document store and observa
 - **Files**: `docs/features/routines-as-code/design.md` (modify), `docs/features/routines-as-code/tasks.md` (modify), `plugins/claudio-routines/runtime/fixtures/tribe/page_golden.md` (modify), `plugins/claudio-routines/runtime/test_tribe_features.py` (modify), `plugins/claudio-routines/runtime/test_tribe_lifecycle.py` (modify), `plugins/claudio-routines/runtime/test_tribe_page.py` (modify), `plugins/claudio-routines/runtime/test_tribe_publish.py` (modify), `plugins/claudio-routines/runtime/tribe_page.py` (modify), `plugins/claudio-routines/runtime/tribe_publish.py` (modify), `plugins/claudio-routines/runtime/tribe_state.py` (modify)
 - **Verify**: `for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
 - **Status**: Complete
+
+## Phase 17: Cloud run fixes
+
+### T-75: Save relayed results with the file-write tool
+- The runnable templates tell the model to write a relayed result with the Write tool and never to put it in a shell command, in every relay loop: the collection loop of both templates and the publish loop of the tribe template. A shell heredoc that holds source text breaks out on a line equal to its delimiter, and the cloud session's permission check denied such a call in the first cloud tribe run.
+- **Refs**: US-15, TD-21
+- **Files**: `docs/features/routines-as-code/design.md` (modify), `docs/features/routines-as-code/requirements.md` (modify), `docs/features/routines-as-code/tasks.md` (modify), `plugins/claudio-routines/skills/routines/templates/prod-watch.md` (modify), `plugins/claudio-routines/skills/routines/templates/tribe-digest.md` (modify)
+- **Verify**: `python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
+- **Rules**: BR-66
+- **Status**: In Progress (templates changed; a cloud tribe run to check)
 
 ## Related Features
 

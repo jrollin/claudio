@@ -519,7 +519,7 @@ The digest post stays a model call to the chat channel's connector in both place
 
 **Choice**: three steps, each a file:
 1. `collect.py plan --responses DIR --out PLAN` writes the next calls, given the responses saved so far: `{"done": false, "partial": null, "calls": [{"id", "connector", "tool", "arguments"}]}`, or `done` true with no calls.
-2. The model calls each tool on the named connector with the arguments as given, and saves each result unchanged as `DIR/<id>.txt`: it copies the file when the harness saved the result to one, and writes the result text as is otherwise (AC-15.3).
+2. The model calls each tool on the named connector with the arguments as given, and saves each result unchanged as `DIR/<id>.txt`: it copies the file when the harness saved the result to one, and otherwise writes the result text as is with the file-write tool, never inside a shell command (AC-15.3, BR-66).
 3. `collect.py parse --responses DIR --out COLLECTION` reads the saved responses and writes the collection.
 
 Loop termination (AC-15.6):
