@@ -31,7 +31,7 @@ REPLACEMENT = "\ufffd"
 SPACE_RUN = re.compile(r" {2,}")
 REASON_CAP = 200
 EMPTY_RECORDS = {
-    "monitors": {"monitors": [], "events": [], "discovered": [], "discovery": None},
+    "monitors": {"monitors": [], "transitions": [], "discovered": [], "discovery": None},
     "metrics": {"metrics": []},
     "document_store": {"pages": []},
     "chat": {"messages": []},

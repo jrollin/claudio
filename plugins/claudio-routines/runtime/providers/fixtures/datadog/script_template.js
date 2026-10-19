@@ -46,49 +46,6 @@ async function readMonitor(api, entry) {
   return { ok: true, monitor: { id: monitor.id, name: capped(monitor.name), overall_state: monitor.overallState, priority: monitor.priority ?? null } };
 }
 
-function timestamp(value) {
-  if (value instanceof Date) {
-    return Number.isNaN(value.getTime()) ? null : value.toISOString();
-  }
-  return value;
-}
-
-function eventItem(item) {
-  const outer = item.attributes || {};
-  const inner = outer.attributes || {};
-  return {
-    id: item.id,
-    attributes: {
-      timestamp: timestamp(outer.timestamp),
-      attributes: { monitor_id: inner.monitorId, timestamp: inner.timestamp },
-    },
-  };
-}
-
-async function readEvents(api) {
-  const request = {
-    filterFrom: String(params.events_from_ms),
-    filterTo: String(params.window.to_ms),
-    sort: "timestamp",
-    pageLimit: params.page_limit,
-  };
-  if (params.scope_filter) {
-    request.filterQuery = params.scope_filter;
-  }
-  const pages = [];
-  let cursor = null;
-  while (pages.length < params.page_cap) {
-    const body = await api.listEvents(cursor === null ? request : { ...request, pageCursor: cursor });
-    const after = (body.meta && body.meta.page && body.meta.page.after) || null;
-    pages.push({ data: (body.data || []).map(eventItem), after });
-    if (after === null) {
-      return { ok: true, pages, partial: null };
-    }
-    cursor = after;
-  }
-  return { ok: true, pages, partial: "page cap" };
-}
-
 function searchItem(item) {
   return { id: item.id, name: capped(item.name), status: item.status, priority: item.priority ?? null };
 }
@@ -111,29 +68,18 @@ async function readDiscovery(api) {
   }
 }
 
-function eventMonitorIds(events, discovery) {
+function eventMonitorIds(discovery) {
   const covered = new Set(params.entries.map((entry) => entry.monitor));
   for (const page of discovery ? discovery.pages : []) {
     for (const item of page.monitors || []) {
       covered.add(String(item.id));
     }
   }
-  const named = new Set();
-  for (const page of events.pages) {
-    for (const item of page.data) {
-      const inner = item.attributes.attributes;
-      const dated = item.attributes.timestamp != null || inner.timestamp != null;
-      const id = inner.monitor_id == null ? "" : String(inner.monitor_id);
-      if (dated && MONITOR_ID.test(id) && !covered.has(id)) {
-        named.add(id);
-      }
-    }
-  }
-  return Array.from(named).sort((a, b) => a.length - b.length || (a < b ? -1 : a > b ? 1 : 0));
+  return params.event_monitor_ids.filter((id) => !covered.has(id));
 }
 
-async function readEventMonitors(api, events, discovery) {
-  const ids = eventMonitorIds(events, discovery);
+async function readEventMonitors(api, discovery) {
+  const ids = eventMonitorIds(discovery);
   const reads = [];
   for (const id of ids.slice(0, params.event_monitor_cap)) {
     reads.push({ id, ...(await guarded(() => readMonitor(api, { monitor: id }))) });
@@ -173,13 +119,9 @@ async function collect() {
     for (const entry of params.entries) {
       monitors.push({ entry: entry.key, ...(await guarded(() => readMonitor(monitorsApi, entry))) });
     }
-    const events = await guarded(() => readEvents(new v2.EventsApi(cfg)));
-    if (events.ok === false) {
-      return { monitors, events };
-    }
     const discovery = params.discovery_query ? await readDiscovery(monitorsApi) : null;
-    const eventMonitors = await readEventMonitors(monitorsApi, events, discovery);
-    return { monitors, events, ...(discovery ? { discovery } : {}), event_monitors: eventMonitors };
+    const eventMonitors = await readEventMonitors(monitorsApi, discovery);
+    return { monitors, ...(discovery ? { discovery } : {}), event_monitors: eventMonitors };
   }
   const metricsApi = new v2.MetricsApi(cfg);
   const metrics = [];

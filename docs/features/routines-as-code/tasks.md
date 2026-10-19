@@ -3,7 +3,7 @@
 ---
 feature: routines-as-code
 spec_version: 1
-total_tasks: 70
+total_tasks: 71
 phases:
   - name: "Leak guard"
     tasks: [T-1, T-2, T-3]
@@ -33,6 +33,8 @@ phases:
     tasks: [T-60, T-61, T-62, T-63, T-64, T-65, T-66, T-67, T-68, T-69]
   - name: "Empty reads as zero"
     tasks: [T-70]
+  - name: "Monitor event aggregates"
+    tasks: [T-71]
 depends_on: []
 ---
 
@@ -790,6 +792,17 @@ Runs in a local session with the chat, issue tracker, document store and observa
 - **Verify**: `for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
 - **Rules**: BR-53, BR-65
 - **Status**: Complete
+
+## Phase 15: Monitor event aggregates
+
+### T-71: Aggregate the alert events where they are read
+- The monitors read aggregates the alert events per numeric monitor id where it reads them (TD-29): the adapter for `api`, the connector tool `aggregate_events` for `mcp`, whose plan has that call first and the `execute_code` script second (monitors, discovery and by-id reads, the monitors the aggregate names included). `records.transitions` `{monitor, count, first_ts_ms, last_ts_ms}` over the events inside the window replaces `records.events`; the cursor keeps the newest event time. The `api` events read takes 100 pages of 100 events; the `mcp` aggregate takes 1,000 groups (`partial: group cap`); the search keeps 20 pages.
+- Tests: the aggregate per monitor, the window bounds, events without a monitor, a numeric id or a time, the cursor on events outside the window, the `api` page cap at 100 pages and a read past 20 pages, the aggregate call arguments and the two-step plan, the table parse (fixture, sorting, cursor, non-numeric group, group cap, each malformed table, repeated monitor, row count), the script payload checks, the `api` collection equal to the one parsed from a table built from the same events, the script under node, the schema, and the features values equal to those computed from the raw event list.
+- **Refs**: US-19, AC-19.8, AC-14.5, AC-15.2, TD-20, TD-21, TD-26, TD-29
+- **Files**: `.claude-plugin/marketplace.json` (modify), `docs/features/routines-as-code/design.md` (modify), `docs/features/routines-as-code/tasks.md` (modify), `plugins/claudio-routines/.claude-plugin/plugin.json` (modify), `plugins/claudio-routines/README.md` (modify), `plugins/claudio-routines/runtime/collect.py` (modify), `plugins/claudio-routines/runtime/evaluate.py` (modify), `plugins/claudio-routines/runtime/evaluate_support.py` (modify), `plugins/claudio-routines/runtime/features.py` (modify), `plugins/claudio-routines/runtime/fixtures/tribe/pipeline_collections.json` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify), `plugins/claudio-routines/runtime/providers/_errors.py` (modify), `plugins/claudio-routines/runtime/providers/datadog.py` (modify), `plugins/claudio-routines/runtime/providers/datadog_support.py` (modify), `plugins/claudio-routines/runtime/providers/fixtures/datadog/aggregate_events.txt` (create), `plugins/claudio-routines/runtime/providers/fixtures/datadog/relay_discovery.json` (modify), `plugins/claudio-routines/runtime/providers/fixtures/datadog/relay_monitor_errors.json` (modify), `plugins/claudio-routines/runtime/providers/fixtures/datadog/relay_monitors.json` (modify), `plugins/claudio-routines/runtime/providers/fixtures/datadog/script_template.js` (modify), `plugins/claudio-routines/runtime/providers/test_datadog.py` (modify), `plugins/claudio-routines/runtime/providers/test_datadog_relay.py` (modify), `plugins/claudio-routines/runtime/roles.py` (modify), `plugins/claudio-routines/runtime/test_collect.py` (modify), `plugins/claudio-routines/runtime/test_evaluate.py` (modify), `plugins/claudio-routines/runtime/test_features.py` (modify), `plugins/claudio-routines/runtime/test_roles.py` (modify), `plugins/claudio-routines/runtime/tribe_support.py` (modify)
+- **Verify**: `for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
+- **Rules**: BR-28
+- **Status**: Complete (live check over a 63-hour window: 28 monitors, 3,748 events, aggregate call 7 s, monitors script 26 s)
 
 ## Related Features
 

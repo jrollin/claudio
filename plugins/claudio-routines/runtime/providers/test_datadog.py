@@ -16,7 +16,6 @@ from providers.datadog_support import (
     CHECKOUT,
     DISCOVERING,
     DISK,
-    EXPLORER,
     FALL_BACK_DAY,
     FRESH,
     FROM_MS,
@@ -86,8 +85,13 @@ def based(source, base_url):
     return configured(source, {**PROVIDER, "api": {**PROVIDER["api"], "base_url": base_url}})
 
 
-def links(result):
-    return [item["link"] for item in result["records"]["events"]]
+def transitions_of(*items, reads=1):
+    _, result = run(MONITORS, [], FRESH, events_page(*items), *missing_monitors(reads))
+    return result["records"]["transitions"]
+
+
+def dated(timestamp, monitor_id=301):
+    return event("e1", timestamp=timestamp, attributes={"monitor_id": monitor_id})
 
 
 def endpoint(request):
@@ -284,59 +288,67 @@ class MonitorsTest(unittest.TestCase):
 
 
 class EventsTest(unittest.TestCase):
-    def test_events_take_outer_timestamp_then_inner_one(self):
+    def test_events_aggregate_per_monitor_taking_the_outer_timestamp_then_the_inner_one(self):
         _, result = run(MONITORS, [], FRESH, ok("events_page_1.json"), ok("events_page_2.json"), *missing_monitors(2))
 
         self.assertEqual(
-            {item["link"]: item for item in result["records"]["events"]},
-            {
-                EXPLORER + "e0": {"ts_ms": 1760001000000, "link": EXPLORER + "e0", "monitor": "102"},
-                EXPLORER + "e1": {"ts_ms": 1760001000000, "link": EXPLORER + "e1", "monitor": "102"},
-                EXPLORER + "e2": {"ts_ms": 1760000100000, "link": EXPLORER + "e2", "monitor": None},
-                EXPLORER + "e3": {"ts_ms": 1760002000000, "link": EXPLORER + "e3", "monitor": "101"},
-                EXPLORER + "e5": {"ts_ms": 1760001000000, "link": EXPLORER + "e5", "monitor": "101"},
-            },
+            result["records"]["transitions"],
+            [
+                {"monitor": "101", "count": 2, "first_ts_ms": 1760001000000, "last_ts_ms": 1760002000000},
+                {"monitor": "102", "count": 2, "first_ts_ms": 1760001000000, "last_ts_ms": 1760001000000},
+            ],
         )
 
-    def test_events_carry_no_title(self):
-        _, result = run(MONITORS, [], FRESH, events_page(event("e1", timestamp=1760001000000, title="Page me", attributes={"title": "Inner"})))
-
-        self.assertEqual(sorted(result["records"]["events"][0]), ["link", "monitor", "ts_ms"])
-
-    def test_event_without_a_timestamp_is_skipped(self):
+    def test_records_hold_no_raw_events(self):
         _, result = run(MONITORS, [], FRESH, ok("events_page_1.json"), ok("events_page_2.json"), *missing_monitors(2))
 
-        self.assertNotIn(EXPLORER + "e4", links(result))
+        self.assertEqual(sorted(result["records"]), ["discovered", "discovery", "monitors", "transitions"])
 
-    def test_events_sort_by_ts_then_link(self):
+    def test_events_without_a_monitor_or_a_timestamp_are_not_counted(self):
         _, result = run(MONITORS, [], FRESH, ok("events_page_1.json"), ok("events_page_2.json"), *missing_monitors(2))
 
-        self.assertEqual(links(result), [EXPLORER + "e2", EXPLORER + "e0", EXPLORER + "e1", EXPLORER + "e5", EXPLORER + "e3"])
+        self.assertEqual(sum(item["count"] for item in result["records"]["transitions"]), 4)
+
+    def test_events_without_a_numeric_monitor_id_are_not_counted(self):
+        self.assertEqual(transitions_of(dated(FROM_MS + 1000, "web-1"), dated(FROM_MS + 1000, "1.5"), dated(FROM_MS + 1000, True), reads=0), [])
+
+    def test_events_at_the_window_bounds_count_and_those_just_outside_do_not(self):
+        items = [dated(FROM_MS - 1), dated(FROM_MS), dated(TO_MS), dated(TO_MS + 1)]
+
+        self.assertEqual(transitions_of(*items), [{"monitor": "301", "count": 2, "first_ts_ms": FROM_MS, "last_ts_ms": TO_MS}])
+
+    def test_events_outside_the_window_move_the_cursor_but_name_no_monitor(self):
+        opener, result = run(MONITORS, [], FRESH, events_page(dated(FROM_MS - 5), dated(TO_MS + 9)))
+
+        self.assertEqual((result["records"]["transitions"], result["cursor"]["events_ts_ms"]), ([], TO_MS + 9))
+        self.assertEqual(requested_paths(opener), ["/api/v2/events"])
+
+    def test_events_without_a_monitor_move_the_cursor(self):
+        _, result = run(MONITORS, [], FRESH, events_page(event("e1", timestamp=FROM_MS + 5)))
+
+        self.assertEqual((result["records"]["transitions"], result["cursor"]["events_ts_ms"]), ([], FROM_MS + 5))
+
+    def test_transitions_sort_by_monitor_id_length_then_text(self):
+        items = [dated(FROM_MS + 1, 1010), dated(FROM_MS + 1, 99), dated(FROM_MS + 1, 100)]
+
+        _, result = run(MONITORS, [], FRESH, events_page(*items), *missing_monitors(3))
+
+        self.assertEqual([item["monitor"] for item in result["records"]["transitions"]], ["99", "100", "1010"])
 
     def test_iso_nanoseconds_truncate_to_milliseconds(self):
-        _, result = run(MONITORS, [], FRESH, events_page(event("e1", timestamp="2025-10-09T08:55:00.123456789Z")))
-
-        self.assertEqual(result["records"]["events"][0]["ts_ms"], 1760000100123)
+        self.assertEqual(transitions_of(dated("2025-10-09T08:55:00.123456789Z"))[0]["first_ts_ms"], 1760000100123)
 
     def test_iso_short_fraction_reads_as_milliseconds(self):
-        _, result = run(MONITORS, [], FRESH, events_page(event("e1", timestamp="2025-10-09T08:55:00.5Z")))
-
-        self.assertEqual(result["records"]["events"][0]["ts_ms"], 1760000100500)
+        self.assertEqual(transitions_of(dated("2025-10-09T08:55:00.5Z"))[0]["first_ts_ms"], 1760000100500)
 
     def test_iso_compact_offset_converts_to_utc(self):
-        _, result = run(MONITORS, [], FRESH, events_page(event("e1", timestamp="2025-10-09T10:55:00+0200")))
-
-        self.assertEqual(result["records"]["events"][0]["ts_ms"], 1760000100000)
+        self.assertEqual(transitions_of(dated("2025-10-09T10:55:00+0200"))[0]["first_ts_ms"], 1760000100000)
 
     def test_unparseable_iso_timestamp_skips_the_event(self):
-        _, result = run(MONITORS, [], FRESH, events_page(event("e1", timestamp="yesterday")))
-
-        self.assertEqual(result["records"]["events"], [])
+        self.assertEqual(transitions_of(dated("yesterday"), reads=0), [])
 
     def test_bool_timestamp_skips_the_event(self):
-        _, result = run(MONITORS, [], FRESH, events_page(event("e1", timestamp=True)))
-
-        self.assertEqual(result["records"]["events"], [])
+        self.assertEqual(transitions_of(dated(True), reads=0), [])
 
     def test_first_page_queries_the_window(self):
         opener, _ = run(MONITORS, [], FRESH, ok("events_empty.json"))
@@ -373,18 +385,26 @@ class EventsTest(unittest.TestCase):
         self.assertEqual(query(opener.requests[1])["page[cursor]"], ["page-2"])
 
     def test_page_cap_marks_the_source_partial(self):
-        pages = [ok("events_page_1.json") for _ in range(_http.PAGE_CAP)]
+        pages = [ok("events_page_1.json") for _ in range(datadog.EVENTS_PAGE_CAP)]
 
         with self.assertRaises(_http.PartialRead) as caught:
             run(MONITORS, [], FRESH, *pages)
         self.assertEqual(str(caught.exception), "partial: page cap")
 
     def test_last_page_at_the_cap_reads_the_source(self):
-        pages = [ok("events_page_1.json") for _ in range(_http.PAGE_CAP - 1)] + [ok("events_page_2.json")]
+        pages = [ok("events_page_1.json") for _ in range(datadog.EVENTS_PAGE_CAP - 1)] + [ok("events_page_2.json")]
 
         opener, _ = run(MONITORS, [], FRESH, *pages, *missing_monitors(2))
 
-        self.assertEqual(requested_paths(opener).count("/api/v2/events"), _http.PAGE_CAP)
+        self.assertEqual(requested_paths(opener).count("/api/v2/events"), datadog.EVENTS_PAGE_CAP)
+
+    def test_pages_past_the_search_cap_are_read(self):
+        pages = [ok("events_page_1.json") for _ in range(_http.PAGE_CAP)] + [ok("events_page_2.json")]
+
+        opener, result = run(MONITORS, [], FRESH, *pages, *missing_monitors(2))
+
+        self.assertEqual(requested_paths(opener).count("/api/v2/events"), _http.PAGE_CAP + 1)
+        self.assertEqual({item["monitor"]: item["count"] for item in result["records"]["transitions"]}["102"], _http.PAGE_CAP + 1)
 
     def test_events_failure_makes_the_source_unreadable(self):
         with self.assertRaises(_http.SourceUnreadable) as caught:
@@ -441,11 +461,6 @@ class LinksTest(unittest.TestCase):
         with self.assertRaises(_http.SourceUnreadable) as caught:
             run(configured(MONITORS, {"adapter": "datadog"}), [CHECKOUT], FRESH)
         self.assertEqual(str(caught.exception), "links_base missing in providers.obs")
-
-    def test_event_id_is_quoted_in_its_link(self):
-        _, result = run(MONITORS, [], FRESH, events_page(event("a b/c?d&e", timestamp=FROM_MS)))
-
-        self.assertEqual(links(result), [EXPLORER + "a%20b%2Fc%3Fd%26e"])
 
 
 class ScalarTest(unittest.TestCase):
@@ -680,7 +695,7 @@ class DiscoveryTest(unittest.TestCase):
         opener, result = run(MONITORS, [], FRESH, ok("events_empty.json"))
 
         self.assertEqual([endpoint(request) for request in opener.requests], [("GET", "/api/v2/events")])
-        self.assertEqual(sorted(result["records"]), ["discovered", "discovery", "events", "monitors"])
+        self.assertEqual(sorted(result["records"]), ["discovered", "discovery", "monitors", "transitions"])
         self.assertEqual((result["records"]["discovered"], result["records"]["discovery"]), ([], {"read": True, "reason": None}))
 
     def test_empty_query_searches_nothing(self):

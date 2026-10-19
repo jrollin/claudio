@@ -4,6 +4,5 @@
     {"entry": "monitor-checkout", "ok": true, "monitor": {"id": 101, "name": "Checkout latency", "overall_state": "OK"}},
     {"entry": "monitor-disk", "ok": true, "monitor": {"id": 103, "name": "Disk usage"}}
   ],
-  "events": {"ok": true, "pages": [{"data": [], "after": null}], "partial": null},
   "event_monitors": {"capped": false, "reads": []}
 }

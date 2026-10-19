@@ -230,7 +230,7 @@ Reads:
 - Each source writes one collection, `<run>/collections/<source>.json`, in the record schema of its role.
 - A source that cannot be read is marked not read, with a reason, and the other sources are still collected.
 - A failed read never switches to the other transport.
-- A relay loop ends after 20 pages of one query, a repeated cursor or 50 calls for one source; the source is then not read, with a reason starting `partial:`.
+- A relay loop ends after 20 pages of one query, a repeated cursor or 50 calls for one source; the source is then not read, with a reason starting `partial:`. The 100-page cap applies to the `api` alert events read of a monitors source only; the relay reads those events through one `aggregate_events` call, capped at 1,000 monitors (`partial: group cap`).
 - An observability source writes one entry per query pack entry, a document store `pages` source one per page, and a chat source one per failed channel: `ok`, `deferred` or `failed` with a reason, so one failed entry leaves the others read.
 
 Where the collectors stand:

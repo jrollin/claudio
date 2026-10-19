@@ -255,11 +255,12 @@
         "read": true,
         "reason": null
       },
-      "events": [
+      "transitions": [
         {
-          "link": "https://example.test/e/1",
-          "monitor": "1001",
-          "ts_ms": 1792134900000
+          "count": 1,
+          "first_ts_ms": 1792134900000,
+          "last_ts_ms": 1792134900000,
+          "monitor": "1001"
         }
       ],
       "monitors": []

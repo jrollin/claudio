@@ -506,7 +506,7 @@ The digest post stays a model call to the chat channel's connector in both place
 - Limits:
   - 30 s timeout per socket operation, and a 30 s deadline for reading the whole response body; the status line and headers are bounded by the per-operation timeout only.
   - One retry on 429 and 5xx, after `Retry-After` capped at 30 s; other 4xx are not retried (AC-14.4).
-  - 20 pages per query and 10 MB per response; reaching either marks the source partial (AC-14.5). A document store source also stops at 50 requests (page, block pages, table rows), as a partial read.
+  - 20 pages per query (100 for the `api` alert events read of a monitors source, TD-29) and 10 MB per response; reaching either marks the source partial (AC-14.5). A document store source also stops at 50 requests (page, block pages, table rows), as a partial read.
 - TLS uses the default verified context.
 - Tests inject a fake opener, so no test opens a connection (NFR-3, NFR-7).
 
@@ -534,7 +534,7 @@ Two kinds of calls:
   - `checksum` is FNV-1a 32-bit over the payload (offset `2166136261`, multiply with `Math.imul(h, 16777619) >>> 0`), as 8 lowercase hex digits. `parse` rejects a payload that is not ASCII or whose checksum differs.
   - The script embeds its parameters as one JSON text (`json.dumps` with sorted keys, ASCII only), parsed inside the script, never by string concatenation, so a query text cannot change the script.
   - `digest` is the same hash over that parameter text as embedded; `parse` compares it with the plan's `digest`, so edited parameters are rejected. Hashing the text, not a re-serialized object, keeps key order and number formats identical in both languages.
-  - The payload carries the raw per-call data; `parse` normalizes it with the functions of the `api` transport, so both transports give the same records (AC-13.2).
+  - The payload carries the raw per-call data; `parse` normalizes it with the functions of the `api` transport, so both transports give the same records (AC-13.2). A monitors source relays its alert events through a separate `aggregate_events` call, a plain tool call that returns per-monitor aggregates and runs before the script (TD-29), so no relayed result grows with the event count.
   - Test vectors include an emoji and an escaped lone surrogate.
 - A connector without code execution gets plain tool calls (AC-15.2). `parse` reads the response format that fixture tests pin.
 
@@ -665,7 +665,7 @@ Accepted risks:
 Feature rules:
 - `previous` comes from the stored state's `cursors.observability.metrics`, so `change` compares with the key's last collection; a daily entry compares with its last daily read.
 - `base.json` cursors hold the features' `value` of this read, groups included, so `change` compares like with like; they drop the untracked group keys absent from a read entry, and keep the stored groups of an entry not read this run.
-- `transitions` counts the monitor's alert events in the window; `transitions_per_hour` divides it by the hours between the first and the last event.
+- `transitions` is the `count` of the monitor's entry in the collection's `transitions` (its alert events inside the window); `transitions_per_hour` divides it by the hours between the entry's `first_ts_ms` and `last_ts_ms`.
 - A rate or a percent with fewer than 2 events, first and last events at the same time, no stored value, or a stored value of 0 is null (AC-18.9).
 - A discovered monitor's name is cleaned like a collector reason (control characters to spaces), `@`, `<` and `>` replaced so a posted title mentions no one, and cut to 300 characters.
 - A discovered monitor's link comes from the provider's `links_base`.
@@ -732,6 +732,13 @@ Feature rules:
 - Monitor records gain `priority` (integer or null); the collection's records gain `discovered` `[{id, name, state, priority, link}]` (search results and event-named monitors) and `discovery` `{read, reason, event_monitors_capped?}`; a discovered monitor is featured under `monitor-<id>` (AC-19.2).
 - A by-id read the provider answers with not found gets the new entry status `missing`. For a tracked key, the evaluator turns it into the auto key `not found` (AC-19.5); for an untracked pack monitor, it adds the blind spot `not found` on the entry key and no observation.
 - A failed or capped discovery sets `discovery.read` false with a reason, and the source stays read; `discovery` is null in a collection whose source was not read; the evaluator adds the blind spot `discovery incomplete` on the source and still features the monitors found (AC-19.7, BR-40). A discovered monitor with a state outside the accepted ones is left out of the features; the source keeps one blind spot that joins `discovery incomplete` and `monitor state not recognised: <ids>`, cut to 300 characters.
+- The alert events are aggregated per monitor where they are read, over the events inside the window `[from, to]` (bounds included):
+  - The `api` transport pages `GET /api/v2/events` from the stored cursor when it lies inside the window, and aggregates in the adapter.
+  - The `mcp` transport calls the connector tool `aggregate_events` once, over the whole window, grouped by `@monitor_id` (limit 1000) with `COUNT` of the events and `MIN` and `MAX` of their timestamp, and parses its tab-separated table.
+  - The collection's `transitions` `[{monitor, count, first_ts_ms, last_ts_ms}]`, one per numeric monitor id and sorted by id (shorter ids first), replace the raw events; the cursor `events_ts_ms` is the newest event time, kept forward-only.
+  - A group without a numeric monitor id adds no transition. A table that is malformed, lists a monitor twice or holds a row count other than its `total_buckets` makes the source unreadable.
+- The `api` events read follows up to 100 pages of 100 events (10,000 events, a 72-hour window at about 75 events an hour); reaching the cap marks the source partial (`partial: page cap`, AC-14.5). The `mcp` aggregate covers up to 1,000 monitors; more marks the source partial (`partial: group cap`, AC-14.5). The discovery search keeps the page cap of 20.
+- The `mcp` plan has two steps: the `aggregate_events` call (`<source>-1`), then, once its response is saved, the code script (`<source>-2`), which reads the pack's monitors, runs the discovery search and reads by id the monitors the aggregate names; their ids sit in the script's digested parameters.
 - After the events read, a failed by-id read of an event-named monitor other than not found marks the discovery not read, and an unknown state keeps the monitor for the features step to flag.
 - After the events read, the collector reads by id every monitor the window's alert events name that is not in the pack, not tracked and not found by the search, at most 50 per run (the excess adds `event monitors capped at 50` to the source's blind spot), and lists them with the discovered monitors (AC-19.8).
 - An untracked discovered monitor in state `OK` gets no key unless the window's alert events name it, so a monitor that flapped and recovered still reaches the model; at most 100 discovered monitors get a key, lowest ids first; the excess adds `discovery capped at 100 monitors` to the source's blind spot.
@@ -740,6 +747,8 @@ Feature rules:
 
 **Alternatives considered**:
 - Discovery from the alert events only: rejected, a monitor stuck in Alert has no event in the window.
+- Relaying the raw alert events: rejected, the relayed result grows with the event count and the 20-page cap holds 2,000 events, fewer than a 63-hour weekend window carries.
+- Paging the events inside the connector script: rejected, the script's 120-second timeout ends the read of a 63-hour window (about 37 pages) before it completes.
 - Discovering every monitor, OK ones included: rejected for size; an OK monitor opens nothing.
 
 **Rationale**: a monitor outside the pack reaches the model, and a tracked one is followed until it resolves.
@@ -1408,7 +1417,7 @@ Role record schemas, shared by every provider of a role (AC-13.7):
 
 | Role | Source options | Records | Cursor |
 |---|---|---|---|
-| observability | `kind` (`monitors` or `metrics`), `scope_filter` (the alert event search query of a `monitors` source; ignored by a `metrics` source), `discovery_query` (`monitors` only) | `monitors` kind: `monitors` `{id, name, state, priority, link}`, alert `events` `{ts_ms, link, monitor}` after the cursor (no title: the features use only the monitor and the time), `discovered` `{id, name, state, priority, link}` (search results and event-named monitors) and `discovery` `{read, reason}` with an optional `event_monitors_capped`; `metrics` kind: `metrics` `{key, value, hourly [{ts, value}], daily [{ts, value}], groups [{group, value}], trend [{day, value}] or null, trend_reason}`, `daily` for lookback entries only, `trend` for entries with `trend_days` (TD-42) | `events_ts_ms` and `monitors` for `monitors`, `metrics` for `metrics` |
+| observability | `kind` (`monitors` or `metrics`), `scope_filter` (the alert event search query of a `monitors` source; ignored by a `metrics` source), `discovery_query` (`monitors` only) | `monitors` kind: `monitors` `{id, name, state, priority, link}`, alert `transitions` `{monitor, count, first_ts_ms, last_ts_ms}` per numeric monitor id, aggregated over the alert events inside the window (TD-29; no raw event: the features use only the count and the first and last time), `discovered` `{id, name, state, priority, link}` (search results and event-named monitors) and `discovery` `{read, reason}` with an optional `event_monitors_capped`; `metrics` kind: `metrics` `{key, value, hourly [{ts, value}], daily [{ts, value}], groups [{group, value}], trend [{day, value}] or null, trend_reason}`, `daily` for lookback entries only, `trend` for entries with `trend_days` (TD-42) | `events_ts_ms` and `monitors` for `monitors`, `metrics` for `metrics` |
 | document store | exactly one of `page_id` (`^[A-Za-z0-9-]+$`), `pages` (a list of page ids, TD-41) and `page_from_state: previous_page` (tribe engine only, TD-49) | `pages`: `{id, title, last_edited, link, blocks [{type, text, rows, checked}]}`, `checked` true or false on a to-do, null or absent otherwise | `pages` (edit time per page id) |
 | chat channel | `channels`; `threads` `[{channel, root_ts}]` from the tribe state, set by `collect.py` (TD-46) | `messages`: `{channel, ts, thread_ts, author, text, link}` (TD-40), cited thread replies included; a cited thread not found is a failed entry `<channel>:<root ts>` | newest history `ts` per channel |
 | issue tracker | `filter`, optional `query` and `open_sprints` (TD-39) | `issues`: `{key, title, type, status, priority, created, updated, link, in_open_sprint}` | `updated` |

@@ -486,7 +486,7 @@ def collections_for(**overrides):
             "monitors",
             {
                 "monitors": [],
-                "events": [{"ts_ms": (TO_TS - 1800) * 1000, "link": "https://example.test/e/1", "monitor": "1001"}],
+                "transitions": [{"monitor": "1001", "count": 1, "first_ts_ms": (TO_TS - 1800) * 1000, "last_ts_ms": (TO_TS - 1800) * 1000}],
                 "discovered": [{"id": "1001", "name": "Queue alert", "state": "Alert", "priority": 2, "link": "https://example.test/mon/1001"}],
                 "discovery": {"read": True, "reason": None},
             },

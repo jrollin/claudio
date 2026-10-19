@@ -1,4 +1,5 @@
 PAGE_CAP_PARTIAL = "page cap"
+GROUP_CAP_PARTIAL = "group cap"
 CALL_CAP = 50
 CALL_CAP_PARTIAL = "call cap"
 
