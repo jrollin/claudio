@@ -92,6 +92,20 @@ class Exact:
         self.spec = spec
 
 
+def transports_of(value):
+    return [value] if isinstance(value, str) else value
+
+
+def _is_transport_preference(value):
+    items = transports_of(value)
+    return (
+        isinstance(items, list)
+        and bool(items)
+        and all(isinstance(item, str) and item in TRANSPORTS for item in items)
+        and len(set(items)) == len(items)
+    )
+
+
 def _matches(pattern):
     return lambda value: isinstance(value, str) and pattern.fullmatch(value) is not None
 
@@ -128,7 +142,8 @@ CHANNEL_TYPES_TEXT = Rule(
 )
 
 PLACE = {"runtime_dir": ABSOLUTE, "state_dir": ABSOLUTE}
-SOURCE = {"provider": TEXT, "transport": {"cloud": Choice(TRANSPORTS), "local": Choice(TRANSPORTS)}}
+TRANSPORT_PREFERENCE = Rule(_is_transport_preference, "must be api, mcp or a non-empty list of them without repeats")
+SOURCE = {"provider": TEXT, "transport": {"cloud": TRANSPORT_PREFERENCE, "local": TRANSPORT_PREFERENCE}}
 PINNED_URL = Rule(_is_pinned_url, "must be an https URL with a host, a valid port and no user info, query or fragment")
 PROVIDER = {"adapter": TEXT, "links_base": Omittable(PINNED_URL)}
 API = {
@@ -285,6 +300,7 @@ COLLECTION = {
     "role": Choice(ROLES),
     "provider": STRING,
     "transport": Choice(TRANSPORTS),
+    "skipped": Omittable(ListOf({"transport": Choice(TRANSPORTS), "missing": ListOf(STRING)})),
     "place": Choice(PLACES),
     "window": {"from_ts": INTEGER, "to_ts": INTEGER},
     "read": BOOLEAN,
@@ -547,9 +563,10 @@ def _validate_source(source, path, providers, place, role_of, engine, owner=None
         raise ConfigError(f"{path}.provider: names no entry of providers")
     provider_path = f"providers.{name}"
     provider = _config_field(providers, "providers", name, PROVIDER)
-    if source["transport"][place] == "api":
+    transports = transports_of(source["transport"][place])
+    if "api" in transports:
         _conform(provider, API, provider_path, ConfigError, exact=False)
-    else:
+    if "mcp" in transports:
         _conform(provider, {"mcp": {"connectors": {place: TEXT}}}, provider_path, ConfigError, exact=False)
     if role_of is None:
         return
@@ -579,9 +596,9 @@ def _validate_source(source, path, providers, place, role_of, engine, owner=None
 def _validate_code_host_options(source, path):
     if ("repos" in source) == ("searches" in source):
         raise ConfigError(f"{path}: a code host source sets exactly one of repos and searches")
-    mcp_places = [place for place in PLACES if source["transport"][place] == "mcp"]
+    mcp_places = [place for place in PLACES if "mcp" in transports_of(source["transport"][place])]
     if "searches" in source and mcp_places:
-        raise ConfigError(f"{path}.searches: read over api only, but {path}.transport.{mcp_places[0]} is mcp")
+        raise ConfigError(f"{path}.searches: read over api only, but {path}.transport.{mcp_places[0]} lists mcp")
 
 
 def _validate_recap_source(source, path, role, owner):
@@ -636,9 +653,9 @@ def _validate_page_options(source, path, engine):
         raise ConfigError(f"{path}.page_from_state: only a routine with the {TRIBE_ENGINE} engine keeps a previous page")
     if "edited_cap" in source and "edited_by" not in source:
         raise ConfigError(f"{path}.edited_cap: needs edited_by")
-    relayed = next((place for place in PLACES if source["transport"][place] == "mcp"), None)
+    relayed = next((place for place in PLACES if "mcp" in transports_of(source["transport"][place])), None)
     if "edited_by" in source and relayed is not None:
-        raise ConfigError(f"{path}.edited_by: reads over api only, the {relayed} transport is mcp")
+        raise ConfigError(f"{path}.edited_by: reads over api only, the {relayed} transport lists mcp")
 
 
 def validate_pack(pack, sources, routine=None, *, rules):

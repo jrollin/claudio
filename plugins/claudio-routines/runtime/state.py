@@ -190,12 +190,16 @@ OBSERVATION_SPEC = {
     "rank": Omittable(Nullable(RANK)),
     **ANALYSIS_SPEC,
 }
+SKIPPED_SPEC = [{"transport": TRANSPORT, "missing": [TEXT]}]
+SOURCES_SPEC = [{"source": TEXT, "role": TEXT, "provider": TEXT, "transport": Nullable(TRANSPORT), "skipped": SKIPPED_SPEC}]
 RUN_CONTEXT_SPEC = {
     "place": PLACE,
     "runtime": Nullable(TEXT),
     "config": Nullable(TEXT),
     "config_dirty": Nullable(BOOLEAN),
-    "collected": {"*": {"role": TEXT, "transport": TRANSPORT, "read": BOOLEAN, "reason": Nullable(TEXT)}},
+    "collected": {
+        "*": {"role": TEXT, "transport": TRANSPORT, "skipped": Omittable(SKIPPED_SPEC), "read": BOOLEAN, "reason": Nullable(TEXT)}
+    },
 }
 RUN_CONTEXT_FIELDS = tuple(RUN_CONTEXT_SPEC)
 FACTS_SPEC = {
@@ -246,6 +250,10 @@ def check(value, spec, path):
             check(child, spec[0], f"{path}[{index}]")
     else:
         spec(value, path)
+
+
+def check_sources(document):
+    check(document, SOURCES_SPEC, "")
 
 
 def check_state(document):

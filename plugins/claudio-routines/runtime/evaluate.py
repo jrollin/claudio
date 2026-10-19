@@ -60,12 +60,15 @@ def check_collection_source(doc, name, source, place, window):
         "source": name,
         "role": source["role"],
         "place": place,
-        "transport": source["transport"][place],
         "window": {"from_ts": window["from_ts"], "to_ts": window["to_ts"]},
     }
     for key, value in expected.items():
         if doc[key] != value:
             raise ValueError(f"{key}: is {json.dumps(doc[key], sort_keys=True)}, expected {json.dumps(value, sort_keys=True)} for this run")
+    if doc["transport"] not in source["transport"][place]:
+        raise ValueError(
+            f"transport: is {json.dumps(doc['transport'])}, expected one of {json.dumps(source['transport'][place])} for this run"
+        )
     if source["role"] == "observability" and not KIND_RECORDS[source["kind"]] <= set(doc["records"]):
         raise ValueError(f"records: must hold the records of kind {source['kind']}")
 
@@ -74,7 +77,7 @@ def missing_collection(name, source, place):
     return {
         "source": name,
         "role": source["role"],
-        "transport": source["transport"][place],
+        "transport": source["transport"][place][0],
         "read": False,
         "reason": NO_COLLECTION,
         "cursor": None,
@@ -168,7 +171,7 @@ def run_context(args, collections, git):
         "config": None if commit is None else commit.strip(),
         "config_dirty": None if status is None else status.strip() != "",
         "collected": {
-            name: {key: collection[key] for key in ("role", "transport", "read", "reason")}
+            name: {**{key: collection[key] for key in ("role", "transport", "read", "reason")}, "skipped": collection.get("skipped", [])}
             for name, collection in collections.items()
         },
     }
