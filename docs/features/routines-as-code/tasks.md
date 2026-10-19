@@ -3,7 +3,7 @@
 ---
 feature: routines-as-code
 spec_version: 1
-total_tasks: 98
+total_tasks: 105
 phases:
   - name: "Leak guard"
     tasks: [T-1, T-2, T-3]
@@ -45,6 +45,8 @@ phases:
     tasks: [T-94, T-95, T-96]
   - name: "Transport preference"
     tasks: [T-97, T-98]
+  - name: "Weekly status engine"
+    tasks: [T-99, T-100, T-101, T-102, T-103, T-104, T-105]
 depends_on: []
 ---
 
@@ -1076,6 +1078,78 @@ Owner-gated: needs the merged pull request, a release tag, the transport and its
 - **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 scripts/leak_check.py --tree`
 - **Rules**: BR-25
 - **Status**: Complete
+
+## Phase 21: Weekly status engine
+
+### T-99: Issue tracker source by JQL
+- An issue tracker source sets exactly one of `filter` and `jql` (non-blank). With `jql`, the collector queries `(<jql>) AND updated >= "<window start>" ORDER BY key ASC` on both transports; `open_sprints` needs `filter`.
+- Tests: the api request and the relay call carry the built JQL; both transports give the same records; a source with both or neither fails the load with its key path; `open_sprints` with `jql` fails the load.
+- **Refs**: US-53, TD-67
+- **Files**: `plugins/claudio-routines/runtime/providers/jira.py` (modify), `plugins/claudio-routines/runtime/providers/test_jira.py` (modify), `plugins/claudio-routines/runtime/roles.py` (modify), `plugins/claudio-routines/runtime/test_roles.py` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify)
+- **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
+- **Status**: Not Started
+
+### T-100: Code host searches with pull request activity
+- A code host source sets exactly one of `repos` and `searches` (a non-empty list of query strings), and may set `exclude_authors`. With `searches`, the api collector runs each search with `updated:>=<window start date>`, keeps each pull request once, and reads its comments, reviews and review comments in the window, as TD-67 describes. The collection adds `activity`; `pull_requests` keeps its schema.
+- Config load refuses `searches` when the source's transport for a place includes `mcp`, naming the key path.
+- Tests: the search request carries the query and the date; a pull request found by two searches appears once; activity outside the window, by a `[bot]` author or by an excluded author is dropped; a review keeps its state; text over 1000 characters is cut; a search page cap ends the read partial; `searches` with `mcp` fails the load.
+- **Refs**: US-53, TD-67
+- **Files**: `plugins/claudio-routines/runtime/providers/github.py` (modify), `plugins/claudio-routines/runtime/providers/test_github.py` (modify), `plugins/claudio-routines/runtime/roles.py` (modify), `plugins/claudio-routines/runtime/test_roles.py` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify)
+- **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
+- **Status**: Not Started
+
+### T-101: Document store pages edited by a user
+- A document store source sets one of `page_id`, `pages` and `edited_by`, and may set `edited_cap` (1 to 50, default 20) with `edited_by`. With `edited_by`, the api collector searches pages by `last_edited_time` descending until a page is older than the window start, keeps those last edited by that user, and reads each with the existing page reader.
+- Config load refuses `edited_by` when the source's transport for a place includes `mcp`, naming the key path.
+- Tests: the search body sorts by `last_edited_time` and filters pages; paging stops at the first page older than the window start; a page edited by another user is skipped; `edited_cap` bounds the pages read and ends the read partial; `edited_by` with `mcp` fails the load.
+- **Refs**: US-53, TD-67
+- **Files**: `plugins/claudio-routines/runtime/providers/notion.py` (modify), `plugins/claudio-routines/runtime/providers/test_notion.py` (modify), `plugins/claudio-routines/runtime/roles.py` (modify), `plugins/claudio-routines/runtime/test_roles.py` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify)
+- **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
+- **Status**: Not Started
+
+### T-102: Weekly engine: state, window and features
+- `roles.ENGINES` gains `weekly`; a weekly routine takes issue tracker, code host, chat and document store sources, `owner`, `exclude.channels` and `digest`; the role check names the key path of an invalid value.
+- `weekly_state.py` holds the `weekly-1` schema; `weekly.py init`, `window` and `features` follow TD-68.
+- Tests: the window starts Monday 00:00 in the timezone, across a DST change; items per role with their keys, links and excerpts; excerpt and count caps; a chat unit in an excluded channel or the digest channel is dropped; a source not read is listed with its reason; an activity outside the window makes no item.
+- **Refs**: US-54, TD-68
+- **Files**: `plugins/claudio-routines/runtime/roles.py` (modify), `plugins/claudio-routines/runtime/test_roles.py` (modify), `plugins/claudio-routines/runtime/weekly_state.py` (new), `plugins/claudio-routines/runtime/weekly.py` (new), `plugins/claudio-routines/runtime/test_weekly.py` (new), `plugins/claudio-routines/README.md` (modify)
+- **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
+- **Blocked by**: T-99, T-100, T-101
+- **Rules**: BR-74, BR-75
+- **Status**: Not Started
+
+### T-103: Weekly judgment check, apply and message
+- `weekly.py judge`, `apply` and `message` follow TD-68.
+- Tests: each judgment rule rejects with its key path (unknown cite, link in text, line break, over 200 characters, over 220 words, section counts, owner length); an empty week accepts no accomplishment; apply writes the state and the record with no text; the message renders the sections in order, `None recorded`, the links per kind, the owner, and the sources line with a source not read.
+- **Refs**: US-54, TD-68
+- **Files**: `plugins/claudio-routines/runtime/weekly.py` (modify), `plugins/claudio-routines/runtime/weekly_message.py` (new), `plugins/claudio-routines/runtime/test_weekly.py` (modify), `plugins/claudio-routines/runtime/test_weekly_message.py` (new), `plugins/claudio-routines/README.md` (modify)
+- **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
+- **Blocked by**: T-102
+- **Rules**: BR-73, BR-75
+- **Status**: Not Started
+
+### T-104: Runnable weekly status template
+- `templates/weekly-status.md` loses the not-runnable marker and runs the steps of TD-69, with the save block, retry rule, raw folders and run folder of the other templates.
+- `example/config/routines/weekly-status.json` shows `engine: weekly` and one source per role.
+- Tests: the template renders without warnings; it calls each `weekly.py` command with the flags the engine has; its save, raw and run folder rules match the other runnable templates; the skeleton list no longer holds it.
+- **Refs**: US-55, TD-69
+- **Files**: `plugins/claudio-routines/skills/routines/templates/weekly-status.md` (modify), `plugins/claudio-routines/example/config/routines/weekly-status.json` (modify), `plugins/claudio-routines/skills/routines/scripts/test_routines.py` (modify), `plugins/claudio-routines/README.md` (modify)
+- **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
+- **Blocked by**: T-103
+- **Status**: Not Started
+
+### T-105: Weekly status rollout
+Owner-gated: needs the release tag, the tokens per place and an approved sync.
+1. Write the private routine file with `engine: weekly`, the owner identities and the sources over `api`.
+2. Copy the runnable template to the private `weekly-status-runtime.md` and point the routine file at it.
+3. Run one local report-only run and compare it with the last live weekly status.
+4. Sync the routine.
+- **Refs**: US-55
+- **Files**: none in this repository; the private repository's routine file and template copy change
+- **Verify**: `python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --private "$CLAUDIO_PRIVATE_DIR" && python3 plugins/claudio-routines/skills/routines/scripts/routines.py diff weekly-status-summary`
+- **Blocked by**: T-104
+- **Rules**: BR-73, BR-74, BR-75
+- **Status**: Not Started
 
 ## Related Features
 
