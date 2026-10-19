@@ -740,6 +740,7 @@ THE runtime reads the entry as 0 instead of a blind spot, when the entry declare
 - A stored warning whose cited sources or metric entry were not read in this run is deferred: held, with no verdict needed, its count kept, and no resolution; an owner's status edit applies and a decided or dropped status resolves on the first run that reads its sources *(BR-63)*
 - Coverage notes are the model's data about what a run did not cover: they are stored nowhere, count no run, and change no warning, check or blind spot count *(BR-64)*
 - A read that succeeds with no datapoint is a blind spot unless its entry sets `empty` to `zero`; a read that fails is always a blind spot *(BR-65)*
+- A relayed result reaches its file through the file-write tool, never through a shell command: source text never becomes part of a command *(BR-66)*
 
 ## Out of Scope
 
