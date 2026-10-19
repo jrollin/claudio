@@ -757,6 +757,17 @@ THE configuration lives in its routine file in the private repository and the st
 - [ ] A seed command converts the last stored state to the runtime state, validates it and keeps no message text *(AC-50.2)*
 - [ ] After the switch, a run reads no document store page *(AC-50.3)*
 
+### Replay a run on its collected data {#US-51}
+
+WHEN a local run ends
+THE run folder keeps every raw source result, sorted by role and source, and a replay rebuilds the run's collections from them with no network
+
+**Acceptance Criteria:**
+- [ ] Every source's raw results land under `<run>/raw/<role>/<source>/`: the connector results of an `mcp` source, and one record per HTTP call of an `api` source *(AC-51.1)*
+- [ ] An `api` record holds the method, the path with its query, the request body, the status, the `Link` response header and the decoded response, and no request header *(AC-51.2)*
+- [ ] A local run's folder lives under the place's `runs_dir`, named by routine and start time; without `runs_dir`, the run folder is a temporary folder under `/tmp` *(AC-51.3)*
+- [ ] `collect.py replay` rebuilds every collection of a run from its raw folder, byte-identical to the collections the run wrote, and fails naming the first request it holds no record for *(AC-51.4)*
+
 ## Business Rules
 
 - No private name, identifier, URL host or secret is committed to this public repository *(BR-1)*
@@ -828,6 +839,8 @@ THE configuration lives in its routine file in the private repository and the st
 - The recap state and its run records hold ids with their display names, timestamps, titles of at most 8 words and counts, never message text *(BR-67)*
 - Direct conversation content leaves the chat source only as a one-sentence summary in the digest channel *(BR-68)*
 - Scripts decide who wrote last, whether the owner answered, ages, lateness and landing sections; the model decides only what a message asks, its kind among those the facts allow, its summary and the reading *(BR-69)*
+- Raw results hold source content and stay out of git: the local runs folder is ignored by the private repository, and nothing under `raw/` reaches the state branch *(BR-70)*
+- A raw record never holds a credential: request headers are never recorded, and credentials only travel in request headers *(BR-71)*
 
 ## Out of Scope
 
