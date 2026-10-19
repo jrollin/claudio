@@ -883,21 +883,10 @@ class WindowCheckTest(unittest.TestCase):
         self.assertIn("is after to_ts", self.rejection({**self.WINDOW, "from_ts": ts(NOW) + 1}))
 
 
-class StubTest(unittest.TestCase):
+class CommandsTest(unittest.TestCase):
     def test_registers_every_subcommand_of_the_design(self):
         self.assertEqual(set(recap.COMMANDS), {"init", "seed", "window", "features", "judge", "apply", "message"})
 
-
-def stub_test(name):
-    def test(self):
-        code, _, err = run_cli(name)
-        self.assertEqual((code, f"{name}: not implemented yet" in err), (2, True))
-
-    return test
-
-
-for stub_name in recap.STUBS:
-    setattr(StubTest, f"test_{stub_name}_exits_2_as_not_implemented", stub_test(stub_name))
 
 
 class ScriptTest(FileCase):
@@ -918,8 +907,8 @@ class ScriptTest(FileCase):
                                  "--tz", TZ, "--lookback-working-days", "3", "--out", self.path("window.json"))
         self.assertEqual(result.returncode, 3)
 
-    def test_script_exits_2_for_a_stub(self):
-        self.assertEqual(self.run_script(recap.STUBS[0]).returncode, 2)
+    def test_script_exits_2_for_an_unknown_flag(self):
+        self.assertEqual(self.run_script("init", "--bogus").returncode, 2)
 
 
 if __name__ == "__main__":

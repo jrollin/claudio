@@ -4,14 +4,12 @@ import sys
 import recap_features
 import recap_judgment
 import recap_lifecycle
+import recap_message
 import recap_seed
 import recap_state
 import recap_window
 import roles
 import state
-
-STUBS = ("message",)
-
 
 def lookback_days(text):
     try:
@@ -43,11 +41,7 @@ def run_seed(args):
     return 0
 
 
-def run_stub(args):
-    raise state.InputError(f"{args.command}: not implemented yet")
-
-
-COMMANDS = {"init": run_init, "window": run_window, "seed": run_seed, "features": recap_features.run_features, "judge": recap_judgment.run_judge, "apply": recap_lifecycle.run_apply, **{name: run_stub for name in STUBS}}
+COMMANDS = {"init": run_init, "window": run_window, "seed": run_seed, "features": recap_features.run_features, "judge": recap_judgment.run_judge, "apply": recap_lifecycle.run_apply, "message": recap_message.run_message}
 
 
 def build_parser():
@@ -72,8 +66,7 @@ def build_parser():
         features.add_argument(flag, required=True, **({"choices": roles.PLACES} if flag == "--place" else {}))
     recap_judgment.add_judge_arguments(commands.add_parser("judge", help="check the judgment against the features; exit 3 names the first failure"))
     recap_lifecycle.add_apply_arguments(commands.add_parser("apply", help="apply the checked judgment: next state, summary and run record"))
-    for name in STUBS:
-        commands.add_parser(name, help="not implemented yet").add_argument("rest", nargs=argparse.REMAINDER)
+    recap_message.add_message_arguments(commands.add_parser("message", help="render the chat message from the summary, or a degraded message"))
     return parser
 
 

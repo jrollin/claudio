@@ -345,9 +345,6 @@ class InvalidSourceTest(SeedCase):
 
 
 class SeedCommandTest(SeedCase):
-    def test_is_not_a_stub(self):
-        self.assertNotIn("seed", recap.STUBS)
-
     def test_requires_from(self):
         self.assertEqual(run_cli("seed", "--digest", "chat-recap", "--out", self.path("state.json"))[0], 2)
 

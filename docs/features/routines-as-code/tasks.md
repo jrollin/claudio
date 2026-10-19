@@ -911,13 +911,13 @@ Runs in a local session with the chat, issue tracker, document store and observa
 - **Status**: Complete
 
 ### T-83: Recap message
-- `recap.py message` renders the layout of US-49 and TD-63, sets the post flag, and renders the degraded messages.
+- `recap.py message` renders the layout of US-49 and TD-63 and the degraded messages; the post flag comes from the summary `apply` writes.
 - Tests: a golden message; the baseline and limited-window summary lines; the sort order of Waiting on you; ⏰ on a late unit; a promise line; Already handled cut at 5 with `+N`; each link label and a reply link; empty sections skipped except Summary; no unit key, JSON or unchecked text; the post flag false when nothing is waiting, new or resolved; each degraded message.
 - **Refs**: US-49, TD-63
 - **Files**: `plugins/claudio-routines/runtime/recap_message.py` (new), `plugins/claudio-routines/runtime/test_recap_message.py` (new), `plugins/claudio-routines/runtime/fixtures/recap/message_golden.md` (new), `plugins/claudio-routines/runtime/recap.py` (modify)
 - **Blocked by**: T-82
 - **Rules**: BR-68
-- **Status**: Not Started
+- **Status**: Complete
 
 ### T-84: Seed the recap state
 - `recap.py seed --from <json>` converts the stored document store state into the runtime state (TD-64); `routines.py seed` accepts a routine with the `recap` engine.
