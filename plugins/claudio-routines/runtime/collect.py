@@ -10,6 +10,8 @@ from urllib.parse import urlsplit
 
 import config_tree
 import providers
+import recap_state
+import recap_window
 import roles
 import state
 import tribe_state
@@ -39,7 +41,11 @@ EMPTY_RECORDS = {
     "issue_tracker": {"issues": []},
 }
 
-STATE_CHECKERS = {roles.DEFAULT_ENGINE: state.check_state, roles.TRIBE_ENGINE: tribe_state.check_state}
+STATE_CHECKERS = {
+    roles.DEFAULT_ENGINE: state.check_state,
+    roles.TRIBE_ENGINE: tribe_state.check_state,
+    roles.RECAP_ENGINE: recap_state.check_state,
+}
 
 STEP_SPEC = {
     "done": state.BOOLEAN,
@@ -105,6 +111,13 @@ def check_fetch_window(document):
         raise state.Rejected("expected a boolean at retry_known_gaps")
 
 
+WINDOW_CHECKERS = {
+    roles.DEFAULT_ENGINE: check_fetch_window,
+    roles.TRIBE_ENGINE: check_fetch_window,
+    roles.RECAP_ENGINE: recap_window.check_window,
+}
+
+
 def config_zone(config):
     name = config.get("timezone")
     if not isinstance(name, str):
@@ -135,7 +148,18 @@ def select_entries(entries, run_state, window, today):
     return selected, deferred
 
 
+def recap_rereads(run_state):
+    rereads = []
+    for key, unit in sorted(run_state["units"].items()):
+        if unit["status"] in recap_state.HELD_STATUSES:
+            thread = recap_state.THREAD_KEY.fullmatch(key)
+            rereads.append({"kind": unit["kind"], "channel": unit["channel"], "root_ts": thread.group(2) if thread else None, "last_ts": unit["last_ts"]})
+    return rereads
+
+
 def state_options(run_state, engine, role, source, name):
+    if engine == roles.RECAP_ENGINE:
+        return {"rereads": recap_rereads(run_state)} if role == "chat" and source.get("searches") else {}
     if engine != roles.TRIBE_ENGINE:
         return {}
     if role == "chat":
@@ -259,9 +283,9 @@ def read_source(draft, where, read):
 def prepare(args, transport):
     config, routine, role_by_source = load_routine(args)
     source = transport_source(routine, args, transport)
-    window = state.load(args.window, "window", check_fetch_window)
-    window = {**window, "first_read_from_ts": first_read_from(routine, window), "timezone": config.get("timezone")}
     engine = routine.get("engine", roles.DEFAULT_ENGINE)
+    window = state.load(args.window, "window", WINDOW_CHECKERS[engine])
+    window = {**window, "first_read_from_ts": first_read_from(routine, window), "timezone": config.get("timezone")}
     run_state = state.load(args.state, "state", STATE_CHECKERS[engine])
     role = role_by_source[args.source]
     selected, deferred, kind = [], {}, role
@@ -283,11 +307,11 @@ def prepare(args, transport):
         "place": args.place,
         "window": {"from_ts": window["from_ts"], "to_ts": window["to_ts"]},
     }
-    cursor = conforming_cursor(base, EMPTY_RECORDS[kind], stored_cursor(run_state["cursors"], args.source, role, kind))
+    cursor = conforming_cursor(base, EMPTY_RECORDS[kind], stored_cursor(run_state.get("cursors", {}), args.source, role, kind))
     draft = Draft(base, EMPTY_RECORDS[kind], cursor, selected, deferred, skipped_reason(run_state, engine, source))
     provider = config["providers"][source["provider"]]
     options = state_options(run_state, engine, role, source, args.source)
-    configured = {key: value for key, value in source.items() if key != "threads"}
+    configured = {key: value for key, value in source.items() if key not in ("threads", "rereads")}
     return provider, {**configured, "name": args.source, "provider_config": provider, **options}, window, draft
 
 
@@ -423,10 +447,10 @@ def adapter_step(adapter, source, window, draft, responses, connector):
     return step
 
 
-def next_step(step, responses):
+def next_step(step, responses, cap=CALL_CAP):
     if step["done"]:
         return ended(step["partial"])
-    if len(responses) >= CALL_CAP:
+    if len(responses) >= cap:
         return ended(CALL_CAP_PARTIAL)
     fresh = [call for call in step["calls"] if call["id"] not in responses]
     if not fresh:
@@ -440,7 +464,7 @@ def plan_step(adapter, source, window, draft, directory, connector):
         responses = read_responses(directory, [item for item in response_ids(directory) if call_id.fullmatch(item)])
     except SourceUnreadable as error:
         return ended(failure_reason(error, connector))
-    return next_step(adapter_step(adapter, source, window, draft, responses, connector), responses)
+    return next_step(adapter_step(adapter, source, window, draft, responses, connector), responses, source.get("call_cap", CALL_CAP))
 
 
 def run_plan(args):

@@ -1016,14 +1016,17 @@ class EngineKeyTest(TreeCase):
     def test_loads_the_watch_engine(self):
         self.assertEqual(self.loaded(engine="watch")["engine"], "watch")
 
+    def test_loads_the_recap_engine(self):
+        self.assertEqual(self.loaded(engine="recap")["engine"], "recap")
+
     def test_rejects_an_unknown_engine_naming_the_key_path(self):
-        self.assertEqual(self.rejection("other"), "config.json: routines.prod-watch.engine: must be one of watch, tribe")
+        self.assertEqual(self.rejection("other"), "config.json: routines.prod-watch.engine: must be one of watch, tribe, recap")
 
     def test_rejects_an_unknown_engine_in_a_routine_file_naming_the_file(self):
-        self.assertEqual(self.rejection("other", in_file=True), "config/routines/prod-watch.json: engine: must be one of watch, tribe")
+        self.assertEqual(self.rejection("other", in_file=True), "config/routines/prod-watch.json: engine: must be one of watch, tribe, recap")
 
     def test_rejects_a_null_engine(self):
-        self.assertEqual(self.rejection(None), "config.json: routines.prod-watch.engine: must be one of watch, tribe")
+        self.assertEqual(self.rejection(None), "config.json: routines.prod-watch.engine: must be one of watch, tribe, recap")
 
 
 if __name__ == "__main__":

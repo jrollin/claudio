@@ -18,12 +18,17 @@ READ_STATUSES = ("ok", "missing")
 MONITOR_STATES = ("OK", "Alert", "Warn", "No Data", "Skipped", "Unknown", "Ignored")
 RULE_CAP = 500
 LOOKBACK_CAP = 31
+CALL_CAP_MAX = 300
 TREND_MIN = 7
 TREND_CAP = 31
 FIRST_READ_CAP = 31
-ENGINES = ("watch", "tribe")
+CHANNEL_TYPES = ("public_channel", "private_channel", "mpim", "im")
+ENGINES = ("watch", "tribe", "recap")
 DEFAULT_ENGINE = ENGINES[0]
 TRIBE_ENGINE = ENGINES[1]
+RECAP_ENGINE = ENGINES[2]
+RECAP_LANDINGS = ("waiting", "good_to_know")
+RECAP_LOOKBACK_CAP = 365
 PAGE_FROM_STATE = ("previous_page",)
 TREND_AGGREGATORS = ("max", "min", "sum", "avg", "last")
 COLLECTION_SCHEMA = 1
@@ -42,6 +47,7 @@ LINK_VALUES = ("id",)
 TITLE_VALUES = ("date",)
 DIGITS = re.compile(r"[0-9]+")
 DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+PLAIN_HOST = re.compile(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*")
 UTC_Z = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z")
 
 
@@ -76,6 +82,11 @@ class MapOf:
         self.non_empty = non_empty
 
 
+class Exact:
+    def __init__(self, spec):
+        self.spec = spec
+
+
 def _matches(pattern):
     return lambda value: isinstance(value, str) and pattern.fullmatch(value) is not None
 
@@ -105,6 +116,11 @@ UTC_TIME = Rule(_matches(UTC_Z), "must be a UTC timestamp ending in Z")
 DAY_TEXT = Rule(_is_day, "must be a day like 2026-01-31")
 PAGE_ID_TEXT = Rule(_matches(PAGE_ID), "must match ^[A-Za-z0-9-]+$")
 
+CHANNEL_TYPES_TEXT = Rule(
+    lambda value: isinstance(value, str) and all(part in CHANNEL_TYPES for part in value.split(",")),
+    "must be a comma list of " + ", ".join(CHANNEL_TYPES),
+)
+
 PLACE = {"runtime_dir": ABSOLUTE, "state_dir": ABSOLUTE}
 SOURCE = {"provider": TEXT, "transport": {"cloud": Choice(TRANSPORTS), "local": Choice(TRANSPORTS)}}
 PINNED_URL = Rule(_is_pinned_url, "must be an https URL with a host, a valid port and no user info, query or fragment")
@@ -122,7 +138,14 @@ ROLE_OPTIONS = {
         "pages": Omittable(ListOf(PAGE_ID_TEXT, non_empty=True)),
         "page_from_state": Omittable(Choice(PAGE_FROM_STATE)),
     },
-    "chat": {"channels": ListOf(TEXT, non_empty=True)},
+    "chat": {
+        "channels": Omittable(ListOf(TEXT, non_empty=True)),
+        "owner": Omittable(TEXT),
+        "searches": Omittable(ListOf(ANY, non_empty=True)),
+        "reactions": Omittable(BOOLEAN),
+        "search_page_cap": Omittable(Rule(lambda value: is_integer(value) and value >= 1, "must be an integer of at least 1")),
+        "call_cap": Omittable(Rule(lambda value: is_integer(value) and 1 <= value <= CALL_CAP_MAX, f"must be an integer from 1 to {CALL_CAP_MAX}")),
+    },
     "code_host": {
         "repos": ListOf(Rule(_matches(REPO), "must be an owner/name repository"), non_empty=True),
         "query": Omittable(STRING),
@@ -146,6 +169,39 @@ LABEL = Rule(
     lambda value: is_label(value) and value != "",
     f"must be a non-empty string of at most {LABEL_CAP} characters without control characters",
 )
+SEARCH = {
+    "name": LABEL,
+    "filters": TEXT,
+    "channel_types": Omittable(CHANNEL_TYPES_TEXT),
+    "keywords": Omittable(ListOf(TEXT, non_empty=True)),
+    "since": ANY,
+}
+SINCE_LOOKBACK = {
+    "lookback_days": Rule(lambda value: is_integer(value) and 1 <= value <= LOOKBACK_CAP, f"must be an integer from 1 to {LOOKBACK_CAP}")
+}
+
+
+def _whole_days(low, high):
+    return Rule(lambda value: is_integer(value) and low <= value <= high, f"must be an integer from {low} to {high}")
+
+
+RECAP_KEYS = {
+    "owner": TEXT,
+    "workspace": Rule(_matches(PLAIN_HOST), "must be a plain host name such as chat.example.test"),
+    "groups": ListOf(Exact({"id": TEXT, "label": TEXT, "lands_in": Choice(RECAP_LANDINGS)})),
+    "announcement": Exact({"channels": Omittable(ListOf(TEXT)), "topics": Omittable(ListOf(TEXT))}),
+    "window": Exact({"lookback_working_days": _whole_days(1, RECAP_LOOKBACK_CAP)}),
+    "exclude": Exact({"authors": Omittable(ListOf(TEXT)), "channels": Omittable(ListOf(TEXT)), "keep_bots": Omittable(ListOf(TEXT))}),
+    "history": Omittable(
+        Exact(
+            {
+                "late_after_working_days": Omittable(_whole_days(0, RECAP_LOOKBACK_CAP)),
+                "drop_after_days": Omittable(_whole_days(1, RECAP_LOOKBACK_CAP)),
+            }
+        )
+    ),
+    "rules": ListOf(TEXT, non_empty=True),
+}
 KEY_PATH = Rule(_matches(KEY_PATH_TEXT), "must be a dotted path of object keys")
 PAGE_LINK = Rule(
     lambda value: isinstance(value, str) and "{{id}}" in value, "must be a string holding the placeholder {{id}}"
@@ -277,7 +333,29 @@ ROLE_SCHEMAS = {
                     "text": STRING,
                     "link": STRING,
                 }
-            )
+            ),
+            "units": Omittable(
+                ListOf(
+                    {
+                        "channel": STRING,
+                        "name": STRING,
+                        "participants": ListOf({"id": STRING, "name": STRING}),
+                        "messages": ListOf(
+                            {
+                                "user": STRING,
+                                "name": STRING,
+                                "bot": BOOLEAN,
+                                "ts": STRING,
+                                "root_ts": Nullable(STRING),
+                                "mentions": ListOf(STRING),
+                                "group_mentions": ListOf(STRING),
+                                "text": STRING,
+                                "owner_reacted": Omittable(BOOLEAN),
+                            }
+                        ),
+                    }
+                )
+            ),
         },
         {"ts": MapOf(STRING)},
     ),
@@ -354,6 +432,8 @@ def _conform(value, spec, path, error, exact):
             raise error(f"{path}: must be a non-empty mapping")
         for key in sorted(value):
             _conform(value[key], spec.spec, join(path, key), error, exact)
+    elif isinstance(spec, Exact):
+        _conform_fields(value, spec.spec, path, error, True)
     else:
         _conform_fields(value, spec, path, error, exact)
 
@@ -411,17 +491,20 @@ def validate_config(config, routine, place, role_of=None):
     routine_path = f"routines.{routine}"
     chosen = _config_field(routines, "routines", routine, {})
     _conform(chosen, {"first_read_days": FIRST_READ_DAYS, "engine": ENGINE}, routine_path, ConfigError, exact=False)
+    engine = chosen.get("engine", DEFAULT_ENGINE)
+    if engine == RECAP_ENGINE:
+        _conform(chosen, RECAP_KEYS, routine_path, ConfigError, exact=False)
     sources = _config_field(chosen, routine_path, "sources", MapOf({}, non_empty=True))
     for name in sorted(sources):
         if SOURCE_NAME.fullmatch(name) is None:
             raise ConfigError(f"{routine_path}.sources.{name}: the source name must match ^[a-z][a-z0-9-]*$")
     for name in sorted(sources):
-        _validate_source(sources[name], f"{routine_path}.sources.{name}", providers, place, role_of, chosen.get("engine", DEFAULT_ENGINE))
+        _validate_source(sources[name], f"{routine_path}.sources.{name}", providers, place, role_of, engine, chosen.get("owner"))
     if chosen.get("engine") == TRIBE_ENGINE:
         _validate_publication(chosen, routine_path, providers)
 
 
-def _validate_source(source, path, providers, place, role_of, engine):
+def _validate_source(source, path, providers, place, role_of, engine, owner=None):
     _conform(source, SOURCE, path, ConfigError, exact=False)
     name = source["provider"]
     if name not in providers:
@@ -441,10 +524,43 @@ def _validate_source(source, path, providers, place, role_of, engine):
     if role not in ROLES:
         raise ConfigError(f"{provider_path}.adapter: the adapter role must be one of " + ", ".join(ROLES))
     _conform(source, ROLE_OPTIONS[role], path, ConfigError, exact=False)
+    if engine == RECAP_ENGINE:
+        _validate_recap_source(source, path, role, owner)
     if role == "observability" and source["kind"] != "monitors" and "discovery_query" in source:
         raise ConfigError(f"{path}.discovery_query: only a monitors source takes a discovery query")
     if role == "document_store":
         _validate_page_options(source, path, engine)
+    if role == "chat":
+        _validate_chat_options(source, path)
+
+
+def _validate_recap_source(source, path, role, owner):
+    if role != "chat":
+        raise ConfigError(f"{path}.provider: a {RECAP_ENGINE} routine takes chat sources only, this adapter's role is {role}")
+    if source.get("owner") != owner:
+        raise ConfigError(f"{path}.owner: must equal the routine owner")
+
+
+def _validate_chat_options(source, path):
+    if "channels" not in source and "searches" not in source:
+        raise ConfigError(f"{path}: a chat source sets channels or searches")
+    if ("searches" in source or source.get("reactions") is True) and "owner" not in source:
+        raise ConfigError(f"{path}.owner: missing, a chat source with searches or reactions names its owner")
+    seen = {}
+    for index, search in enumerate(source.get("searches", [])):
+        search_path = f"{path}.searches[{index}]"
+        _conform(search, SEARCH, search_path, ConfigError, exact=True)
+        if search["name"] in seen:
+            raise ConfigError(f"{search_path}.name: duplicates {path}.searches[{seen[search['name']]}].name")
+        seen[search["name"]] = index
+        if search["since"] != "window":
+            _validate_since(search["since"], f"{search_path}.since")
+
+
+def _validate_since(since, path):
+    if not isinstance(since, dict):
+        raise ConfigError(f'{path}: must be "window" or a mapping with lookback_days')
+    _conform(since, SINCE_LOOKBACK, path, ConfigError, exact=True)
 
 
 def _validate_page_options(source, path, engine):

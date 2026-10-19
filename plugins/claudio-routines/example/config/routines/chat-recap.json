@@ -1,5 +1,89 @@
 {
   "id": "<chat-recap-routine-id>",
   "template": "chat-recap",
-  "cron": "CRON_TZ=Europe/Paris 0 9,14 * * 1-5"
+  "engine": "recap",
+  "cron": "CRON_TZ=Europe/Paris 0 9,14 * * 1-5",
+  "values": {
+    "digest": {
+      "name": "<recap-name>",
+      "slug": "chat-recap"
+    }
+  },
+  "owner": "<chat-user-id>",
+  "workspace": "chat.example.test",
+  "groups": [
+    {
+      "id": "<chat-group-id-1>",
+      "label": "<group-label-1>",
+      "lands_in": "waiting"
+    },
+    {
+      "id": "<chat-group-id-2>",
+      "label": "<group-label-2>",
+      "lands_in": "good_to_know"
+    }
+  ],
+  "announcement": {
+    "channels": [
+      "<chat-channel-id-1>"
+    ],
+    "topics": [
+      "<topic-to-keep>"
+    ]
+  },
+  "window": {
+    "lookback_working_days": 3
+  },
+  "exclude": {
+    "authors": [
+      "<chat-user-id-to-skip>"
+    ],
+    "channels": [
+      "<chat-channel-id-to-skip>"
+    ],
+    "keep_bots": []
+  },
+  "history": {
+    "late_after_working_days": 3,
+    "drop_after_days": 14
+  },
+  "rules": [
+    "<rule-for-an-ask-the-owner-must-answer>"
+  ],
+  "sources": {
+    "chat": {
+      "provider": "chat",
+      "owner": "<chat-user-id>",
+      "reactions": true,
+      "call_cap": 200,
+      "searches": [
+        {
+          "name": "conversations",
+          "filters": "<direct-conversation-filter>",
+          "channel_types": "im,mpim",
+          "since": "window"
+        },
+        {
+          "name": "mentions",
+          "filters": "<owner-and-group-mention-filters>",
+          "since": "window"
+        },
+        {
+          "name": "own-threads",
+          "filters": "<owner-author-filter>",
+          "since": {
+            "lookback_days": 7
+          }
+        },
+        {
+          "name": "announcements",
+          "filters": "<announcement-channel-filter>",
+          "keywords": [
+            "<topic-to-keep>"
+          ],
+          "since": "window"
+        }
+      ]
+    }
+  }
 }

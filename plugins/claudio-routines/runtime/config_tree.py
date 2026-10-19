@@ -42,7 +42,7 @@ def _routines_folder(directory):
     return os.path.join(directory, *ROUTINES_DIR.split("/"))
 
 
-def _has_file(directory, slug):
+def has_file(directory, slug):
     return SLUG.fullmatch(slug) is not None and os.path.lexists(
         os.path.join(_routines_folder(directory), slug + ".json")
     )
@@ -57,13 +57,13 @@ def _where(slug, in_file):
 
 
 def label(directory, slug):
-    return _where(slug, _has_file(directory, slug))
+    return _where(slug, has_file(directory, slug))
 
 
 def locate(message, directory):
     def rewrite(match):
         slug = match.group(1)
-        return f"{_file_name(slug)}: " if _has_file(directory, slug) else match.group(0)
+        return f"{_file_name(slug)}: " if has_file(directory, slug) else match.group(0)
 
     return KEY_PATH.sub(rewrite, message)
 
@@ -120,7 +120,7 @@ def _read_routine_files(directory, only):
     if only is None:
         slugs = _listed_slugs(folder)
     else:
-        slugs = [only] if _has_file(directory, only) else []
+        slugs = [only] if has_file(directory, only) else []
     files = {}
     for slug in slugs:
         document = _read_object(os.path.join(folder, slug + ".json"), _file_name(slug))

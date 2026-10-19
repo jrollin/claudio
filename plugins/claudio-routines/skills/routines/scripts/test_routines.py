@@ -36,8 +36,17 @@ DATA_GUARD = (
 RUN_AT = "20261017T090000Z"
 MARKER = "<!-- not runnable -->"
 MARKED = MARKER + "\nPost to {{chat.channel}}.\n"
-SKELETONS = ("chat-recap", "weekly-status")
+SKELETONS = ("weekly-status",)
 DENY = ["PushNotification", "Bash(sleep *)", "Monitor"]
+CHAT_OWNER = "U" + "1" * 6
+CHAT_PROVIDERS = {
+    "chat": {
+        "adapter": "slack",
+        "api": {"base_url": "https://chat.example.test", "credentials": {"token": "CHAT_TOKEN"}},
+        "mcp": {"connectors": {"cloud": "chat-cloud", "local": "chat-local"}},
+    }
+}
+CHAT_TRANSPORT = {"cloud": "mcp", "local": "api"}
 PINNED_ENGINE = (
     "import argparse\n\nPLACES = ('cloud',)\n\n\n"
     "def build_parser():\n"
@@ -189,6 +198,34 @@ def make_config(template="prod-watch", values=None, routine_values=None, places=
 
 def make_routine(routine_id="trig_test_a", template="prod-watch", values=None):
     return {"id": routine_id, "template": template, "cron": CRON, "values": values or {}}
+
+
+def checked_routine(routine_id="trig_test_a", template="prod-watch", values=None, **keys):
+    source = {"provider": "chat", "transport": CHAT_TRANSPORT, "channels": ["C" + "1" * 6]}
+    return dict(make_routine(routine_id, template, values), sources={"chat": source}, **keys)
+
+
+def recap_routine(**changes):
+    source = {
+        "provider": "chat",
+        "transport": CHAT_TRANSPORT,
+        "owner": CHAT_OWNER,
+        "searches": [{"name": "dms", "filters": "is:dm", "since": "window"}],
+    }
+    routine = checked_routine(
+        template="chat-recap",
+        engine="recap",
+        owner=CHAT_OWNER,
+        workspace="chat.example.test",
+        groups=[{"id": "S" + "1" * 6, "label": "Core team", "lands_in": "waiting"}],
+        announcement={},
+        window={"lookback_working_days": 3},
+        exclude={},
+        rules=["An ask needs a reply from the owner."],
+    )
+    routine["sources"] = {"chat": source}
+    routine.update(changes)
+    return {key: value for key, value in routine.items() if value is not None}
 
 
 def tree(directory):
@@ -1932,9 +1969,15 @@ class PrivateLintTest(PinnedClaudioCase):
         path = self.write_template("prod-watch", "{{chat.channel}}\nPost to channel-test now\n")
         self.assertEqual(self.lint()[2], self.literal_warning(path, 2, "chat.channel"))
 
+    def write_checked_routine_file(self, slug, routine):
+        config = json.loads(read(os.path.join(self.private, "config.json")))
+        config["providers"] = CHAT_PROVIDERS
+        self.write_config(config)
+        self.write_routine_file(slug, routine)
+
     def test_value_of_a_routine_kept_in_a_file_is_a_literal_value_warning(self):
         self.write_routines({}, {})
-        self.write_routine_file("prod-watch", make_routine(values={"docs": {"page": "page-12345"}}))
+        self.write_checked_routine_file("prod-watch", checked_routine(values={"docs": {"page": "page-12345"}}))
         path = self.write_template("prod-watch", "{{docs.page}}\nsee page-12345\n")
         self.assertEqual(self.lint()[2], self.literal_warning(path, 2, "docs.page"))
 
@@ -1982,7 +2025,7 @@ class PrivateLintTest(PinnedClaudioCase):
 
     def test_inline_and_file_routines_setting_the_same_value_get_a_repeated_value_warning(self):
         self.write_routines({"a": make_routine("trig_test_a", values={"digest": {"channel": "ab"}})}, {})
-        self.write_routine_file("b", make_routine("trig_test_b", values={"digest": {"channel": "ab"}}))
+        self.write_checked_routine_file("b", checked_routine("trig_test_b", values={"digest": {"channel": "ab"}}))
         self.write_template("prod-watch", "{{digest.channel}}\n")
         self.assertEqual(self.lint()[2], self.repeated_warning("a", "b", "digest.channel"))
 
@@ -1990,6 +2033,74 @@ class PrivateLintTest(PinnedClaudioCase):
         self.write_routines({"prod-watch": make_routine(values={"digest": {"channel": "ab"}})}, {"digest": {"channel": "ab"}})
         self.write_template("prod-watch", "{{digest.channel}}\n")
         self.assertEqual(self.lint()[2], "")
+
+
+class RoutineRolesLintTest(PinnedClaudioCase):
+    def setUp(self):
+        super().setUp()
+        config = make_config(sha=self.sha)
+        config.update(providers=CHAT_PROVIDERS, routines={})
+        self.write_config(config)
+
+    def lint_file(self, slug, routine, template="{{runtime.dir}} {{chat.channel}}\n"):
+        self.write_routine_file(slug, routine)
+        self.write_template(routine["template"], template)
+        return self.lint()
+
+    def tribe_routine(self, **changes):
+        values = runtime_module("support").publication_values("chat")
+        values["page"].update(changes)
+        return checked_routine(template="tribe-digest", engine="tribe", **values)
+
+    def test_a_valid_recap_routine_file_passes(self):
+        self.assertEqual(self.lint_file("chat-recap", recap_routine())[:2], (0, ""))
+
+    def test_a_recap_key_out_of_range_exits_2_naming_the_file_and_the_key_path(self):
+        code, _, stderr = self.lint_file("chat-recap", recap_routine(window={"lookback_working_days": 0}))
+        path = "config/routines/chat-recap.json: window.lookback_working_days"
+        self.assertEqual((code, stderr), (2, f"routines.py: {path}: must be an integer from 1 to 365\n"))
+
+    def test_a_missing_recap_key_exits_2_naming_its_key_path(self):
+        stderr = self.lint_file("chat-recap", recap_routine(window={}))[2]
+        self.assertEqual(stderr, "routines.py: config/routines/chat-recap.json: window.lookback_working_days: missing\n")
+
+    def test_an_unexpected_nested_recap_key_exits_2_naming_its_key_path(self):
+        stderr = self.lint_file("chat-recap", recap_routine(exclude={"author": ["U" + "2" * 6]}))[2]
+        self.assertEqual(stderr, "routines.py: config/routines/chat-recap.json: exclude.author: unexpected key\n")
+
+    def test_a_recap_source_of_another_owner_exits_2_naming_its_key_path(self):
+        routine = recap_routine()
+        routine["sources"]["chat"]["owner"] = "U" + "9" * 6
+        stderr = self.lint_file("chat-recap", routine)[2]
+        self.assertEqual(stderr, "routines.py: config/routines/chat-recap.json: sources.chat.owner: must equal the routine owner\n")
+
+    def test_a_valid_tribe_routine_file_passes(self):
+        self.assertEqual(self.lint_file("tribe-digest", self.tribe_routine())[:2], (0, ""))
+
+    def test_a_tribe_key_out_of_shape_exits_2_naming_the_file_and_the_key_path(self):
+        code, _, stderr = self.lint_file("tribe-digest", self.tribe_routine(link="https://example.test/p/"))
+        path = "config/routines/tribe-digest.json: page.link"
+        self.assertEqual((code, stderr), (2, f"routines.py: {path}: must be a string holding the placeholder {{{{id}}}}\n"))
+
+    def test_a_key_invalid_for_the_second_place_only_is_reported(self):
+        config = json.loads(read(os.path.join(self.private, "config.json")))
+        config["providers"] = {"chat": dict(CHAT_PROVIDERS["chat"], mcp={"connectors": {"cloud": "chat-cloud"}})}
+        self.write_config(config)
+        routine = checked_routine()
+        routine["sources"]["chat"]["transport"] = {"cloud": "mcp", "local": "mcp"}
+        stderr = self.lint_file("prod-watch", routine)[2]
+        self.assertEqual(stderr, "routines.py: providers.chat.mcp.connectors.local: missing\n")
+
+    def test_a_routine_file_without_sources_under_a_marked_template_is_not_checked(self):
+        routine = make_routine()
+        self.assertEqual(self.lint_file("prod-watch", routine, MARKED)[:2], (0, ""))
+
+    def test_a_routine_file_without_sources_under_a_runtime_template_exits_2(self):
+        code, _, stderr = self.lint_file("prod-watch", make_routine())
+        self.assertEqual((code, stderr), (2, "routines.py: config/routines/prod-watch.json: sources: missing\n"))
+
+    def test_a_prompt_only_routine_file_without_sources_is_not_checked(self):
+        self.assertEqual(self.lint_file("prod-watch", make_routine(), "Post to {{chat.channel}}.\n")[:2], (0, ""))
 
 
 class SettingsLintTest(PinnedClaudioCase):
@@ -2190,7 +2301,7 @@ class NoEngineSeedTest(Refusal, SeedCase):
         self.write_config(config)
 
     def cause(self):
-        return f"routine {self.slug} has engine watch: seeding needs engine tribe"
+        return f"routine {self.slug} has engine watch: seeding needs engine tribe or recap"
 
 
 class WatchEngineSeedTest(Refusal, SeedCase):
@@ -2200,7 +2311,7 @@ class WatchEngineSeedTest(Refusal, SeedCase):
         self.write_config(config)
 
     def cause(self):
-        return f"routine {self.slug} has engine watch: seeding needs engine tribe"
+        return f"routine {self.slug} has engine watch: seeding needs engine tribe or recap"
 
 
 class UnknownRoutineSeedTest(Refusal, SeedCase):
@@ -2328,6 +2439,228 @@ class SeedArgumentTest(SeedCase):
         self.assertEqual((code, "private directory not set" in stderr), (2, True))
 
 
+RECAP_CHANNEL = "C" + "1" * 6
+RECAP_THREAD = f"thread-{'C' + '2' * 6}-1791990000.000100"
+
+
+def recap_source_unit(channel, **fields):
+    unit = {
+        "kind": "dm",
+        "channel": channel,
+        "title": "Review the export plan",
+        "permalink": f"https://chat.example.test/archives/{channel}/p1791990730",
+        "first_seen": 1791963900,
+        "last_ts": 1792000330,
+        "status": "waiting",
+        "runs_waiting": 2,
+        "late": "3 working days",
+    }
+    return {**unit, **fields}
+
+
+def recap_source():
+    return {
+        "schema": 1,
+        "digest": "recap",
+        "run": {
+            "at": "2026-10-15T07:45:00Z",
+            "previous_at": "2026-10-14T07:45:00Z",
+            "sources_last_edited": "2026-10-01",
+            "window": {"from_ts": 1791963900, "to_ts": 1792050300},
+            "models": {"main": "model-a"},
+            "posted": True,
+        },
+        "units": {
+            f"dm-{RECAP_CHANNEL}": recap_source_unit(RECAP_CHANNEL),
+            RECAP_THREAD: recap_source_unit("C" + "2" * 6, kind="thread", status="promise", runs_waiting=1, late=None),
+        },
+        "blind_spots": ["mentions search cut after 10 pages"],
+    }
+
+
+class RecapSeedCase(SeedCase):
+    slug = "chat-recap"
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.object(routines, "load_config", side_effect=lambda private: self.config())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def config(self):
+        config = make_config(template="chat-recap", places=make_places(local={"runtime_dir": self.runtime_dir}), sha=git(self.runtime_dir, "rev-parse", "HEAD"))
+        config["routines"] = {self.slug: {"engine": "recap", "id": "trig_test_a", "template": "chat-recap", "cron": CRON}}
+        return config
+
+    def source(self, document=None):
+        path = os.path.join(self.root, "source.json")
+        write(path, json.dumps(recap_source() if document is None else document))
+        return path
+
+    def seed_from(self, *flags):
+        return self.run_private("seed", self.slug, *flags, "--out", self.out)
+
+
+class RecapSeededStateTest(RecapSeedCase):
+    def setUp(self):
+        super().setUp()
+        self.before = tree(self.private)
+        self.code, self.stdout, self.stderr = self.seed_from("--from", self.source())
+
+    def test_exits_0(self):
+        self.assertEqual(self.code, 0)
+
+    def test_writes_a_state_that_passes_the_recap_state_check(self):
+        self.assertIsNone(runtime_module("recap_state").check_state(json.loads(read(self.out))))
+
+    def test_names_the_state_after_the_routine(self):
+        self.assertEqual(json.loads(read(self.out))["digest"], self.slug)
+
+    def test_drops_the_permalinks(self):
+        self.assertNotIn("example.test", read(self.out))
+
+    def test_prints_the_seeded_state_summary(self):
+        expected = (
+            f"seeded {self.slug}: state written to {self.out}\n"
+            "run at 2026-10-15T07:45:00Z, previous run 2026-10-14T07:45:00Z\n"
+            "units: 2\n"
+            f"  dm-{RECAP_CHANNEL}: waiting, runs waiting 2, late 3 working days\n"
+            f"  {RECAP_THREAD}: promise, runs waiting 1\n"
+            "blind spots: 0\n"
+        )
+        self.assertEqual(self.stdout, expected)
+
+    def test_prints_nothing_on_stderr(self):
+        self.assertEqual(self.stderr, "")
+
+    def test_writes_nothing_but_the_out_file(self):
+        self.assertEqual(tree(self.private), self.before)
+
+
+class RecapDigestNameSeedTest(RecapSeedCase):
+    def config(self):
+        config = super().config()
+        config["routines"][self.slug]["values"] = {"digest": {"name": "Chat recap"}}
+        return config
+
+    def test_names_the_state_after_the_digest_value(self):
+        self.seed_from("--from", self.source())
+        self.assertEqual(json.loads(read(self.out))["digest"], "Chat recap")
+
+
+class RecapUnmappableSeedTest(RecapSeedCase):
+    def setUp(self):
+        super().setUp()
+        source = recap_source()
+        source["units"][RECAP_THREAD]["status"] = "done"
+        self.code, self.stdout, self.stderr = self.seed_from("--from", self.source(source))
+
+    def test_exits_3(self):
+        self.assertEqual(self.code, 3)
+
+    def test_names_the_key_path_of_the_unit_field(self):
+        self.assertIn(f"units.{RECAP_THREAD}.status", self.stderr)
+
+    def test_writes_no_state(self):
+        self.assertFalse(os.path.exists(self.out))
+
+    def test_prints_no_summary(self):
+        self.assertEqual(self.stdout, "")
+
+
+class RecapPageSeedTest(RecapSeedCase):
+    def setUp(self):
+        super().setUp()
+        self.code, _, self.stderr = self.seed_from("--page", self.source())
+
+    def test_exits_2(self):
+        self.assertEqual(self.code, 2)
+
+    def test_asks_for_the_stored_state(self):
+        self.assertIn(f"routine {self.slug} has engine recap: seeding takes --from <stored state>, not --page", self.stderr)
+
+    def test_writes_no_state(self):
+        self.assertFalse(os.path.exists(self.out))
+
+
+class TribeFromSeedTest(SeedCase):
+    def setUp(self):
+        super().setUp()
+        self.code, _, self.stderr = self.run_private("seed", self.slug, "--from", self.valid_page("page.json"), "--out", self.out)
+
+    def test_exits_2(self):
+        self.assertEqual(self.code, 2)
+
+    def test_asks_for_the_digest_pages(self):
+        self.assertIn(f"routine {self.slug} has engine tribe: seeding takes --page <digest page>, not --from", self.stderr)
+
+    def test_writes_no_state(self):
+        self.assertFalse(os.path.exists(self.out))
+
+
+class RecapSeedArgumentTest(RecapSeedCase):
+    def test_requires_a_source(self):
+        self.assertEqual(self.seed_from()[0], 2)
+
+    def test_refuses_a_page_with_a_stored_state(self):
+        self.assertEqual(self.seed_from("--from", self.source(), "--page", self.source())[0], 2)
+
+    def test_requires_an_out_file(self):
+        self.assertEqual(self.run_private("seed", self.slug, "--from", self.source())[0], 2)
+
+
+class SeedRoutingTest(unittest.TestCase):
+    def config(self, **routine):
+        return {"routines": {"chat-recap": routine}}
+
+    def arguments(self, engine, config, **flags):
+        args = argparse.Namespace(**{"slug": "chat-recap", "out": "state.json", "page": None, "source": None, **flags})
+        return routines.seed_arguments(engine, config, args, "/private")
+
+    def test_a_recap_routine_seeds_with_the_recap_engine(self):
+        self.assertEqual(routines.seed_engine(self.config(engine="recap"), "chat-recap"), "recap")
+
+    def test_a_tribe_routine_seeds_with_the_tribe_engine(self):
+        self.assertEqual(routines.seed_engine(self.config(engine="tribe"), "chat-recap"), "tribe")
+
+    def test_a_watch_routine_is_refused(self):
+        with self.assertRaisesRegex(routines.UsageError, "routine chat-recap has engine watch: seeding needs engine tribe or recap"):
+            routines.seed_engine(self.config(), "chat-recap")
+
+    def test_an_unknown_engine_is_refused(self):
+        with self.assertRaisesRegex(routines.UsageError, "has engine batch: seeding needs engine tribe or recap"):
+            routines.seed_engine(self.config(engine="batch"), "chat-recap")
+
+    def test_recap_arguments_carry_the_source_the_digest_and_the_out_file(self):
+        self.assertEqual(
+            self.arguments("recap", self.config(engine="recap"), source="source.json"),
+            ["--from", "source.json", "--digest", "chat-recap", "--out", "state.json"],
+        )
+
+    def test_recap_digest_is_the_digest_name_value(self):
+        config = self.config(engine="recap", values={"digest": {"name": "Chat recap"}})
+        self.assertEqual(self.arguments("recap", config, source="source.json")[3], "Chat recap")
+
+    def test_recap_digest_name_must_be_a_string(self):
+        config = self.config(engine="recap", values={"digest": {"name": 3}})
+        with self.assertRaisesRegex(routines.UsageError, "routine chat-recap: values digest.name must be a string"):
+            self.arguments("recap", config, source="source.json")
+
+    def test_recap_arguments_refuse_pages(self):
+        with self.assertRaisesRegex(routines.UsageError, "seeding takes --from <stored state>, not --page"):
+            self.arguments("recap", self.config(engine="recap"), page=["page.json"])
+
+    def test_tribe_arguments_carry_each_page(self):
+        self.assertEqual(
+            self.arguments("tribe", self.config(engine="tribe"), page=["a.json", "b.json"]),
+            ["--routine", "chat-recap", "--config", "/private/config.json", "--out", "state.json", "--page", "a.json", "--page", "b.json"],
+        )
+
+    def test_tribe_arguments_refuse_a_stored_state(self):
+        with self.assertRaisesRegex(routines.UsageError, "seeding takes --page <digest page>, not --from"):
+            self.arguments("tribe", self.config(engine="tribe"), source="source.json")
+
+
 class SkillSeedTest(unittest.TestCase):
     def setUp(self):
         self.steps = skill_steps("Seed")
@@ -2380,6 +2713,12 @@ class SkillSeedTest(unittest.TestCase):
     def test_seed_stops_on_a_refused_routine(self):
         self.assertIn("engine is not `tribe`", self.section)
 
+    def test_seed_runs_a_recap_routine_from_its_stored_state(self):
+        self.assertIn("R seed <slug> --from <dir>/source.json --out <dir>/state.json", self.section)
+
+    def test_seed_fetches_the_stored_state_of_a_recap_routine_into_the_source_file(self):
+        self.assertIn("write the JSON of its state to `<dir>/source.json`", self.section)
+
     def test_seed_states_that_nothing_is_pushed_without_approval(self):
         self.assertIn("Never push the state without the owner's explicit approval", self.section)
 
@@ -2428,6 +2767,32 @@ class TribeLintTest(PinnedClaudioCase):
         self.assertEqual(self.lint_private("{{chat.channel}}\ntribe.py seed --page p\n")[:2], (0, ""))
 
 
+class RecapLintTest(PinnedClaudioCase):
+    def lint_public(self, text):
+        path = self.write_template("skeleton", text, self.public)
+        return run("lint", "--public")[:2] + (path,)
+
+    def test_public_unknown_recap_command_fails(self):
+        code, stdout, path = self.lint_public("recap.py replay --state s\n")
+        self.assertEqual((code, stdout), (1, f"{path}:1:recap-command\n"))
+
+    def test_public_unknown_recap_flag_fails(self):
+        code, stdout, path = self.lint_public("recap.py window --bogus x\n")
+        self.assertEqual((code, stdout), (1, f"{path}:1:recap-flag\n"))
+
+    def test_public_known_recap_commands_and_flags_pass(self):
+        text = (
+            "recap.py init --digest d --out s\n"
+            "recap.py window --state s --now t --tz z --lookback-working-days 3 --report-only --out w\n"
+            "recap.py judge --features f --judgment j\n"
+        )
+        self.assertEqual(self.lint_public(text)[:2], (0, ""))
+
+    def test_private_recap_call_against_a_pinned_tree_without_it_fails(self):
+        path = self.write_template("prod-watch", "{{chat.channel}}\nrecap.py window --state s\n")
+        self.assertEqual(self.lint()[:2], (1, f"{path}:2:recap-missing\n"))
+
+
 class PluginCacheLayoutTest(unittest.TestCase):
     def setUp(self):
         root = tempfile.mkdtemp()
@@ -2470,30 +2835,31 @@ class ShippedFilesTest(Case):
     def test_shipped_templates_pass_the_public_lint(self):
         self.assertEqual(run("lint", "--public")[:2], (0, ""))
 
-    def test_the_two_skeletons_are_marked_not_runnable(self):
+    def test_the_skeleton_is_marked_not_runnable(self):
         marked = [lint.is_marked(read(os.path.join(SHIPPED_TEMPLATES, f"{name}.md"))) for name in SKELETONS]
-        self.assertEqual(marked, [True, True])
+        self.assertEqual(marked, [True])
 
-    def test_the_two_skeletons_carry_no_marker_near_miss(self):
+    def test_the_skeleton_carries_no_marker_near_miss(self):
         near = [lint.near_miss_marker(read(os.path.join(SHIPPED_TEMPLATES, f"{name}.md"))) for name in SKELETONS]
-        self.assertEqual(near, [False, False])
+        self.assertEqual(near, [False])
 
-    def test_prod_watch_and_the_setup_script_are_not_marked(self):
-        marked = [lint.is_marked(read(os.path.join(SHIPPED_TEMPLATES, name))) for name in ("prod-watch.md", "setup-env.sh")]
-        self.assertEqual(marked, [False, False])
+    def test_the_runnable_templates_and_the_setup_script_are_not_marked(self):
+        names = ("prod-watch.md", "tribe-digest.md", "chat-recap.md", "setup-env.sh")
+        marked = [lint.is_marked(read(os.path.join(SHIPPED_TEMPLATES, name))) for name in names]
+        self.assertEqual(marked, [False] * len(names))
 
-    def test_the_two_skeletons_hold_the_four_sections(self):
+    def test_the_skeleton_holds_the_four_sections(self):
         sections = ("## Purpose\n", "## Sources\n", "## Steps\n", "## Outputs\n")
         held = [all(section in read(os.path.join(SHIPPED_TEMPLATES, f"{name}.md")) for section in sections) for name in SKELETONS]
-        self.assertEqual(held, [True, True])
+        self.assertEqual(held, [True])
 
-    def test_the_two_skeletons_keep_their_records_on_the_state_branch(self):
+    def test_the_skeleton_keeps_its_records_on_the_state_branch(self):
         held = ["`claude/state`" in read(os.path.join(SHIPPED_TEMPLATES, f"{name}.md")) for name in SKELETONS]
-        self.assertEqual(held, [True, True])
+        self.assertEqual(held, [True])
 
-    def test_the_two_skeletons_do_not_call_a_runtime_script(self):
+    def test_the_skeleton_does_not_call_a_runtime_script(self):
         calls = [lint.SCRIPT_CALL.search(read(os.path.join(SHIPPED_TEMPLATES, f"{name}.md"))) for name in SKELETONS]
-        self.assertEqual(calls, [None, None])
+        self.assertEqual(calls, [None])
 
     def test_prod_watch_skeleton_renders_without_warnings(self):
         self.write_config(self.full_config())
@@ -3117,9 +3483,8 @@ class ShippedFilesTest(Case):
     def test_example_full_load_passes_the_id_clash_check_for_every_routine(self):
         self.assertEqual(sorted(self.example()["routines"]), ["chat-recap", "prod-watch", "tribe-digest", "weekly-status"])
 
-    def test_example_skeleton_routines_without_collectors_hold_no_sources(self):
-        configured = self.example()["routines"]
-        self.assertEqual(["sources" in configured[slug] for slug in ("chat-recap", "weekly-status")], [False, False])
+    def test_example_skeleton_routine_without_collectors_holds_no_sources(self):
+        self.assertNotIn("sources", self.example()["routines"]["weekly-status"])
 
     def test_example_shared_values_hold_the_digest_channel_and_the_owner(self):
         self.assertEqual(sorted(self.example_file("config.json")["values"]), ["chat", "owner"])
@@ -3474,6 +3839,190 @@ class TribeTemplateTest(unittest.TestCase):
         raw = self.raw()
         held = [name for name in ("{{digest.slug}}", "{{digest.name}}", "{{place}}", "{{run.post}}", "{{state.dir}}", "{{runtime.dir}}") if name not in raw]
         self.assertEqual(held, [])
+
+
+class RecapRenderTest(Case):
+    TEXT = "{{window.lookback_working_days}} {{history.late_after_working_days}} {{history.drop_after_days}}\n"
+
+    def render(self, **changes):
+        config = make_config(values={"chat": {"digest_channel_id": "channel-test"}})
+        config.update(providers=CHAT_PROVIDERS, routines={})
+        self.write_config(config)
+        self.write_routine_file("chat-recap", recap_routine(**changes))
+        self.write_template("chat-recap", self.TEXT)
+        return self.run_private("render", "chat-recap")
+
+    def test_a_recap_routine_renders_its_lookback_and_the_engine_history_defaults(self):
+        lifecycle = runtime_module("recap_lifecycle")
+        expected = f"3 {lifecycle.DEFAULT_LATE_AFTER} {lifecycle.DEFAULT_DROP_AFTER}\n"
+        self.assertEqual(self.render()[:2], (0, expected))
+
+    def test_a_recap_routine_renders_the_history_keys_it_sets(self):
+        self.assertEqual(self.render(history={"drop_after_days": 30})[:2], (0, "3 3 30\n"))
+
+    def test_a_missing_lookback_exits_2_naming_its_key_path_not_a_placeholder(self):
+        code, stdout, stderr = self.render(window={})
+        self.assertEqual((code, stdout), (2, ""))
+        self.assertEqual(stderr, "routines.py: config/routines/chat-recap.json: window.lookback_working_days: missing\n")
+
+    def test_an_invalid_history_key_exits_2_naming_its_key_path(self):
+        stderr = self.render(history={"drop_after_days": 0})[2]
+        self.assertEqual(stderr, "routines.py: config/routines/chat-recap.json: history.drop_after_days: must be an integer from 1 to 365\n")
+
+    def test_the_history_defaults_are_the_apply_defaults(self):
+        subparsers = next(action for action in runtime_module("recap").build_parser()._actions if isinstance(action, argparse._SubParsersAction))
+        apply = subparsers.choices["apply"]
+        values = routines.recap_values({"window": {"lookback_working_days": 3}})
+        defaults = (apply.get_default("late_after_working_days"), apply.get_default("drop_after_days"))
+        self.assertEqual((values["history.late_after_working_days"], values["history.drop_after_days"]), defaults)
+
+
+class RuntimeModuleTest(unittest.TestCase):
+    def test_a_runtime_module_is_imported_once_per_directory(self):
+        with mock.patch.object(routines, "runtime_imports", wraps=routines.runtime_imports) as imports:
+            routines.runtime_module.cache_clear()
+            first, second = routines.runtime_roles(), routines.runtime_roles()
+        self.assertEqual((first is second, imports.call_count), (True, 1))
+
+
+class RecapTemplateTest(unittest.TestCase):
+    PATH = os.path.join(SHIPPED_TEMPLATES, "chat-recap.md")
+    SCRIPTS = ("recap", "collect")
+    CALL = re.compile(r"/(?:recap|collect)\.py ([a-z-]+)")
+    ORDER = ["init", "window", "features", "judge", "apply", "message"]
+
+    def raw(self):
+        return read(self.PATH)
+
+    def example(self):
+        return runtime_module("config_tree").load(os.path.join(EXAMPLE_DIR, "config.json"), None)
+
+    def rendered(self, place="cloud", post=False):
+        config = self.example()
+        context, _ = routines.build_context(config, config["routines"]["chat-recap"], place, post)
+        return routines.render_text(self.raw(), context, self.PATH)[0]
+
+    def step(self, title):
+        text = self.rendered()
+        start = text.index(f": {title}\n")
+        end = text.find("\n## ", start)
+        return text[start:end]
+
+    def calls(self, script):
+        lines = lint.logical_lines(self.rendered().splitlines())
+        return [line for _, line in lines if line.startswith("python3 -B") and f"/{script}.py " in line]
+
+    def parser(self, script):
+        return runtime_module(script).build_parser()
+
+    def required(self, script):
+        subparsers = next(action for action in self.parser(script)._actions if isinstance(action, argparse._SubParsersAction))
+        return {
+            name: {option for action in sub._actions if action.required for option in action.option_strings}
+            for name, sub in subparsers.choices.items()
+        }
+
+    def position(self, needle):
+        return self.rendered().index(needle)
+
+    def test_renders_with_the_example_config_in_both_places_with_no_placeholder_left(self):
+        left = [place for place in ("cloud", "local") if "{{" in self.rendered(place)]
+        self.assertEqual(left, [])
+
+    def test_is_not_marked_not_runnable(self):
+        text = self.raw()
+        self.assertEqual((lint.is_marked(text), lint.near_miss_marker(text), "not runnable" in text), (False, False, False))
+
+    def test_passes_the_public_lint_with_the_runtime_contracts(self):
+        self.assertEqual([finding for finding in routines.public_findings() if finding[0] == self.PATH], [])
+
+    def test_every_script_call_names_an_existing_command_with_existing_flags(self):
+        contracts = {f"{script}.py": lint.parser_contract(self.parser(script)) for script in self.SCRIPTS}
+        lines = [line for script in self.SCRIPTS for line in self.calls(script)]
+        self.assertEqual((len(lines) > 10, [line for line in lines if lint.contract_rules(line, contracts)]), (True, []))
+
+    def test_every_script_call_passes_the_required_flags_of_its_command(self):
+        missing = [
+            line
+            for script in self.SCRIPTS
+            for line in self.calls(script)
+            if any(flag not in line for flag in self.required(script)[self.CALL.search(line).group(1)])
+        ]
+        self.assertEqual(missing, [])
+
+    def test_calls_every_command_of_a_run_in_order(self):
+        order = [self.CALL.search(line).group(1) for line in self.calls("recap") if "--degraded" not in line]
+        self.assertEqual(order, self.ORDER)
+
+    def test_the_window_is_computed_in_the_configured_timezone_before_any_source_is_collected(self):
+        window = next(line for line in self.calls("recap") if " window " in line)
+        first_collection = min(self.position(line) for line in self.calls("collect") if " fetch " in line or " plan " in line)
+        self.assertEqual(("--tz Europe/Paris" in window, self.position(window) < first_collection), (True, True))
+
+    def test_the_window_offers_the_explicit_start_and_the_report_only_flags_the_engine_has(self):
+        options = lint.parser_contract(self.parser("recap"))[0]["window"]
+        text = self.step("Compute the window")
+        self.assertEqual(({"--since", "--report-only"} <= options, "`--since <T0>`" in text, "`--report-only`" in text), (True, True, True))
+
+    def test_the_state_is_saved_after_apply_and_before_the_message_is_rendered(self):
+        saved = self.position("push origin HEAD:refs/heads/claude/state")
+        self.assertEqual((self.position("recap.py apply") < saved, saved < self.position("recap.py message --summary")), (True, True))
+
+    def test_a_failed_message_render_leaves_the_saved_state_as_it_is(self):
+        self.assertIn("The state stays as Step 9 left it.", self.step("Render the message"))
+
+    def test_only_the_rejected_judgment_posts_a_degraded_message(self):
+        causes = sorted(re.findall(r"message --degraded ([a-z]+)", self.rendered()))
+        self.assertEqual(causes, ["judgment"])
+
+    def test_the_degraded_cause_follows_the_second_exit_3_and_writes_no_state(self):
+        step = self.step("Judge")
+        self.assertEqual(
+            (step.index("A second exit 3") < step.index("--degraded judgment"), "Write no state and no run record." in step),
+            (True, True),
+        )
+
+    def test_the_runtime_check_reports_the_exact_one_liner(self):
+        self.assertIn("report exactly one line, `degraded: runtime missing, at another commit or modified`", self.step("Check the runtime"))
+
+    def test_the_judgment_limits_follow_the_checker(self):
+        step = self.step("Judge")
+        judgment = runtime_module("recap_judgment")
+        limits = (
+            f"`summary` is one sentence of at most {judgment.SUMMARY_CHARS} characters",
+            f"at most {judgment.READING_MAX} bullets",
+            f"A reading bullet is at most {judgment.READING_CHARS} characters",
+            f"`due` lies within {judgment.DUE_SPAN_DAYS} days of the window end",
+            "reports only the first failure",
+            "`<`, `>`, `@` or `://`",
+        )
+        self.assertEqual([limit for limit in limits if limit not in step], [])
+
+    def test_a_result_is_saved_with_the_write_tool_never_through_a_shell_command(self):
+        step = self.step("Collect")
+        self.assertIn("write the result text as is with the Write tool. Never put a result in a shell command.", step)
+
+    def test_the_message_is_posted_only_when_the_summary_says_so_and_the_post_setting_is_yes(self):
+        step = self.step("Report the message")
+        self.assertIn("Read `post` in `<run>/summary.json`. When it is true and the post setting is `yes`, post the message to", step)
+        self.assertIn("Otherwise, print it in this session and post nothing.", step)
+
+    def test_the_post_setting_governs_every_report(self):
+        rendered = self.rendered("local")
+        self.assertEqual(("The post setting of this run is `no`." in rendered, "post nothing" in rendered), (True, True))
+
+    def test_the_cloud_post_setting_is_yes(self):
+        self.assertIn("The post setting of this run is `yes`.", self.rendered("cloud"))
+
+    def test_the_template_names_no_vendor_and_no_push_tool(self):
+        rendered = self.rendered()
+        vendor = lint.provider_rule(runtime_module("providers").names())
+        self.assertEqual(([line for line in rendered.splitlines() if vendor(line)], "PushNotification" in rendered), ([], False))
+
+    def test_the_routine_values_come_through_placeholders_only(self):
+        raw = self.raw()
+        names = ("{{digest.slug}}", "{{digest.name}}", "{{place}}", "{{run.post}}", "{{state.dir}}", "{{runtime.dir}}", "{{window.lookback_working_days}}")
+        self.assertEqual([name for name in names if name not in raw], [])
 
 
 class SaveBlockExecution:

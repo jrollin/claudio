@@ -16,7 +16,7 @@ Manage claude.ai routines (scheduled cloud agents) as code:
 | `routines.py` | `skills/routines/scripts/routines.py` | File side of every flow: snapshots, render, diff, lint, update body, setup script |
 | Config tree | `runtime/config_tree.py` | Loads `config.json` and the routine files into one config, resolves each source's transport, and rejects secrets; the skill and the runtime share it |
 | Example | `example/` | A private directory to copy: `config.json` and one routine file per routine, placeholders only |
-| Skeletons | `skills/routines/templates/` | Generic `prod-watch.md` and `tribe-digest.md` prompts, `setup-env.sh` setup script and the not-runnable `chat-recap.md` and `weekly-status.md`, placeholders only |
+| Skeletons | `skills/routines/templates/` | Generic `prod-watch.md`, `tribe-digest.md` and `chat-recap.md` prompts, `setup-env.sh` setup script and the not-runnable `weekly-status.md`, placeholders only |
 | State engine | `runtime/state.py` | Run window, item lifecycle, blind spots, mutes and run records for routine runs |
 | Collector | `runtime/collect.py` | Lists a routine's sources, checks the place's credentials and connectors, reads one source per command into a collection |
 | Evaluator | `runtime/evaluate.py` | `features` computes the judgment features, `judge` checks the model's judgment and merges it into the facts, `annotate` adds the analysis of new and escalated items |
@@ -25,6 +25,7 @@ Manage claude.ai routines (scheduled cloud agents) as code:
 | Judgment | `runtime/judgment.py` | Checks the judgment and the analysis against the features, and builds the facts |
 | Roles | `runtime/roles.py` | Config and query pack checks, and the record schema of each of the five roles: observability tool, document store, chat channel, code host and issue tracker |
 | Tribe engine | `runtime/tribe.py` and its `tribe_*.py` modules | The engine of a routine whose `engine` is `tribe`: window, seed, features, judgment check, lifecycle, page render and structure check, page write plan and chat message |
+| Recap engine | `runtime/recap.py` and its `recap_*.py` modules | The engine of a routine whose `engine` is `recap`: window, seed, features, judgment check, lifecycle and chat message |
 | Provider adapters | `runtime/providers/` | One module per vendor, each with an `api` and an `mcp` transport; see [the providers README](runtime/providers/README.md) |
 
 The real templates and every value that names a company resource live in a private repository, never here.
@@ -36,7 +37,7 @@ The real templates and every value that names a company resource live in a priva
 | `prod-watch.md` | Routine prompt | Yes |
 | `setup-env.sh` | Environment setup script, printed by `setup-script` | Yes |
 | `tribe-digest.md` | Routine prompt | Yes |
-| `chat-recap.md` | Routine prompt skeleton | No, structure only |
+| `chat-recap.md` | Routine prompt | Yes |
 | `weekly-status.md` | Routine prompt skeleton | No, structure only |
 
 A template is marked not runnable when its first line is exactly `<!-- not runnable -->`, in a public skeleton or a private template. A leading byte order mark and one trailing carriage return are ignored.
@@ -44,6 +45,8 @@ A template is marked not runnable when its first line is exactly `<!-- not runna
 - `render --runnable` and `body` refuse it with exit 2, and `sync` stops on it, so it is never pushed to a live routine. `/routines run` renders with `--runnable`.
 - `diff` and `lint` treat it like any other template.
 - `lint` reports a first line that is an HTML comment holding `not runnable` in another case or spacing as the finding `marker`, since it would leave the template runnable.
+
+`lint --private` runs the role check of the runtime checkout on every routine file in `config/routines/`, for both places, and exits 2 naming the file and the key path of the first invalid value. A routine whose template is marked not runnable is not checked, and `render` runs the key check of a recap routine before it renders.
 
 `lint --private` also prints two warnings on stderr, naming keys and never values, and leaves the exit code unchanged:
 - `literal-value`: a template line holds, as case-sensitive text, a string value of 8 characters or more from the shared and own `values` of a routine that renders it. Use the placeholder.
@@ -83,17 +86,18 @@ A template is marked not runnable when its first line is exactly `<!-- not runna
 /claudio-routines:routines sync <slug>                             show the diff, wait for approval, push, export again, confirm in sync
 /claudio-routines:routines setup-script [--place P]                print the setup script of a place, cloud by default
 /claudio-routines:routines run <slug> [--since T] [--post]         run a routine in this session for the local place
-/claudio-routines:routines seed <slug>                             seed a tribe routine's state from its previous digest pages, push after approval
+/claudio-routines:routines seed <slug>                             seed a tribe routine's state from its previous digest pages, or a recap routine's state from its stored state, push after approval
 ```
 
 Each flow is described step by step in [SKILL.md](skills/routines/SKILL.md).
 
-Exit codes of `routines.py`, `state.py`, `collect.py`, `evaluate.py`, `digest.py` and `tribe.py`:
+Exit codes of `routines.py`, `state.py`, `collect.py`, `evaluate.py`, `digest.py`, `tribe.py` and `recap.py`:
 - 0: ok or in sync.
 - 1: findings or drift; for `collect.py check-env`, a missing credential variable.
 - 2: usage or input error, including an unreadable or invalid features, base, facts, preview, summary, record or state file; `digest.py` exits 2 for every refused input, naming the file.
 - 3 (runtime scripts only): rejected state, facts, time or query pack; for `evaluate.py judge` and `annotate`, a rejected judgment or analysis, including a file that is not valid JSON.
   - `tribe.py`: a rejected judgment, state, window or cursor (`judge`, `apply`), a page that fails its structure check (`render`, `publish-plan`), and a Run state field outside its allowed values (`seed`).
+  - `recap.py`: a rejected judgment, state, window or stored unit (`judge`, `apply`, `window`, `seed`), naming its key path.
 
 ## Config reference
 
@@ -341,7 +345,7 @@ Routine keys of the engine, validated at config load. A routine with `engine: tr
 
 | Key | Content |
 |---|---|
-| `engine` | `watch` (the default) or `tribe` |
+| `engine` | `watch` (the default), `tribe` or `recap` |
 | `page` | `how_built` and `key_callout` (lists of lines), `state_path`, `link` (a URL template holding `{{id}}`) and `title` (a template holding `{{date}}` only, the title of the page and of the chat message), every key required |
 | `publish` | `provider` (a key of `providers`), `parent` (page id), optional `week_start_format` (a `strftime` format, default `%Y-%m-%d`), `create`, `poll` and `heading` as `{tool, arguments}`, and `results`: the dotted paths `task`, `status`, `page` and `heading`, and the non-empty status lists `done` and `failed` |
 
@@ -353,6 +357,47 @@ Seed:
 - `tribe.py seed` skips a page with no valid run state, naming it, and exits 2 when no page holds one.
 - It exits 3 when a field is outside its allowed values, a warning `status` excepted.
 - A warning `status` other than `open`, `in progress`, `mitigated`, `decided` or `dropped` is read as the one it starts with, else as `open`. Each reading is printed on stderr with the key and the original status.
+
+## Recap engine
+
+A routine file with `engine: recap` runs the `chat-recap` template, which needs the routine values `digest.slug` (the state file name) and `digest.name` (the digest name in the state and the prompt). The state is `state/<slug>.json` on the `claude/state` branch, and changes only through `recap.py apply`. The routine reads chat sources only and posts one chat message with no page.
+
+Commands, in run order:
+
+```text
+python3 runtime/recap.py init          --digest NAME --out STATE
+python3 runtime/recap.py window        --state S --now T --tz Z --lookback-working-days N [--since T0 | --report-only] --out W
+python3 runtime/collect.py ...         (one collection per source, as above)
+python3 runtime/recap.py features      --config C --routine R --state S --window W --collections DIR --place P --out FEATURES --base-out BASE --rules-out RULES
+python3 runtime/recap.py judge         --features FEATURES --judgment J
+python3 runtime/recap.py apply         --state S --features FEATURES --base BASE --judgment J --window W --tz Z [--late-after-working-days N] [--drop-after-days N] --out applied.json --summary SUMMARY --record RECORD
+python3 runtime/recap.py message       --summary SUMMARY --config C --routine R --place P --tz Z --out MESSAGE
+python3 runtime/recap.py message       --degraded judgment --out MESSAGE
+python3 runtime/recap.py seed          --from STORED --digest NAME --out STATE
+```
+
+- The model writes only `judgment.json`, from `features.json` and `rules.json`. `judge` rejects a judgment the features do not allow (exit 3, with the key path).
+- `apply` writes the next state, the summary and the run record. A report-only run (`--since` or `--report-only`) leaves the state byte-identical. The state and the record hold no message text.
+- The template saves the state on the `claude/state` branch before it renders the message.
+- `message` posts only when `post` is true in the summary.
+
+Routine keys of the engine, validated at config load and by `routines.py lint --private`, which names the key path of an invalid value. Nested mappings reject unexpected keys.
+
+| Key | Content |
+|---|---|
+| `owner` | The chat user id of the owner; each chat source sets the same `owner` |
+| `workspace` | The chat host name that builds the message links |
+| `groups` | List of `{id, label, lands_in}`, `lands_in` being `waiting` or `good_to_know` |
+| `announcement` | Optional `channels` and `topics`: the channels read for announcements and the topics kept |
+| `window` | `lookback_working_days`, 1 to 365: the working days a baseline run or a run after a long gap reads; each search carries its own look-back |
+| `exclude` | Optional `authors`, `channels` and `keep_bots` (the bot ids kept) |
+| `history` | Optional `late_after_working_days` (0 to 365) and `drop_after_days` (1 to 365); the engine defaults apply when left out |
+| `rules` | Non-empty list of the ask rules the judgment follows |
+
+Seed:
+- `/routines seed <slug>` turns the state a live recap routine kept in the document store into a recap state in a scratch file, shows its summary and waits for the owner's approval before it pushes `state/<slug>.json`.
+- `routines.py seed <slug> --from <stored state>` runs `recap.py seed` for a routine whose engine is `recap`; `--page` is refused for it, and `--from` for a tribe routine.
+- `recap.py seed` drops the permalinks, maps the statuses, cuts titles to 8 words and exits 3 naming the key path of a unit it cannot map.
 
 Settings:
 - The private repository holds `.claude/settings.json` with `permissions.deny` listing `PushNotification`, `Bash(sleep *)` and `Monitor`. A cloud routine reads it because the private repository is its only source.

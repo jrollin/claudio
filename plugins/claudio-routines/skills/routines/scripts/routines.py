@@ -1,6 +1,7 @@
 import argparse
 import contextlib
 import difflib
+import functools
 import importlib
 import importlib.util
 import io
@@ -396,10 +397,50 @@ def routine_values(config, routine):
     return flatten(merge(config.get("values", {}), routine.get("values", {})))
 
 
+@functools.cache
+def runtime_module(directory, name):
+    with runtime_imports(directory):
+        return importlib.import_module(name)
+
+
+def runtime_roles():
+    return runtime_module(RUNTIME_PATH, "roles")
+
+
+def recap_values(routine):
+    lifecycle = runtime_module(RUNTIME_PATH, "recap_lifecycle")
+    history = routine.get("history", {})
+    return {
+        "window.lookback_working_days": routine["window"]["lookback_working_days"],
+        "history.late_after_working_days": history.get("late_after_working_days", lifecycle.DEFAULT_LATE_AFTER),
+        "history.drop_after_days": history.get("drop_after_days", lifecycle.DEFAULT_DROP_AFTER),
+    }
+
+
+def engine_values(routine):
+    return recap_values(routine) if routine.get("engine") == runtime_roles().RECAP_ENGINE else {}
+
+
+def role_error(error, private):
+    config_tree = runtime_module(RUNTIME_PATH, "config_tree")
+    return UsageError(config_tree.locate(str(error), private))
+
+
+def check_recap_keys(private, config, slug, place):
+    roles = runtime_roles()
+    if config["routines"][slug].get("engine") != roles.RECAP_ENGINE:
+        return
+    try:
+        roles.validate_config(config, slug, place)
+    except roles.ConfigError as error:
+        raise role_error(error, private) from error
+
+
 def build_context(config, routine, place, post):
     settings = config["places"][place]
     context = routine_values(config, routine)
     context.update(flatten({"runtime": config["runtime"]}))
+    context.update(engine_values(routine))
     context["timezone"] = config["timezone"]
     context.update({
         "runtime.dir": settings["runtime_dir"],
@@ -448,6 +489,7 @@ def configured(config, slug):
 def render_routine(private, config, slug, place="cloud", post=False):
     routine = configured(config, slug)
     path = template_path(private, routine["template"])
+    check_recap_keys(private, config, slug, place)
     context, own_keys = build_context(config, routine, place, post)
     rendered, used = render_text(read_text(path), context, path)
     unused = sorted(own_keys - used)
@@ -703,6 +745,33 @@ def public_findings():
     return findings
 
 
+RUNTIME_PLACEHOLDER = "{{runtime.dir}}"
+
+
+def calls_runtime(private, config, slug):
+    text = read_text(template_path(private, configured(config, slug)["template"]))
+    return not lint.is_marked(text) and RUNTIME_PLACEHOLDER in text
+
+
+def checked_routines(private, config):
+    config_tree = runtime_module(RUNTIME_PATH, "config_tree")
+    slugs = [slug for slug in sorted(config["routines"]) if config_tree.has_file(private, slug)]
+    return [slug for slug in slugs if calls_runtime(private, config, slug)]
+
+
+def check_routine_roles(private, config):
+    slugs = checked_routines(private, config)
+    roles = runtime_roles()
+    with runtime_imports(RUNTIME_PATH):
+        role_of = importlib.import_module("config").adapter_role
+        for slug in slugs:
+            for place in PLACES:
+                try:
+                    roles.validate_config(config, slug, place, role_of=role_of)
+                except roles.ConfigError as error:
+                    raise role_error(error, private) from error
+
+
 def settings_findings(private):
     path = os.path.join(private, *SETTINGS_PARTS)
     return lint.settings_findings(path, read_bytes(path) if os.path.isfile(path) else None)
@@ -711,6 +780,7 @@ def settings_findings(private):
 def private_findings(args):
     private = resolve_private(args.private)
     config = load_config(private)
+    check_routine_roles(private, config)
     sha = config["runtime"]["sha"]
     with tempfile.TemporaryDirectory(prefix="claudio-runtime-") as directory:
         extract_runtime(args.claudio, config["runtime"]["tag"], sha, directory)
@@ -754,28 +824,28 @@ def repeated_value_warnings(config):
     return lint.repeated_values({slug: flatten(routine.get("values", {})) for slug, routine in config["routines"].items()})
 
 
-def require_tribe(config, slug):
-    with runtime_imports(RUNTIME_PATH):
-        roles = importlib.import_module("roles")
-        config_tree = importlib.import_module("config_tree")
+def seed_engine(config, slug):
+    roles = runtime_roles()
+    config_tree = runtime_module(RUNTIME_PATH, "config_tree")
     if config_tree.SLUG.fullmatch(slug) is None:
         raise UsageError(f"routine slug {slug} must match ^{config_tree.SLUG.pattern}$")
     engine = configured(config, slug).get("engine", roles.DEFAULT_ENGINE)
-    if engine != roles.TRIBE_ENGINE:
-        raise UsageError(f"routine {slug} has engine {engine}: seeding needs engine {roles.TRIBE_ENGINE}")
+    if engine not in (roles.TRIBE_ENGINE, roles.RECAP_ENGINE):
+        raise UsageError(f"routine {slug} has engine {engine}: seeding needs engine {roles.TRIBE_ENGINE} or {roles.RECAP_ENGINE}")
+    return engine
 
 
-def local_tribe_script(config):
+def local_runtime_script(config, name):
     runtime_dir, sha = config["places"]["local"]["runtime_dir"], config["runtime"]["sha"]
     head = run_git(runtime_dir, "rev-parse", "HEAD")
     status = run_git(runtime_dir, "status", "--porcelain", "--ignored")
     at_sha = head.returncode == 0 and head.stdout.decode(errors="replace").strip() == sha
     if not (at_sha and status.returncode == 0 and not status.stdout.strip()):
         raise UsageError(f"{runtime_dir} is not a clean checkout of runtime.sha {sha}: run setup-script --place local and run its output")
-    return os.path.join(runtime_dir, RUNTIME_IN_REPO, "tribe.py")
+    return os.path.join(runtime_dir, RUNTIME_IN_REPO, name)
 
 
-def seed_lines(slug, out, document):
+def tribe_seed_lines(slug, out, document):
     run, warnings, checks = document["run"], document["warnings"], document["checks"]
     return [
         f"seeded {slug}: state written to {out}",
@@ -790,13 +860,29 @@ def seed_lines(slug, out, document):
     ]
 
 
-def seed_summary(slug, out):
+def recap_unit_line(key, unit):
+    late = "" if unit["late"] is None else f", late {unit['late']} working days"
+    return f"  {key}: {unit['status']}, runs waiting {unit['runs_waiting']}{late}"
+
+
+def recap_seed_lines(slug, out, document):
+    run, units = document["run"], document["units"]
+    return [
+        f"seeded {slug}: state written to {out}",
+        f"run at {run['at']}, previous run {run['previous_at']}",
+        f"units: {len(units)}",
+        *(recap_unit_line(key, units[key]) for key in sorted(units)),
+        f"blind spots: {len(document['blind_spots'])}",
+    ]
+
+
+def seed_summary(engine, slug, out):
     try:
         document = json.loads(read_text(out))
     except json.JSONDecodeError as error:
         raise UsageError(f"seeded state {out} is not JSON: {error.msg}") from error
     try:
-        lines = seed_lines(slug, out, document)
+        lines = (recap_seed_lines if engine == runtime_roles().RECAP_ENGINE else tribe_seed_lines)(slug, out, document)
     except (KeyError, TypeError, AttributeError) as error:
         raise UsageError(f"seeded state {out} has an unexpected shape") from error
     return "".join(f"{line}\n" for line in lines)
@@ -809,22 +895,38 @@ def require_out_outside_repositories(out):
         raise UsageError(f"--out {out} is inside the git work tree {top}: write the seeded state outside any repository")
 
 
+def seed_digest(config, slug):
+    digest = routine_values(config, configured(config, slug)).get("digest.name", slug)
+    if not isinstance(digest, str):
+        raise UsageError(f"routine {slug}: values digest.name must be a string")
+    return digest
+
+
+def seed_arguments(engine, config, args, private):
+    if engine == runtime_roles().RECAP_ENGINE:
+        if args.source is None:
+            raise UsageError(f"routine {args.slug} has engine {engine}: seeding takes --from <stored state>, not --page")
+        return ["--from", args.source, "--digest", seed_digest(config, args.slug), "--out", args.out]
+    if args.page is None:
+        raise UsageError(f"routine {args.slug} has engine {engine}: seeding takes --page <digest page>, not --from")
+    pages = [flag for page in args.page for flag in ("--page", page)]
+    return ["--routine", args.slug, "--config", os.path.join(private, "config.json"), "--out", args.out, *pages]
+
+
 def cmd_seed(args):
     private = resolve_private(args.private)
     config = load_config(private)
-    require_tribe(config, args.slug)
+    engine = seed_engine(config, args.slug)
+    arguments = seed_arguments(engine, config, args, private)
     require_out_outside_repositories(args.out)
-    script = local_tribe_script(config)
-    command = [sys.executable, "-B", script, "seed", "--routine", args.slug, "--config", os.path.join(private, "config.json"), "--out", args.out]
-    for page in args.page:
-        command += ["--page", page]
+    script = local_runtime_script(config, f"{engine}.py")
     try:
-        result = subprocess.run(command, capture_output=True, text=True)
+        result = subprocess.run([sys.executable, "-B", script, "seed", *arguments], capture_output=True, text=True)
     except OSError as error:
         raise UsageError(f"cannot run {script}: {error.strerror}") from error
     sys.stderr.write(result.stderr)
     if result.returncode == 0:
-        sys.stdout.write(seed_summary(args.slug, args.out))
+        sys.stdout.write(seed_summary(engine, args.slug, args.out))
     return result.returncode
 
 
@@ -859,9 +961,11 @@ def build_parser():
     command("setup-script", "render the environment setup script").add_argument(
         "--place", choices=PLACES, default="cloud", help="place to install the runtime in, default cloud"
     )
-    seed = command("seed", "seed a tribe routine's state from its previous digest pages")
+    seed = command("seed", "seed a tribe or recap routine's state from its previous digest pages or stored state")
     seed.add_argument("slug")
-    seed.add_argument("--page", action="append", required=True, help="saved fetch result of a digest page, newest first; repeatable")
+    source = seed.add_mutually_exclusive_group(required=True)
+    source.add_argument("--page", action="append", help="tribe: saved fetch result of a digest page, newest first; repeatable")
+    source.add_argument("--from", dest="source", help="recap: the stored state of the live routine, extracted as JSON")
     seed.add_argument("--out", required=True, help="seeded state file, outside any repository")
     lint_command = commands.add_parser("lint", help="lint public skeletons or private templates")
     target = lint_command.add_mutually_exclusive_group(required=True)

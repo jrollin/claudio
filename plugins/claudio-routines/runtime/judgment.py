@@ -1,5 +1,6 @@
 import json
 import re
+import unicodedata
 
 import features
 import state
@@ -223,12 +224,16 @@ def check_claim(claim, doc, labels, path):
     check_cites(doc, labels, cites, f"{path}.cites")
 
 
+def has_inert(text):
+    return any(INERT.search(form) for form in (text, unicodedata.normalize("NFKC", text)))
+
+
 def check_inert(item, path):
     texts = {"risk": item["risk"], "action": item["action"]}
     texts.update({f"mitigation[{index}]": text for index, text in enumerate(item["mitigation"])})
     texts.update({f"reason[{index}].claim": claim["claim"] for index, claim in enumerate(item["reason"])})
     for name, text in texts.items():
-        if INERT.search(text):
+        if has_inert(text):
             raise state.Rejected(f"{path}.{name}: must not contain <, >, @ or ://")
 
 

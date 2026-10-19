@@ -695,7 +695,7 @@ Feature rules:
 - `judge` merges each verdict into an observation (`source`, `over`, `value`, `severity`, `when`, `title`, `link`, `last_value`, `rank`); an auto key becomes an observation not over that keeps its stored severity and urgency.
 - `analysis.json`: `{"schema": 1, "items": {<key>: {"risk", "reason": [{"tag", "claim", "cites"}], "mitigation", "action"}}}`.
   - Its keys equal the new and escalated keys of the preview summary (TD-28, AC-22.4).
-  - Each text is at most 300 characters, with no control, format or separator characters (Unicode Cc, Cf, Zl, Zp), and no `<`, `>`, `@` or `://`, so no mention or link reaches the posted digest; `reason` holds at most 5 claims and `mitigation` 1 to 3 texts (AC-22.3).
+  - Each text is at most 300 characters, with no control, format or separator characters (Unicode Cc, Cf, Zl, Zp), and no `<`, `>`, `@` or `://` in the text or its NFKC form, so no mention or link reaches the posted digest; `reason` holds at most 5 claims and `mitigation` 1 to 3 texts (AC-22.3).
   - `tag` is `measured` or `inferred`; a measured claim has non-empty `cites`, checked like a verdict's (AC-22.2).
   - `evaluate.py annotate` adds it to the pass-1 `facts.json`, as the optional `risk`, `reason` (the list without `cites`), `mitigation` and `action` of those observations, and changes nothing else (TD-28).
   - A rejected analysis is corrected and reported like a judgment, with the same `degraded: judgment rejected` message (AC-22.4, AC-21.7).
@@ -1369,6 +1369,129 @@ A degraded run's message is one line that starts with `degraded:` and names the 
 
 **Rationale**: the owner reads the message in the chat client, often on a phone; this layout is the one the routine posted for weeks.
 
+### TD-58: Recap engine modules and CLI
+
+**Choice**:
+- A routine file may set `engine` to `recap`, next to `watch` and `tribe`.
+- `runtime/recap.py` is the CLI of the recap engine, with subcommands `init`, `seed`, `window`, `features`, `judge`, `apply` and `message`. Each reads and writes JSON files, as `tribe.py` does.
+- The logic sits in focused modules:
+  - `recap_state.py`: schema, load, write, unit keys and the initial state;
+  - `recap_seed.py`: seeding from the state the routine kept in the document store (TD-64);
+  - `recap_features.py`: units, facts, allowed kinds, features and rules files (TD-60);
+  - `recap_judgment.py`: judgment schema and checks (TD-61);
+  - `recap_lifecycle.py`: `apply`, the unit history, the summary and the run record (TD-62);
+  - `recap_message.py`: the chat message and the degraded messages (TD-63).
+- The modules reuse `state.py` (zones, text cleaner, atomic writes, spec checks) and `collect.py` for the sources; the working-day calendar sits in `recap_window.py`.
+
+**Alternatives considered**:
+- A `tribe` variant: rejected, tribe items are warnings with cites and a page; recap units are conversations with an answered state and no page.
+
+**Rationale**: the same shape as the tribe engine, so the template, the lint and the save step follow the known pattern.
+
+### TD-59: Chat search and reactions
+
+**Choice**:
+- The `chat` role gains `searches`: a list of named searches, each with `filters` (search modifiers, the owner and group ids written in the private config), optional `channel_types`, optional `keywords`, and `since`: `window` or `lookback_days`. `channels` becomes optional when `searches` is set; a source needs one of them.
+- Both transports read the searches, so each place picks its own (the owner decides per place):
+  - `mcp`: the connector's search, conversation, thread and reactions tools, relayed by the model;
+  - `api`: the chat Web API (`search.messages`, `conversations.history`, `conversations.replies`, `reactions.get`) with a user token, since a bot token cannot search or read the owner's direct conversations; the providers README lists its read-only scopes (`search:read`, `im:history`, `mpim:history`, `channels:history`, `groups:history`, `reactions:read`, `users:read`).
+- The chat adapter plans, or fetches, one search call per page: sorted by timestamp, oldest first, at most 20 results a page, no context messages, the next page from the response cursor, up to `search_page_cap` pages (default 10). A search cut by the cap keeps the units read so far: the adapter returns them with a failed entry `search:<name>` whose reason is `page cap: <N> page(s) read`, so the source stays read and the cut becomes a blind spot (AC-45.6). A failed conversation, thread or reactions read is a failed entry too, never a source failure.
+- `call_cap` (default 50, at most 300) bounds every call of the source: search pages, conversation and thread reads, reactions and name lookups. A recap reads more than a tribe channel list, so its routine file raises it.
+- Each hit becomes a unit candidate. A direct or group conversation hit plans one conversation read from the window start; a hit in a thread, or a message with replies, plans one thread read by its root. A unit read once per run, whatever the number of hits.
+- `reactions: true` plans one reactions read for each message from someone else after the owner's last message in a unit, at most 3 per unit; the parsed record keeps the reacting user ids only.
+- Parsing keeps per unit the channel id and name and, for a direct or group conversation, its `participants` (id and display name); per message: user id, display name, bot flag, ts, root ts, the user ids it mentions and the group ids it mentions (read from the raw text before cleaning, since cleaning blanks the mention markup), text cut at 300 characters, and `owner_reacted` when the reactions were read. The search response's permalink is not kept; the message builds links (TD-63).
+- Both transports give identical records for the same data (TD-22). Over `api`, every display name comes from a cached `users.info`, a direct conversation's participants from `conversations.info` and a group conversation's from `conversations.members`; the search query carries day-granularity `after:` and `before:` modifiers with one day of margin, and hits outside the window are dropped by ts.
+- A reactions result counts only when it is the connector's no-reaction text or starts with its reactions header; the reacting user ids are read per line after the name separator.
+
+**Alternatives considered**:
+- `searches` on the connector only: rejected, the relay retypes direct message text through the model and stopped two cloud test runs (T-75); the owner picks the transport per place.
+- Searching once with every filter: rejected, the search modifiers OR only the same modifier, and one page cap would cut every family.
+- Reading DM channels in full: rejected, the owner has hundreds of conversations; the search names those with a message in the window.
+
+**Rationale**: the four source families of the recap map to four searches; the adapter keeps the relay pattern (plan, calls, parse) and its page caps.
+
+### TD-60: Recap features and facts
+
+**Choice**:
+- `recap.py features` builds the units from the chat collection: key `dm-<channel>` for a direct or group conversation, `thread-<channel>-<root ts>` for a thread (AC-45.2), with the messages of authors not excluded (AC-45.3).
+- Stored units with status `waiting` or `promise` are read again from their `last_ts` (AC-45.5): `features` lists them in the base file and `collect.py plan` reads their conversation or thread whatever the window.
+- Facts per unit, computed by the script (AC-46.1):
+  - `last_author_is_owner`;
+  - `unanswered_from`: the ts of the first message from someone else after the owner's last message or reaction, or null;
+  - `groups`: the configured groups mentioned (from the messages' group ids), each with its landing section and `answered`, true when someone other than the first mentioner wrote after the first mention;
+  - `direct_mention`, `announcement_channel`, `owner_took_part`;
+  - `age_working_days` of `unanswered_from`, in the config timezone (AC-46.3);
+  - `owner_answered`: a message from someone else exists and the owner replied after the last one or reacted to it;
+  - `previous`: the stored unit, or null.
+- `allowed`: the kinds the facts allow, which the checker enforces (TD-61):
+  - `waiting on you` when `unanswered_from` is set and the unit is a direct or group conversation, a direct mention (the owner's id in a message's user ids), a group landing in Waiting on you, or a thread the owner took part in;
+  - `team ask` when `unanswered_from` is set, a group landing in Good to know is mentioned and nobody answered;
+  - `you're waiting on` and `promise` when the last message is the owner's;
+  - `already handled` when the owner answered the last message from someone else, by a reply or a reaction, or the unit is stored as waiting or promise;
+  - `announcement` when the unit is in an announcement channel;
+  - `noise` always.
+- `features.json` holds message text for the judgment and stays in the run directory; nothing of it reaches the state or the run record (BR-67).
+- `rules.json` holds the ask rules of the routine file, the definition of each kind and the announcement topics, for the model.
+
+**Alternatives considered**:
+- The model decides whether an ask is answered: rejected, a reaction or a reply is a fact the data holds (BR-69).
+
+**Rationale**: the model judges meaning only; every fact a section depends on is computed and testable.
+
+### TD-61: Recap judgment and its checks
+
+**Choice**:
+- `judgment.json`: `{"units": {"<key>": {"kind", "title", "summary", "blocking", "due"}}, "reading": [{"text", "cites": ["<key>"]}]}`.
+- `recap.py judge` checks, and reports the first failure with its key path (AC-47.2):
+  - every unit of the features has exactly one entry, and no other key appears;
+  - `kind` is in the unit's `allowed`;
+  - `title` has at most 8 words, `summary` one sentence of at most 200 characters, with no control character, `<`, `>`, `@`, `://` or chat author id (AC-47.3);
+  - `due` is null or a time with an offset, and only on a `promise` (AC-47.4);
+  - `blocking` is a boolean, true only on `waiting on you`;
+  - `reading` has at most 4 entries, each citing at least one unit key of the run (AC-47.5); a run with no unit has none.
+  - `due`, converted to UTC, is a valid time within 400 days of the window end.
+  - `apply` loads the judgment through the same checks, so it never stores a kind the facts forbid.
+- The template allows one correction, then posts the degraded message and writes no state (AC-47.6), as the tribe template does.
+- The person a line names is chosen by the script, never written by the model: the author of `unanswered_from` for `waiting on you` and `team ask`, the other participant of a direct conversation or the last other author of a thread for `you're waiting on`.
+
+**Alternatives considered**:
+- Free text per section: rejected, the post would carry unchecked model text (TD-33).
+
+**Rationale**: the model writes only short, checked text; the script owns structure and names.
+
+### TD-62: Recap state and lifecycle
+
+**Choice**:
+- State: `{"schema": 1, "digest", "run": {"at", "previous_at", "window": {"from_ts", "to_ts"}}, "units": {"<key>": {"kind", "channel", "channel_name", "person", "title", "first_seen", "last_ts", "status", "runs_waiting", "late", "due"}}, "blind_spots": [...]}`. `channel_name` and `person` (the id and display name the message names, TD-61) are kept so a unit read again outside any search still renders its label and person; both are null when unknown, as in a seeded unit. No message text, no summary (BR-67).
+- `apply` maps each judged kind to a status: `waiting on you` to `waiting`, `promise` to `promise`, `you're waiting on` to `waiting_on_others`, `team ask` to `team_ask`, `already handled` to `handled`, `announcement` to `announcement`; a `noise` unit is not stored.
+- `runs_waiting` counts the runs a unit stays `waiting` or `promise`; `late` is the age in working days once it exceeds `late_after_working_days` (default 3) for `waiting`, or once `due` has passed, or from the working day after `first_seen` with no `due`, for `promise` (AC-48.2, AC-47.4); a promise re-judged without a due keeps its stored due.
+- A stored `waiting` or `promise` unit judged `already handled` or `noise`, or a stored `waiting` unit whose facts show the owner answered, is resolved: listed once in the summary's `resolved`, then stored as `handled` (AC-48.3). A promise is made as a reply, so the owner having answered never resolves it.
+- A unit absent from the run whose `last_ts` is older than `drop_after_days` (default 14) leaves the state; a unit read in the run stays, since stored waiting and promise units are read again every run (AC-48.4).
+- The window: from `run.at` to now. A baseline run, or a gap of more than `lookback_working_days` (default 3) working days, starts at local midnight of the `lookback_working_days`-th working day before the local date of now: on a Thursday with 3, Monday 00:00; on a Saturday, Wednesday 00:00 (AC-45.4).
+- Working days are Monday to Friday in the config timezone, counted on local dates, so a daylight saving change counts the same days (AC-46.3). The calendar helpers sit in `recap_window.py`.
+- The window file: `{"from_ts", "to_ts", "limited": null | "baseline" | "gap", "explicit"}`; `limited` feeds the summary line.
+- Unit kinds: `dm` and `group_dm` under a `dm-` key, `thread`, `mention` and `group` under a `thread-` key.
+- The run record holds counts, unit keys per section and blind spots, as the other engines' records.
+
+**Rationale**: the same history rules as the live routine, kept by a tested script.
+
+### TD-63: Recap message
+
+**Choice**:
+- `recap.py message` renders the layout of US-49 in Standard Markdown from the summary, the features' names and channels, and the judgment's checked text.
+- Links: `https://<workspace>/archives/<channel>/p<ts without the dot>`, plus `?thread_ts=<root ts>&cid=<channel>` for a reply; the workspace host comes from the routine file. Labels by kind: `DM`, `group DM`, `thread in #<channel>`, `mention in #<channel>`, `group in #<channel>`.
+- Waiting on you is sorted blocking first, then direct conversation, direct mention, group, thread, then oldest `unanswered_from` first; ⏰ precedes a late unit's name (AC-49.3).
+- The post rule is the script's: `post` is true when a unit is waiting, new or resolved; the template posts only then.
+- Degraded messages: one `degraded:` line naming the cause, as the tribe message.
+
+### TD-64: Recap routine file, template and seed
+
+**Choice**:
+- `config/routines/<slug>.json` with `engine: recap` holds (AC-50.1): `owner` (chat user id), `workspace` host, `groups` (id, label, `lands_in`: `waiting` or `good_to_know`), `announcement` (channel ids and the topics kept), `window` (`lookback_working_days`), `exclude` (author ids, channel ids, and `keep_bots`, the bot ids kept), `history` (`late_after_working_days`, `drop_after_days`, both optional), the ask rules text, and chat sources only, each with the routine's `owner`; each search carries its own look-back. The role check names the key path of an invalid value, nested keys included, and `routines.py lint --private` runs it on every routine file.
+- The runnable template `chat-recap.md` follows the tribe template's steps without the page: runtime check, load state, window, environment check, collect, features, judge, apply, save state on the state branch, message, report, as the tribe template saves before it renders.
+- `recap.py seed --from <json>` converts the document store state (schema 1, units with kind, channel, title, permalink, first_seen, last_ts, status, runs_waiting, late) into the runtime state: it drops `permalink` (rebuilt from keys), maps statuses, truncates titles to 8 words and validates; it fails naming the key path of a unit it cannot map (AC-50.2).
+- After the switch, the template reads no document store page (AC-50.3).
+
 ## Implementation Considerations
 
 ### Data Model
@@ -1807,6 +1930,41 @@ sequenceDiagram
     end
 ```
 
+### Chat recap run
+
+```mermaid
+sequenceDiagram
+    participant M as Routine model
+    participant C as collect.py
+    participant R as recap.py
+    participant A as Chat API or connector
+    participant H as Chat connector
+    M->>R: load or init the state, then recap.py window
+    alt api transport
+        M->>C: fetch the chat source
+        C->>A: searches, conversation, thread and reactions reads
+    else mcp transport
+        M->>C: plan, relay with the Write tool, parse
+    end
+    M->>R: features
+    R-->>M: features.json with facts and allowed kinds, rules
+    M->>R: judge judgment.json
+    alt rejected twice
+        R-->>M: exit 3
+        M->>H: post degraded message
+    else checked
+        M->>R: apply
+        R-->>M: next state, summary, record
+        M->>M: commit state and record, push fast-forward
+        M->>R: message
+        alt post is true
+            M->>H: post the rendered message
+        else nothing waiting, new or resolved
+            M->>M: print it, post nothing
+        end
+    end
+```
+
 ## File Inventory
 
 | File | Action | Purpose |
@@ -1862,7 +2020,25 @@ sequenceDiagram
 | `plugins/claudio-routines/runtime/digest.py` | new | Digest: renders the posted message from the summary, the next state and the base file, in the compact chat layout (TD-33, TD-57) |
 | `plugins/claudio-routines/runtime/test_digest.py` | new | Digest: each section, empty sections skipped, rank order, report-only output, only summary, state and base text rendered |
 | `plugins/claudio-routines/runtime/fixtures/digest_golden.md` | new | Digest: golden compact chat message (TD-57) |
-| `plugins/claudio-routines/runtime/support.py`, `evaluate_support.py`, `providers/datadog_support.py` | new | Test support: shared state, evaluator and adapter fixtures, so no test module imports another |
+| `plugins/claudio-routines/runtime/recap.py` | new | Recap engine CLI: init, seed, window, features, judge, apply, message (TD-58) |
+| `plugins/claudio-routines/runtime/recap_state.py` | new | Recap state schema, check and initial state (TD-62) |
+| `plugins/claudio-routines/runtime/recap_window.py` | new | Recap working-day calendar and window (TD-62) |
+| `plugins/claudio-routines/runtime/recap_features.py` | new | Recap units, facts, allowed kinds, features, base and rules files (TD-60) |
+| `plugins/claudio-routines/runtime/recap_judgment.py` | new | Recap judgment schema and checks (TD-61) |
+| `plugins/claudio-routines/runtime/recap_lifecycle.py` | new | Recap apply: statuses, lateness, resolution, drop, summary, record (TD-62) |
+| `plugins/claudio-routines/runtime/recap_message.py` | new | Recap chat message and degraded messages (TD-63) |
+| `plugins/claudio-routines/runtime/recap_seed.py` | new | Seed the recap state from the document store state (TD-64) |
+| `plugins/claudio-routines/runtime/test_recap_state.py` | new | Recap state and window |
+| `plugins/claudio-routines/runtime/test_recap_features.py` | new | Recap units, facts and allowed kinds |
+| `plugins/claudio-routines/runtime/test_recap_judgment.py` | new | Recap judgment checks |
+| `plugins/claudio-routines/runtime/test_recap_lifecycle.py` | new | Recap lifecycle |
+| `plugins/claudio-routines/runtime/test_recap_message.py` | new | Recap message |
+| `plugins/claudio-routines/runtime/test_recap_seed.py` | new | Recap seed |
+| `plugins/claudio-routines/runtime/test_recap_pipeline.py` | new | Recap pipeline from a fake collection to the message |
+| `plugins/claudio-routines/runtime/fixtures/recap/message_golden.md` | new | Golden recap message |
+| `plugins/claudio-routines/runtime/support.py`, `evaluate_support.py`, `providers/datadog_support.py`, `providers/slack_support.py` | new | Test support: shared state, evaluator and adapter fixtures, so no test module imports another |
+| `plugins/claudio-routines/runtime/providers/_slack_read.py`, `providers/_slack_search.py` | new | Chat adapter internals: channel and thread reads on both transports, and the search, unit and reactions reads (TD-59); `slack.py` keeps the adapter entry points |
+| `plugins/claudio-routines/runtime/providers/test_slack_search.py` | new | Chat searches, unit reads, reactions, caps and transport equality (TD-59) |
 | `plugins/claudio-routines/runtime/test_pipeline.py` | new | Judgment: one fixture run through `features`, `judge`, a preview apply, `annotate` and `apply`, checking rank order and the stored analysis |
 | `plugins/claudio-routines/skills/routines/templates/prod-watch.md` | modify | Judgment: features, judgment, preview apply, analysis and rank-ordered digest steps |
 | `plugins/claudio-routines/config.example.json` | modify | Judgment: pack entries with prose rules, routine rules, `discovery_query` |

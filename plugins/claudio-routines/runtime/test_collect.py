@@ -15,6 +15,14 @@ import state
 from support import publication_values
 from providers._http import PAGE_CAP, PartialRead, SourceUnreadable
 from providers._errors import CredentialsMissing
+from test_recap_features import OWNER as RECAP_OWNER
+from test_recap_features import make_routine as make_recap_routine
+from test_recap_state import CHANNEL_A as RECAP_CHANNEL_A
+from test_recap_state import CHANNEL_B as RECAP_CHANNEL_B
+from test_recap_state import LAST_TS as RECAP_LAST_TS
+from test_recap_state import ROOT_TS as RECAP_ROOT_TS
+from test_recap_state import make_state as make_recap_state
+from test_recap_state import make_unit as make_recap_unit
 from tribe_support import make_state as make_tribe_state
 from tribe_support import make_warning
 
@@ -1439,6 +1447,133 @@ class TribeChatCallCapTest(TribeChatCase):
         self.assertEqual(self.plan_doc(), {"done": True, "partial": "call cap", "calls": []})
 
 
+RECAP_SEARCHES = [{"name": "dms", "filters": "is:dm", "since": "window"}]
+RECAP_REREADS = [
+    {"kind": "dm", "channel": RECAP_CHANNEL_A, "root_ts": None, "last_ts": RECAP_LAST_TS},
+    {"kind": "thread", "channel": RECAP_CHANNEL_B, "root_ts": RECAP_ROOT_TS, "last_ts": RECAP_LAST_TS},
+]
+
+
+class RecapChatCase(RelayTestCase):
+    def setUp(self):
+        super().setUp()
+        self.chat = fake_adapter("fakechat", "chat")
+        self.chat.result = NO_CHAT_RESULT
+        patched = mock.patch.dict(sys.modules, {"providers.fakechat": self.chat})
+        patched.start()
+        self.addCleanup(patched.stop)
+        self.config["providers"]["chat"] = {
+            "adapter": "fakechat",
+            "api": {"base_url": "https://chat.example.test", "credentials": {"token": "CHAT_TOKEN"}},
+            "mcp": {"connectors": {"cloud": "chat-cloud", "local": "chat-local"}},
+        }
+        routine = make_recap_routine()
+        routine["sources"] = {
+            "team-chat": {
+                "provider": "chat",
+                "transport": {"cloud": "mcp", "local": "api"},
+                "owner": RECAP_OWNER,
+                "searches": RECAP_SEARCHES,
+            }
+        }
+        self.config["routines"][ROUTINE] = routine
+        self.state = make_recap_state()
+        self.window = {"from_ts": WINDOW_END - 3600, "to_ts": WINDOW_END, "limited": None, "explicit": False}
+
+    def reread_units(self, **units):
+        self.state = make_recap_state(units={key: make_recap_unit(**fields) for key, fields in units.items()})
+
+
+class RecapChatRereadsTest(RecapChatCase):
+    def test_hands_the_adapter_a_reread_per_stored_waiting_or_promise_unit_over_the_api_transport(self):
+        self.fetch(source="team-chat", place="local")
+        self.assertEqual(self.chat.calls[0]["source"]["rereads"], RECAP_REREADS)
+
+    def test_hands_the_adapter_the_rereads_when_planning(self):
+        self.plan(source="team-chat")
+        self.assertEqual(self.chat.plans[0]["source"]["rereads"], RECAP_REREADS)
+
+    def test_hands_the_adapter_the_rereads_when_parsing(self):
+        self.loop(source="team-chat")
+        self.parse(source="team-chat")
+        self.assertEqual(self.chat.parses[0]["source"]["rereads"], RECAP_REREADS)
+
+    def test_skips_the_units_that_are_not_waiting_or_promise(self):
+        statuses = ("waiting_on_others", "team_ask", "handled", "announcement")
+        self.state = make_recap_state(units={f"dm-D{index}": make_recap_unit(channel=f"D{index}", status=status) for index, status in enumerate(statuses)})
+        self.fetch(source="team-chat", place="local")
+        self.assertEqual(self.chat.calls[0]["source"]["rereads"], [])
+
+    def test_names_the_group_conversation_kind_and_the_thread_root(self):
+        self.state = make_recap_state(units={f"dm-{RECAP_CHANNEL_A}": make_recap_unit(kind="group_dm"), f"thread-{RECAP_CHANNEL_B}-{RECAP_ROOT_TS}": make_recap_unit(kind="mention", channel=RECAP_CHANNEL_B)})
+        self.fetch(source="team-chat", place="local")
+        self.assertEqual([(item["kind"], item["root_ts"]) for item in self.chat.calls[0]["source"]["rereads"]], [("group_dm", None), ("mention", RECAP_ROOT_TS)])
+
+    def test_hands_a_document_source_no_rereads(self):
+        source = {"provider": "docs", "page_id": "page-1"}
+        self.assertEqual(collect.state_options(self.state, roles.RECAP_ENGINE, "document_store", source, "sources-page"), {})
+
+    def test_hands_a_source_without_searches_no_rereads(self):
+        del self.config["routines"][ROUTINE]["sources"]["team-chat"]["searches"]
+        self.config["routines"][ROUTINE]["sources"]["team-chat"]["channels"] = [CHAT_CHANNEL]
+        self.fetch(source="team-chat", place="local")
+        self.assertNotIn("rereads", self.chat.calls[0]["source"])
+
+    def test_replaces_the_rereads_written_in_the_config_of_a_source(self):
+        self.config["routines"][ROUTINE]["sources"]["team-chat"]["rereads"] = [{"channel": "junk"}]
+        self.state = make_recap_state(units={})
+        self.fetch(source="team-chat", place="local")
+        self.assertEqual(self.chat.calls[0]["source"]["rereads"], [])
+
+    def test_drops_the_rereads_written_in_the_config_of_a_watch_source(self):
+        del self.config["routines"][ROUTINE]["engine"]
+        self.config["routines"][ROUTINE]["sources"]["team-chat"]["rereads"] = [{"channel": "junk"}]
+        self.state = make_state()
+        self.window = make_window()
+        self.fetch(source="team-chat", place="local")
+        self.assertNotIn("rereads", self.chat.calls[0]["source"])
+
+    def test_hands_the_adapter_no_stored_cursor(self):
+        self.fetch(source="team-chat", place="local")
+        self.assertIsNone(self.chat.calls[0]["cursor"])
+
+    def test_keeps_the_failed_entries_of_the_adapter(self):
+        failed = {"search:dms": {"status": "failed", "reason": "page cap: 3 page(s) read"}}
+        self.chat.result = {**NO_CHAT_RESULT, "entries": failed}
+        self.fetch(source="team-chat", place="local")
+        self.assertEqual(self.collection()["entries"], failed)
+
+
+class RecapStateTest(RecapChatCase):
+    def test_reads_a_recap_state_and_window(self):
+        self.assertEqual(self.fetch(source="team-chat", place="local")[0], 0)
+
+    def test_rejects_a_tribe_state_for_a_recap_routine_naming_the_schema(self):
+        self.state = make_tribe_state()
+        code, _, err = self.fetch(source="team-chat", place="local")
+        self.assertEqual((code, "state: " in err), (3, True))
+
+    def test_rejects_an_invalid_recap_state_naming_the_key_path(self):
+        self.state["units"][f"dm-{RECAP_CHANNEL_A}"]["status"] = "done"
+        code, _, err = self.fetch(source="team-chat", place="local")
+        self.assertEqual((code, f"units.dm-{RECAP_CHANNEL_A}.status" in err), (3, True))
+
+    def test_rejects_a_recap_state_for_a_watch_routine(self):
+        del self.config["routines"][ROUTINE]["engine"]
+        self.window = make_window()
+        code, _, err = self.fetch(source="team-chat", place="local")
+        self.assertEqual((code, "state: expected schema 2 at schema" in err), (3, True))
+
+    def test_rejects_a_window_without_the_limit_key(self):
+        del self.window["limited"]
+        code, _, err = self.fetch(source="team-chat", place="local")
+        self.assertEqual((code, "window: " in err and "limited" in err), (3, True))
+
+    def test_rejects_a_tribe_window_for_a_recap_routine(self):
+        self.window = make_window()
+        self.assertEqual(self.fetch(source="team-chat", place="local")[0], 3)
+
+
 class TribePreviousPageTest(RelayTestCase):
     def setUp(self):
         super().setUp()
@@ -1757,6 +1892,18 @@ class CallCapTest(RelayTestCase):
         self.fill(collect.CALL_CAP)
         self.parse()
         self.assertEqual([self.collection()["read"], self.collection()["reason"]], [False, "partial: call cap"])
+
+    def test_ends_at_the_call_cap_of_the_source(self):
+        self.config["routines"][ROUTINE]["sources"]["sources-page"]["call_cap"] = 3
+        self.doc.pages = 4
+        self.fill(3)
+        self.assertEqual(self.plan_doc(), {"done": True, "partial": "call cap", "calls": []})
+
+    def test_keeps_listing_calls_past_the_default_cap_when_the_source_raises_it(self):
+        self.config["routines"][ROUTINE]["sources"]["sources-page"]["call_cap"] = collect.CALL_CAP + 10
+        self.doc.pages = collect.CALL_CAP + 1
+        self.fill(collect.CALL_CAP)
+        self.assertEqual(self.call_ids(), [f"sources-page-{collect.CALL_CAP + 1}"])
 
     def test_ends_without_partial_when_the_adapter_is_done_at_the_cap(self):
         self.doc.pages = collect.CALL_CAP

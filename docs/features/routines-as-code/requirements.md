@@ -688,6 +688,75 @@ THE message follows the compact chat layout the routine posted before the runtim
 - [ ] A link label is `monitor <id>` for a monitor link and `metric` otherwise, and a Markdown link only for an `http://` or `https://` link, the label alone otherwise, with the destination's parentheses, spaces and backslashes percent-encoded *(AC-44.7)*
 - [ ] Every time is in the config timezone: a time on the run's local day shows `HH:MM`, another day `DD Mon HH:MM`, and a `since` that is not a UTC time shows as stored *(AC-44.8)*
 
+### Run the chat recap on the runtime {#US-45}
+
+WHEN the chat recap routine runs
+THE runtime collects the owner's direct conversations, mentions, threads and announcements of the window through the chat role, scripts compute the facts of each conversation unit, the model classifies and summarizes the units, and scripts check the judgment, keep the unit history, render the message and save the state on the state branch
+
+**Acceptance Criteria:**
+- [ ] A run reads, through the chat role: the direct and group conversations with a message from someone else in the window, the messages that mention the owner or a configured group, the owner's messages of the look-back days whose thread has a reply from someone else in the window, and one announcement search over the configured channels *(AC-45.1)*
+- [ ] Each direct conversation is one unit keyed `dm-<channel>`, each thread one unit keyed `thread-<channel>-<root ts>`; a thread found by two reads is one unit *(AC-45.2)*
+- [ ] Messages of configured excluded authors and channels are dropped before any unit is built *(AC-45.3)*
+- [ ] The window starts at the previous run; a baseline run, or a gap longer than the configured working days, reads the last configured working days only, and the summary line says so *(AC-45.4)*
+- [ ] A unit stored as waiting or promise is read again on every run from its last message, even when the window starts later *(AC-45.5)*
+- [ ] A search cut by pagination, a channel the owner cannot read and a read that failed are blind spots, named in the summary line *(AC-45.6)*
+
+### Compute the facts of each unit {#US-46}
+
+WHEN the units of a recap run are collected
+THE scripts compute, per unit, the facts the classification depends on, so the model never decides them
+
+**Acceptance Criteria:**
+- [ ] Per unit: the author of the last message, whether the owner wrote or reacted after each message from someone else, the configured groups it mentions and the section each lands in, and its age in working days in the config timezone *(AC-46.1)*
+- [ ] The owner's messages and reactions count as his answers; a message from an excluded author counts as nobody's *(AC-46.2)*
+- [ ] Working days are Monday to Friday in the config timezone; a run across a daylight saving change counts the same days *(AC-46.3)*
+
+### Classify and summarize the units {#US-47}
+
+WHEN the facts of a recap run are ready
+THE model writes one kind and one short summary per unit, plus the reading, and a script rejects any judgment that contradicts the facts
+
+**Acceptance Criteria:**
+- [ ] Every unit gets exactly one kind: `waiting on you`, `promise`, `team ask`, `you're waiting on`, `already handled`, `announcement` or `noise` *(AC-47.1)*
+- [ ] The checker rejects a missing or unknown unit, and a kind the facts forbid: `waiting on you` on a unit whose last ask the owner answered, `you're waiting on` on a unit whose last message is not the owner's, `team ask` on a unit with no group that lands in Good to know, `announcement` on a unit outside the announcement channels *(AC-47.2)*
+- [ ] A summary is one sentence of at most 200 characters, a title at most 8 words; neither holds a control character, `<`, `>`, `@`, `://` or a chat author id *(AC-47.3)*
+- [ ] A promise carries its due time, or none; it is late once that time has passed, or from the next business day when it names none *(AC-47.4)*
+- [ ] The reading holds at most 4 bullets, each citing at least one unit of the run; a bullet that changes nothing for the next 48 hours is left out, so a quiet run has none *(AC-47.5)*
+- [ ] As for the other engines, one correction is allowed; a second rejection posts the degraded message and writes no state *(AC-47.6)*
+
+### Keep the unit history {#US-48}
+
+WHEN a recap run applies its judgment
+THE lifecycle script updates each unit's history from the stored state and the facts, never from message text
+
+**Acceptance Criteria:**
+- [ ] A unit keeps `first_seen`, `last_ts`, `runs_waiting`, `status` and, when late, its age *(AC-48.1)*
+- [ ] A waiting unit unanswered for more than the configured working days is late *(AC-48.2)*
+- [ ] A stored waiting or promise unit that the owner answered, or that the judgment marks handled, is resolved and shows once under Already handled *(AC-48.3)*
+- [ ] A unit absent from the run whose last message is older than the configured days leaves the state; a unit read in the run stays *(AC-48.4)*
+
+### Post the recap message {#US-49}
+
+WHEN a recap run has applied its judgment
+THE script renders one message in the recap layout, and the run posts it to the digest channel only when at least one unit is waiting, new or resolved
+
+**Acceptance Criteria:**
+- [ ] Sections in order: Title with the run time and window start in the config timezone, Summary, Waiting on you, Good to know, You're waiting on, Already handled (at most 5, then `+N`), Reading; an empty section is skipped, except Summary *(AC-49.1)*
+- [ ] Summary: `N waiting on you (N late), N new, N resolved, N you're waiting on`, and one line for window limits and blind spots when there are any *(AC-49.2)*
+- [ ] Waiting on you is sorted blocking first, then direct conversation, direct mention, group, thread, then oldest first, with ⏰ before a late unit; a promise reads `**You** promised <what>, by <when>` *(AC-49.3)*
+- [ ] Names are the display names the chat source gives; links are built by the script from the channel and timestamps, labelled by kind (`DM`, `group DM`, `thread in #channel`, `mention in #channel`) *(AC-49.4)*
+- [ ] The message holds no state, JSON or unit key, and no text the model wrote other than checked summaries, titles and reading bullets *(AC-49.5)*
+
+### Move the recap configuration and state into the private repository {#US-50}
+
+WHEN the owner switches the chat recap routine to the runtime
+THE configuration lives in its routine file in the private repository and the state on the state branch, seeded from the last state the routine kept in the document store
+
+**Acceptance Criteria:**
+- [ ] The routine file holds the owner identity, the groups with their landing section, the sources, the window and look-back days, the excluded authors and channels, and the announcement channels and topics; the lint names the key path of an invalid value *(AC-50.1)*
+- [ ] A seed command converts the last stored state to the runtime state, validates it and keeps no message text *(AC-50.2)*
+- [ ] After the switch, a run reads no document store page *(AC-50.3)*
+
 ## Business Rules
 
 - No private name, identifier, URL host or secret is committed to this public repository *(BR-1)*
@@ -756,13 +825,17 @@ THE message follows the compact chat layout the routine posted before the runtim
 - Coverage notes are the model's data about what a run did not cover: they are stored nowhere, count no run, and change no warning, check or blind spot count *(BR-64)*
 - A read that succeeds with no datapoint is a blind spot unless its entry sets `empty` to `zero`; a read that fails is always a blind spot *(BR-65)*
 - A relayed result reaches its file through the file-write tool, never through a shell command: source text never becomes part of a command *(BR-66)*
+- The recap state and its run records hold ids with their display names, timestamps, titles of at most 8 words and counts, never message text *(BR-67)*
+- Direct conversation content leaves the chat source only as a one-sentence summary in the digest channel *(BR-68)*
+- Scripts decide who wrote last, whether the owner answered, ages, lateness and landing sections; the model decides only what a message asks, its kind among those the facts allow, its summary and the reading *(BR-69)*
 
 ## Out of Scope
 
 - A structure check of the Prod watch digest: a later spec
 - Scheduling local runs (cron, launchd): `/routines run` runs on demand
 - Linking a shared platform-limit key from another digest read less than 24 hours earlier, instead of reading it again
-- Running the chat recap and weekly status on the runtime: after the tribe digests, reusing their collectors
+- Running the weekly status on the runtime: next phase, reusing the chat search of the recap
+- Reading chat channels in full for the recap: the announcement scan searches the configured channels only
 - Changing the 4 mirrored live prompts: the mirrors reproduce them as they are
 - After the tribe judgment:
   - pull requests cited by issues

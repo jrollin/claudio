@@ -3,7 +3,7 @@
 ---
 feature: routines-as-code
 spec_version: 1
-total_tasks: 76
+total_tasks: 86
 phases:
   - name: "Leak guard"
     tasks: [T-1, T-2, T-3]
@@ -38,7 +38,9 @@ phases:
   - name: "Monitor priority and seed fixes"
     tasks: [T-72, T-73, T-74]
   - name: "Cloud run fixes"
-    tasks: [T-75, T-76]
+    tasks: [T-75, T-76, T-77]
+  - name: "Chat recap engine"
+    tasks: [T-78, T-79, T-80, T-81, T-82, T-83, T-84, T-85, T-86]
 depends_on: []
 ---
 
@@ -184,7 +186,7 @@ Owner-gated: needs the merged pull request, a release tag, the setup script past
 - **Verify**: `python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --private "$CLAUDIO_PRIVATE_DIR" && python3 plugins/claudio-routines/skills/routines/scripts/routines.py diff prod-watch`
 - **Blocked by**: T-15, T-17, T-18, T-31, T-43
 - **Rules**: BR-6, BR-7, BR-15, BR-23, BR-25
-- **Status**: In Progress (synced to the runtime on 2026-10-19 after an aligned shadow run: 22 of 26 live items matched, the other 4 explained by timing and by the runtime keeping an open item's severity; first runtime runs to check)
+- **Status**: Complete (synced to the runtime on 2026-10-19 after an aligned shadow run: 22 of 26 live items matched, the other 4 explained by timing and by the runtime keeping an open item's severity; the first cloud runtime run read every source, saved the state and posted the digest)
 
 ## Phase 5: State store and neutral roles
 
@@ -851,6 +853,101 @@ Runs in a local session with the chat, issue tracker, document store and observa
 - **Files**: `docs/features/routines-as-code/design.md` (modify), `docs/features/routines-as-code/requirements.md` (modify), `docs/features/routines-as-code/tasks.md` (modify), `plugins/claudio-routines/runtime/digest.py` (modify), `plugins/claudio-routines/runtime/test_digest.py` (modify), `plugins/claudio-routines/runtime/fixtures/digest_golden.md` (new), `plugins/claudio-routines/skills/routines/templates/prod-watch.md` (modify), `plugins/claudio-routines/README.md` (modify), `plugins/claudio-routines/skills/routines/scripts/test_routines.py` (modify)
 - **Verify**: `for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
 - **Status**: Complete
+
+### T-77: Check the analysis text in its NFKC form too
+- `judgment.py` runs the `<`, `>`, `@` and `://` check of an analysis and judgment text on the text and on its NFKC form, as the tribe check does (TD-50), so a fullwidth link that the digest's cleaning turns into a live link is rejected.
+- Tests: a fullwidth `［x］（https：／／example.test）` claim, a fullwidth `＠` and `＜`, rejected with their key paths; plain text accepted.
+- **Refs**: US-22, TD-27
+- **Files**: `docs/features/routines-as-code/design.md` (modify), `docs/features/routines-as-code/tasks.md` (modify), `plugins/claudio-routines/runtime/judgment.py` (modify), `plugins/claudio-routines/runtime/test_judgment.py` (modify)
+- **Verify**: `for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 scripts/leak_check.py --tree`
+- **Status**: Complete
+
+## Phase 18: Chat recap engine
+
+### T-78: Chat searches and reactions
+- The `chat` role gains `owner`, `searches` (name, `filters`, optional `channel_types` and `keywords`, `since`: `window` or `lookback_days`), `reactions`, `search_page_cap` (default 10) and `call_cap` (default 50, at most 300); `channels` becomes optional when `searches` is set, and a source needs one of them. The role check names the key path of an invalid option.
+- The chat adapter plans (`mcp`) or fetches (`api`) one search call per page, sorted by timestamp oldest first, 20 results a page, no context; a search cut by the cap keeps the units read so far, with a failed entry `search:<name>` naming the pages read; `call_cap` bounds every call of the source. A direct or group conversation hit adds one conversation read from the window start, a thread hit one thread read by its root; a unit is read once per run. With `reactions`, it reads the reactions of each message from someone else after the owner's last message, at most 3 per unit, and keeps only the reacting user ids.
+- Records keep, per message: channel id and name, user id and display name, ts, root ts, text cut at 300 characters, and the owner's reactions.
+- Tests: a search page parsed from a fixture of the connector's search response; the next page from its cursor; the page cap keeping its units with a `search:<name>` failed entry; `call_cap` shared by every call; a direct conversation hit and a thread hit routed to their reads; one unit for two hits; reactions parsed to user ids; the `api` fetch of each call with a fake HTTP client; each role error with its key path.
+- **Refs**: US-45, TD-59
+- **Files**: `plugins/claudio-routines/runtime/roles.py` (modify), `plugins/claudio-routines/runtime/test_roles.py` (modify), `plugins/claudio-routines/runtime/providers/slack.py` (modify), `plugins/claudio-routines/runtime/providers/test_slack.py` (modify), `plugins/claudio-routines/runtime/providers/fixtures/slack/` (new files), `plugins/claudio-routines/runtime/providers/README.md` (modify), `plugins/claudio-routines/runtime/collect.py` (modify), `plugins/claudio-routines/runtime/test_collect.py` (modify)
+- **Rules**: BR-68
+- **Status**: Complete
+
+### T-79: Recap state, window and CLI
+- `recap_state.py` holds the state schema of TD-62, its check and the initial state; `recap.py` parses the subcommands and runs `init` and `window`. The window starts at `run.at`; a baseline run, or a gap longer than `lookback_working_days`, starts `lookback_working_days` working days back and says so in the window file.
+- Tests: the schema check of each key with its key path; the initial state; a normal window; a baseline window; a gap window; working days across a weekend and a daylight saving change.
+- **Refs**: US-45, US-48, TD-58, TD-62
+- **Files**: `plugins/claudio-routines/runtime/recap.py` (new), `plugins/claudio-routines/runtime/recap_state.py` (new), `plugins/claudio-routines/runtime/recap_window.py` (new), `plugins/claudio-routines/runtime/test_recap_state.py` (new)
+- **Rules**: BR-67
+- **Status**: Complete
+
+### T-80: Recap features and facts
+- `recap.py features` builds the units and their facts and allowed kinds (TD-60) from the chat collection, the state and the routine file, and writes the features, base and rules files. `collect.py`, given a recap state, adds one conversation or thread read per stored `waiting` or `promise` unit from its `last_ts`. A `search:<name>` failed entry of the chat collection becomes a blind spot naming the search and the pages read (AC-45.6).
+- The `recap` engine joins `ENGINES` so a recap routine loads; T-85 adds the validation of its routine keys.
+- Tests: a capped search keeps its units and reports the cut; unit keys for a direct conversation, a group conversation and a thread; excluded authors and channels dropped; each fact; the allowed kinds of each case of TD-60; an age across a weekend and a daylight saving change; a stored waiting unit read again outside the window; no message text in the base file.
+- **Refs**: US-45, US-46, TD-60
+- **Files**: `plugins/claudio-routines/runtime/recap_features.py` (new), `plugins/claudio-routines/runtime/test_recap_features.py` (new), `plugins/claudio-routines/runtime/collect.py` (modify), `plugins/claudio-routines/runtime/test_collect.py` (modify), `plugins/claudio-routines/runtime/recap.py` (modify), `plugins/claudio-routines/runtime/recap_window.py` (modify), `plugins/claudio-routines/runtime/test_roles.py` (modify), `plugins/claudio-routines/runtime/test_config_tree.py` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify), `plugins/claudio-routines/runtime/providers/_slack_read.py` (modify), `plugins/claudio-routines/runtime/roles.py` (modify), `plugins/claudio-routines/runtime/providers/_slack_search.py` (modify), `plugins/claudio-routines/runtime/providers/test_slack_search.py` (modify)
+- **Blocked by**: T-78, T-79
+- **Rules**: BR-69
+- **Status**: Complete
+
+### T-81: Recap judgment and its checks
+- `recap.py judge` checks the judgment of TD-61 and reports the first failure with its key path.
+- Tests: a valid judgment; a missing unit; an unknown unit; a kind outside `allowed`; a title of 9 words; a summary of two sentences, of 201 characters, with `<`, `@`, `://` or an author id; `due` on a kind other than `promise`; `blocking` on a kind other than `waiting on you`; a reading of 1 and of 5 bullets; a reading bullet citing an unknown unit; invalid JSON.
+- **Refs**: US-47, TD-61
+- **Files**: `plugins/claudio-routines/runtime/recap_judgment.py` (new), `plugins/claudio-routines/runtime/test_recap_judgment.py` (new), `plugins/claudio-routines/runtime/recap.py` (modify)
+- **Blocked by**: T-80
+- **Rules**: BR-69
+- **Status**: Complete
+
+### T-82: Recap lifecycle
+- `recap.py apply` maps kinds to statuses, counts `runs_waiting`, sets `late`, resolves a stored waiting or promise unit once, drops a unit past `drop_after_days`, stores no `noise` unit, keeps each unit's `channel_name` and `person` (TD-62), and writes the next state, the summary and the run record (TD-62).
+- Tests: each kind to its status; `runs_waiting` across runs; a waiting unit late after 3 working days and not before; a promise late after its due time and, with none, after 1 business day; a resolved unit listed once then stored as handled; a dropped unit; a noise unit not stored; no message text, summary or reading in the state or the record; a report-only run leaves the state as it was.
+- **Refs**: US-48, TD-62
+- **Files**: `plugins/claudio-routines/runtime/recap_state.py` (modify), `plugins/claudio-routines/runtime/test_recap_state.py` (modify), `plugins/claudio-routines/runtime/recap_lifecycle.py` (new), `plugins/claudio-routines/runtime/test_recap_lifecycle.py` (new), `plugins/claudio-routines/runtime/recap.py` (modify), `plugins/claudio-routines/runtime/recap_seed.py` (modify), `plugins/claudio-routines/runtime/test_recap_seed.py` (modify)
+- **Blocked by**: T-81
+- **Rules**: BR-67
+- **Status**: Complete
+
+### T-83: Recap message
+- `recap.py message` renders the layout of US-49 and TD-63 and the degraded messages; the post flag comes from the summary `apply` writes.
+- Tests: a golden message; the baseline and limited-window summary lines; the sort order of Waiting on you; ⏰ on a late unit; a promise line; Already handled cut at 5 with `+N`; each link label and a reply link; empty sections skipped except Summary; no unit key, JSON or unchecked text; the post flag false when nothing is waiting, new or resolved; each degraded message.
+- **Refs**: US-49, TD-63
+- **Files**: `plugins/claudio-routines/runtime/recap_message.py` (new), `plugins/claudio-routines/runtime/test_recap_message.py` (new), `plugins/claudio-routines/runtime/fixtures/recap/message_golden.md` (new), `plugins/claudio-routines/runtime/recap.py` (modify)
+- **Blocked by**: T-82
+- **Rules**: BR-68
+- **Status**: Complete
+
+### T-84: Seed the recap state
+- `recap.py seed --from <json>` converts the stored document store state into the runtime state (TD-64); `routines.py seed` accepts a routine with the `recap` engine.
+- Tests: a full conversion from a fixture with fake ids; `permalink` dropped; statuses mapped; a 12-word title cut to 8; a unit that cannot be mapped fails with its key path; the result passes the state check.
+- **Refs**: US-50, TD-64
+- **Files**: `plugins/claudio-routines/runtime/recap_seed.py` (new), `plugins/claudio-routines/runtime/test_recap_seed.py` (new), `plugins/claudio-routines/runtime/recap.py` (modify), `plugins/claudio-routines/skills/routines/scripts/routines.py` (modify), `plugins/claudio-routines/skills/routines/scripts/test_routines.py` (modify)
+- **Blocked by**: T-79
+- **Rules**: BR-67
+- **Status**: Complete
+
+### T-85: Recap template and engine wiring
+- The role check validates the recap routine keys of TD-64 with key paths, requires the chat source's `owner` to equal the routine's, and accepts only chat sources in a recap routine; `recap_features` reads the validated keys instead of checking them again, and `routines.py` uses `roles.RECAP_ENGINE`; the runnable template `chat-recap.md` follows TD-64; `routines.py` lints its flags against `recap.py`; the READMEs list the engine.
+- Tests: the template renders for both places; the lint passes and fails on an unknown flag; each invalid recap key with its key path; a pipeline test from a fake collection to the message.
+- **Refs**: US-45, US-50, TD-58, TD-64
+- **Files**: `plugins/claudio-routines/runtime/config_tree.py` (modify), `plugins/claudio-routines/runtime/roles.py` (modify), `plugins/claudio-routines/runtime/test_roles.py` (modify), `plugins/claudio-routines/runtime/test_recap_pipeline.py` (new), `plugins/claudio-routines/skills/routines/templates/chat-recap.md` (modify), `plugins/claudio-routines/skills/routines/scripts/routines.py` (modify), `plugins/claudio-routines/skills/routines/scripts/test_routines.py` (modify), `plugins/claudio-routines/README.md` (modify), `README.md` (modify)
+- **Blocked by**: T-83, T-84
+- **Status**: Complete
+
+### T-86: Roll out the chat recap
+Owner-gated: needs the merged pull request, a release tag, the transport and its credentials per place, and an approved sync.
+1. Write the private routine file from the document store sources page, with the transport the owner picked per place.
+2. Seed `state/<slug>.json` on the `claude/state` branch from the last stored state.
+3. Run a report-only shadow run right after a live run and compare.
+4. Sync the routine.
+- **Refs**: US-50
+- **Files**: none in this repository; the private repository's routine file changes
+- **Verify**: `python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --private "$CLAUDIO_PRIVATE_DIR" && python3 plugins/claudio-routines/skills/routines/scripts/routines.py diff <slug>`
+- **Blocked by**: T-85
+- **Rules**: BR-67, BR-68
+- **Status**: Not Started
 
 ## Related Features
 

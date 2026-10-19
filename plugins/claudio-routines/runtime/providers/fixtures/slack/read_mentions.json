@@ -1,0 +1,4 @@
+{
+  "messages": "Channel: DM (D000005)\n\n=== Message from Peer Name peer@example.test (U000002) at 2026-10-19 10:30:00 UTC === \nMessage TS: 1792395500.000200\nHi <@U000001|Owner Name> and <!subteam^S000002|@core>\n",
+  "pagination_info": "There are no more messages available."
+}
