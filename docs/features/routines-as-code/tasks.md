@@ -880,7 +880,7 @@ Runs in a local session with the chat, issue tracker, document store and observa
 - **Refs**: US-45, US-48, TD-58, TD-62
 - **Files**: `plugins/claudio-routines/runtime/recap.py` (new), `plugins/claudio-routines/runtime/recap_state.py` (new), `plugins/claudio-routines/runtime/recap_window.py` (new), `plugins/claudio-routines/runtime/test_recap_state.py` (new)
 - **Rules**: BR-67
-- **Status**: Not Started
+- **Status**: Complete
 
 ### T-80: Recap features and facts
 - `recap.py features` builds the units and their facts and allowed kinds (TD-60) from the chat collection, the state and the routine file, and writes the features, base and rules files. `collect.py`, given a recap state, adds one conversation or thread read per stored `waiting` or `promise` unit from its `last_ts`. A chat source whose search hit its page cap keeps the units read so far: `collect.py` writes the collection as read, with the cut as a blind spot (AC-45.6).
