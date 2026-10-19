@@ -266,7 +266,7 @@ THE skill renders the routine for the local place and runs it in the current Cla
 - [ ] The run never changes the checked-out branch or the working tree of the private repository *(AC-16.2)*
 - [ ] `--since T` runs an explicit window, per BR-22 *(AC-16.3)*
 - [ ] The digest is printed in the session, and reaches the chat channel only with `--post`, per BR-26 *(AC-16.4)*
-- [ ] A push rejected because the branch moved is reported as state not saved, per BR-27 *(AC-16.5)*
+- [ ] A save whose own state file moved since the run started, or whose push is rejected twice, is reported as state not saved, per BR-27 *(AC-16.5)*
 - [ ] Before collecting, the run names every `api` source whose credential variables are missing, and every `mcp` source whose connector the session lacks *(AC-16.6)*
 - [ ] The run uses the pinned runtime, installed locally by the setup script, and the run record names its commit *(AC-16.7)*
 - [ ] Without `--post`, the run reports only: it pushes its run record and leaves the state unchanged, per BR-22 *(AC-16.8)*
@@ -785,7 +785,7 @@ THE configuration lives in its routine file in the private repository and the st
 - Each source has one transport per place, its own or else its provider's default, and a failed read never falls back to the other transport *(BR-24)*
 - Credentials live only in the environment variables of the place that runs the collector, never in config, templates, repositories, facts, run records or state *(BR-25)*
 - A local run posts its digest to the chat channel only when the owner passes `--post` *(BR-26)*
-- State moves only by fast-forward pushes to `claude/state`; a rejected push is reported, never forced or merged *(BR-27)*
+- State moves only by fast-forward pushes to `claude/state`: a save builds on the latest tip, retries a rejected push once, and is never forced or merged *(BR-27)*
 - A source read only in part counts as not read, so no item resolves on partial data *(BR-28)*
 - A provider adapter calls only the HTTPS host the config sets for that provider *(BR-29)*
 - Public prose and skeletons name roles (observability tool, chat channel, document store, code host, issue tracker), never providers; provider names appear only under `providers/`, in the private repository and in live routines *(BR-30)*

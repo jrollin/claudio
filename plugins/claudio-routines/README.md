@@ -419,7 +419,7 @@ Settings:
 - `--since T` runs an explicit window from `T`, which reports only.
 - The run reads the working tree's `config.json` and the routine's file `config/routines/<slug>.json`.
 - `config_dirty` in the run record covers both files: it is true when either holds uncommitted changes, an untracked routine file included.
-- A local run with `--post` and a cloud run at the same time both post; the second push is rejected and reports `state not saved`, and the next run collects the window again.
+- A local run with `--post` and a cloud run at the same time both post; the second save finds the routine's state file changed since it started, stops and reports `state not saved`, and the next run collects the window again.
 
 ## Runtime
 
@@ -472,7 +472,7 @@ A routine that uses the engine keeps, on the `claude/state` branch of the privat
 - `state/<slug>.json`: the state the next run starts from, so a run only collects what happened since the last one.
 - `runs/<slug>/<run-at>.json`: one record per run, ready to parse for stats: window, counts, item keys, muted keys, blind spots, sources read, and the place, runtime commit, config commit and transport per source when the run had collectors.
 
-A run with no branch or no state file is a baseline run. A failed push is reported in the digest as state not saved.
+A run with no branch or no state file is a baseline run. The save fetches the branch again and commits on its latest tip, since other routines push to it during a run. A push rejected because the branch moved meanwhile is retried once. A failed save is reported in the digest as state not saved.
 
 The schema and the rules are in the [routines-as-code spec](../../docs/features/routines-as-code/).
 
