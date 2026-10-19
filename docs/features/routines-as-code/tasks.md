@@ -860,7 +860,7 @@ Runs in a local session with the chat, issue tracker, document store and observa
 - **Refs**: US-22, TD-27
 - **Files**: `docs/features/routines-as-code/design.md` (modify), `docs/features/routines-as-code/tasks.md` (modify), `plugins/claudio-routines/runtime/judgment.py` (modify), `plugins/claudio-routines/runtime/test_judgment.py` (modify)
 - **Verify**: `for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 scripts/leak_check.py --tree`
-- **Status**: Not Started
+- **Status**: Complete
 
 ## Phase 18: Chat recap engine
 

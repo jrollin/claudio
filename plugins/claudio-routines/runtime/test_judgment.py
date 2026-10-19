@@ -564,6 +564,36 @@ class AnalysisTextTest(AnalysisTestCase):
 
         self.assertIn("items.cpu.reason[0].claim", self.rejection(cpu_claim(claim)))
 
+    def test_each_text_field_with_a_fullwidth_markdown_link_is_rejected_with_its_path(self):
+        link = "see \uff3bx\uff3d\uff08https\uff1a\uff0f\uff0fexample.test\uff09"
+        for name in ("risk", "action"):
+            with self.subTest(field=name):
+                self.assertIn(f"items.cpu.{name}", self.rejection(cpu_item_with(**{name: link})))
+
+    def test_each_text_field_with_a_fullwidth_mention_or_markup_character_is_rejected_with_its_path(self):
+        for name in ("risk", "action"):
+            for barred in ("\uff20", "\uff1c", "\uff1e"):
+                with self.subTest(field=name, character=barred):
+                    self.assertIn(f"items.cpu.{name}", self.rejection(cpu_item_with(**{name: f"ping {barred}here"})))
+
+    def test_mitigation_lead_with_a_fullwidth_mention_is_rejected_with_its_path(self):
+        self.assertIn("items.cpu.mitigation[1]", self.rejection(cpu_item_with(mitigation=["a", "ask \uff20owner"])))
+
+    def test_claim_with_a_fullwidth_link_is_rejected_with_its_path(self):
+        claim = {"tag": "inferred", "claim": "\uff3bx\uff3d\uff08https\uff1a\uff0f\uff0fexample.test\uff09", "cites": {}}
+
+        self.assertIn("items.cpu.reason[0].claim", self.rejection(cpu_claim(claim)))
+
+    def test_claim_with_a_fullwidth_mention_is_rejected_with_its_path(self):
+        claim = {"tag": "inferred", "claim": "ask \uff20owner", "cites": {}}
+
+        self.assertIn("items.cpu.reason[0].claim", self.rejection(cpu_claim(claim)))
+
+    def test_plain_text_with_fullwidth_letters_and_digits_is_accepted(self):
+        facts = self.annotated(cpu_item_with(action="restart \uff23\uff30\uff35 \uff11\uff10"))
+
+        self.assertEqual(facts["observations"]["cpu"]["action"], "restart \uff23\uff30\uff35 \uff11\uff10")
+
     def test_text_with_a_colon_and_slashes_but_no_scheme_is_accepted(self):
         facts = self.annotated(cpu_item_with(action="restart 3:4 of /var/log"))
 
