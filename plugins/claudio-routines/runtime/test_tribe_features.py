@@ -157,10 +157,10 @@ class WindowDocumentTests(unittest.TestCase):
 
 
 class TrendTests(unittest.TestCase):
-    def trend(self, trend, routine=ROUTINE, **extra):
+    def trend(self, trend, routine=ROUTINE, stored=None, **extra):
         records = {"metrics": [metric_record(**({"trend": trend} if trend is not None else {}), **extra)]}
         metrics = collection("metrics", records, cursor={"metrics": {}}, entries={"queue-depth": {"status": "ok", "reason": None}})
-        return compute(collections=collections_for(metrics=metrics), routine=routine)
+        return compute(collections=collections_for(metrics=metrics), routine=routine, stored=stored)
 
     def values(self, trend, **kwargs):
         return self.trend(trend, **kwargs)[0]["keys"]["trend:queue-depth"]["values"]
@@ -218,6 +218,45 @@ class TrendTests(unittest.TestCase):
     def test_a_failed_trend_is_a_blind_spot_keyed_by_its_trend_document_not_the_entry(self):
         base = self.trend(None, trend_reason="provider error")[1]
         self.assertEqual([spot for spot in base["blind_spots"] if "queue-depth" in spot["key"]], [{"key": "trend:queue-depth", "gap": "provider error"}])
+
+    ZERO = {**ROUTINE, "query_pack": [{**PACK_ENTRY, "empty": "zero"}]}
+    NO_DATAPOINTS = {"value": None, "trend_reason": "no datapoints"}
+
+    def spots(self, base):
+        return [spot for spot in base["blind_spots"] if "queue-depth" in spot["key"]]
+
+    def test_an_empty_trend_of_a_zero_entry_reads_as_zeros_with_a_null_growth(self):
+        values = self.values(None, routine=self.ZERO, **self.NO_DATAPOINTS)
+        self.assertEqual(values, {"value": 0, "max_7d": 0, "mean_7d": 0, "max_span": 0, "mean_span": 0, "growth_monthly": None})
+
+    def test_an_empty_trend_of_a_zero_entry_is_no_blind_spot(self):
+        found, base = self.trend(None, routine=self.ZERO, **self.NO_DATAPOINTS)[:2]
+        self.assertEqual((self.spots(base), found["keys"]["metric:queue-depth"]["values"]["value"]), ([], 0))
+
+    def test_an_empty_trend_of_an_entry_without_the_option_stays_a_blind_spot(self):
+        found, base = self.trend(None, **self.NO_DATAPOINTS)[:2]
+        self.assertEqual(found["keys"]["trend:queue-depth"]["values"], {"value": None, **dict.fromkeys(tribe_features.TREND_NAMES)})
+        self.assertIn({"key": "trend:queue-depth", "gap": "no datapoints"}, base["blind_spots"])
+
+    def test_an_empty_trend_of_an_entry_set_to_gap_stays_a_blind_spot(self):
+        routine = {**ROUTINE, "query_pack": [{**PACK_ENTRY, "empty": "gap"}]}
+        base = self.trend(None, routine=routine, **self.NO_DATAPOINTS)[1]
+        self.assertIn({"key": "trend:queue-depth", "gap": "no datapoints"}, base["blind_spots"])
+
+    def test_a_failed_trend_of_a_zero_entry_stays_a_blind_spot(self):
+        found, base = self.trend(None, routine=self.ZERO, value=None, trend_reason="provider error")[:2]
+        self.assertEqual(found["keys"]["trend:queue-depth"]["values"], {"value": 0, **dict.fromkeys(tribe_features.TREND_NAMES)})
+        self.assertEqual(self.spots(base), [{"key": "trend:queue-depth", "gap": "provider error"}])
+
+    def test_an_empty_read_of_a_zero_entry_after_a_stored_value_writes_zero_to_the_cursor(self):
+        stored = make_state()
+        stored["cursors"]["observability"]["metrics"]["queue-depth"] = 10
+        base = self.trend(None, routine=self.ZERO, stored=stored, **self.NO_DATAPOINTS)[1]
+        self.assertEqual(base["cursors"]["observability"]["metrics"]["queue-depth"], 0)
+
+    def test_a_trend_with_points_of_a_zero_entry_reads_its_points(self):
+        values = self.values(trend_points(10, 20), routine=self.ZERO)
+        self.assertEqual((values["max_span"], values["growth_monthly"]), (20, 300))
 
     def test_an_entry_without_trend_days_has_no_trend_document(self):
         routine = {**ROUTINE, "query_pack": [{key: value for key, value in PACK_ENTRY.items() if key != "trend_days"}]}

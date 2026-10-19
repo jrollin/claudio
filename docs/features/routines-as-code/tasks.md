@@ -3,7 +3,7 @@
 ---
 feature: routines-as-code
 spec_version: 1
-total_tasks: 69
+total_tasks: 70
 phases:
   - name: "Leak guard"
     tasks: [T-1, T-2, T-3]
@@ -31,6 +31,8 @@ phases:
     tasks: [T-53, T-54, T-55, T-56, T-57, T-58, T-59]
   - name: "Tribe judgment"
     tasks: [T-60, T-61, T-62, T-63, T-64, T-65, T-66, T-67, T-68, T-69]
+  - name: "Empty reads as zero"
+    tasks: [T-70]
 depends_on: []
 ---
 
@@ -776,6 +778,17 @@ Runs in a local session with the chat, issue tracker, document store and observa
 - **Verify**: `for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
 - **Blocked by**: T-67
 - **Rules**: BR-60, BR-61, BR-64
+- **Status**: Complete
+
+## Phase 14: Empty reads as zero
+
+### T-70: Read an empty count as zero
+- `empty` (`gap` or `zero`) on `scalar` and `top` pack entries (TD-56): validation in `roles.py`, the zero mapping of window values and the zero cursor in `features.py`, shared by the watch and tribe engines, and of trends in `tribe_features.py`; READMEs.
+- Tests: each rejection with its key path, a `scalar` and a `top` entry read as 0, a trend read as zeros with a null growth, a failed read still a gap, an entry without the option unchanged, the tribe features with no blind spot for such an entry.
+- **Refs**: US-43, US-30, TD-56, TD-42
+- **Files**: `plugins/claudio-routines/runtime/roles.py` (modify), `plugins/claudio-routines/runtime/test_roles.py` (modify), `plugins/claudio-routines/runtime/features.py` (modify), `plugins/claudio-routines/runtime/test_features.py` (modify), `plugins/claudio-routines/runtime/tribe_features.py` (modify), `plugins/claudio-routines/runtime/test_tribe_features.py` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify), `plugins/claudio-routines/README.md` (modify)
+- **Verify**: `for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
+- **Rules**: BR-53, BR-65
 - **Status**: Complete
 
 ## Related Features

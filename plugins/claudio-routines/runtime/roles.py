@@ -10,6 +10,7 @@ from state import (
 ROLES = ("observability", "document_store", "chat", "code_host", "issue_tracker")
 KINDS = SOURCES
 READS = ("scalar", "top", "hourly")
+EMPTY_READS = ("gap", "zero")
 SCHEDULES = ("every_run", "daily")
 BLOCK_TYPES = ("heading", "paragraph", "list", "table", "code", "other")
 STATUSES = ("ok", "deferred", "failed", "missing")
@@ -181,9 +182,10 @@ METRIC_ENTRY = {"query": TEXT, "read": Choice(READS), "aggregator": TEXT}
 TREND_DAYS = Omittable(
     Rule(lambda value: is_integer(value) and TREND_MIN <= value <= TREND_CAP, f"must be an integer from {TREND_MIN} to {TREND_CAP}")
 )
+EMPTY = Omittable(Choice(EMPTY_READS))
 READ_FIELDS = {
-    "scalar": {"trend_days": TREND_DAYS},
-    "top": {"top": Rule(lambda value: is_integer(value) and value >= 1, "must be an integer of at least 1")},
+    "scalar": {"trend_days": TREND_DAYS, "empty": EMPTY},
+    "top": {"top": Rule(lambda value: is_integer(value) and value >= 1, "must be an integer of at least 1"), "empty": EMPTY},
     "hourly": {
         "excluded_hours": Omittable(
             ListOf(Rule(lambda value: is_integer(value) and 0 <= value <= 23, "must be a local hour from 0 to 23"))

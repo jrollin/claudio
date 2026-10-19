@@ -199,6 +199,7 @@ Query pack entry fields:
 | `excluded_hours` | metric with `read` `hourly` | Optional list of local hours, 0 to 23, whose buckets never count toward the value |
 | `lookback_days` | metric with `schedule` `daily` | Optional span of 1 to 31 days, ending at the window end, read as daily buckets or aggregated; not with `excluded_hours` |
 | `trend_days` | metric with `read` `scalar` or `hourly` | Optional span of 7 to 31 local days, the window end's day included: the query is read once more as an hourly series and kept as one value per local day, next to the window value; the aggregator is `max`, `min`, `sum`, `avg` or `last`, and the entry sets no `lookback_days`. A failed trend read leaves the window value and sets `trend_reason` |
+| `empty` | metric with `read` `scalar` or `top` | Optional `gap` (default) or `zero`. With `gap`, a read that succeeds with no datapoint is a blind spot. With `zero`, it reads as a value of 0 (a `top` entry reads no group) with no blind spot, and a trend that succeeds with no datapoint reads as 0 for its window values with a null `growth_monthly`. A zero `top` read resolves its tracked groups and a tracked entry key as `group missing` in one run. A response whose value is not a finite number reads as no value, so with `zero` it reads as 0. A read that fails is a blind spot whatever `empty` says |
 
 Entries match this schema exactly: `severity`, `urgency` and `threshold` are rejected (`collect.py` and `evaluate.py` exit 3 naming the key path). The model sets severity and urgency per run, from the rules.
 

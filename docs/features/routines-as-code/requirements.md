@@ -496,7 +496,7 @@ THE collector also reads that entry as a daily series over the span ending at th
 - [ ] The entry's record holds a trend series of one value per local day of the configured timezone, next to its window value *(AC-30.3)*
 - [ ] A day with no datapoint is absent from the series, never zero *(AC-30.4)*
 - [ ] Days follow the configured timezone across clock changes, as hour buckets do, per AC-10.3 *(AC-30.5)*
-- [ ] A trend read that fails, or returns no datapoint, is a blind spot of its entry, per BR-53 *(AC-30.6)*
+- [ ] A trend read that fails, or returns no datapoint, is a blind spot of its entry, per BR-53, unless the entry reads an empty result as zero, per BR-65 *(AC-30.6)*
 
 ### Collect the tribe digest sources {#US-31}
 
@@ -661,6 +661,18 @@ THE replay's warnings, checks, decisions and blind spots match the live digest's
 - [ ] It compares checks by key, decisions by topic and blind spots by source the same way *(AC-42.4)*
 - [ ] It exits 1 when a difference has no reason *(AC-42.5)*
 
+### Read an empty count as zero {#US-43}
+
+WHEN a pack entry counts rare events, such as error statuses, retries or out-of-memory kills, and its read succeeds with no datapoint
+THE runtime reads the entry as 0 instead of a blind spot, when the entry declares it
+
+**Acceptance Criteria:**
+- [ ] A `scalar` or `top` entry may set `empty` to `zero`; the default, `gap`, keeps a read with no datapoint as a blind spot *(AC-43.1)*
+- [ ] With `zero`, a read that succeeds with no datapoint gives a value of 0, a `top` entry with no group, and no blind spot *(AC-43.2)*
+- [ ] With `zero`, a trend read that succeeds with no datapoint gives 0 for its window values and a null `growth_monthly` *(AC-43.3)*
+- [ ] A read that fails is a blind spot whatever `empty` says *(AC-43.4)*
+- [ ] `empty` on an `hourly` or monitor entry, or a value other than `gap` or `zero`, is invalid with its key path *(AC-43.5)*
+
 ## Business Rules
 
 - No private name, identifier, URL host or secret is committed to this public repository *(BR-1)*
@@ -727,6 +739,7 @@ THE replay's warnings, checks, decisions and blind spots match the live digest's
 - A digest lists at most 3 decisions *(BR-62)*
 - A stored warning whose cited sources or metric entry were not read in this run is deferred: held, with no verdict needed, its count kept, and no resolution; an owner's status edit applies and a decided or dropped status resolves on the first run that reads its sources *(BR-63)*
 - Coverage notes are the model's data about what a run did not cover: they are stored nowhere, count no run, and change no warning, check or blind spot count *(BR-64)*
+- A read that succeeds with no datapoint is a blind spot unless its entry sets `empty` to `zero`; a read that fails is always a blind spot *(BR-65)*
 
 ## Out of Scope
 

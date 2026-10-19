@@ -413,6 +413,111 @@ class MetricValuesTest(EvaluateCase):
         self.assertEqual((key["kind"], key["entry"], key["source"], key["title"]), ("metric", "cpu", "metrics", "Metric cpu"))
 
 
+class EmptyReadTest(EvaluateCase):
+    GAP = [{"key": "cpu", "gap": "no datapoints"}]
+    TRACKED = make_state(items={"cpu-gone": make_item()})
+
+    def read(self, entry, metrics, entries=None, stored=None):
+        config = make_config(pack=[entry])
+        docs = collections(gauges=gauges(metrics=metrics, **({} if entries is None else {"entries": entries})))
+        stored = make_state() if stored is None else stored
+        return self.features(config=config, docs=docs, stored=stored), self.base(config=config, docs=docs, stored=stored)
+
+    def test_a_scalar_entry_reads_an_empty_value_as_zero_without_a_blind_spot(self):
+        found, base = self.read(metric_entry(empty="zero"), [metric(value=None)])
+
+        self.assertEqual((found["keys"]["cpu"]["values"]["value"], base["blind_spots"], base["deferred"]), (0, [], []))
+
+    def test_a_zero_scalar_compares_with_the_stored_cursor_value(self):
+        values = self.read(metric_entry(empty="zero"), [metric(value=None)])[0]["keys"]["cpu"]["values"]
+
+        self.assertEqual((values["latest"], values["previous"], values["change"], values["change_percent"]), (0, 10, -10, -100.0))
+
+    def test_a_zero_read_after_a_stored_value_writes_zero_to_the_cursor_and_the_next_run_compares_with_it(self):
+        entry = metric_entry(empty="zero")
+        cursors = self.read(entry, [metric(value=None)], stored=make_state(metrics={"cpu": 10}))[1]["cursors"]["metrics"]
+        values = self.read(entry, [metric(value=None)], stored=make_state(metrics=cursors))[0]["keys"]["cpu"]["values"]
+
+        self.assertEqual((cursors, values["previous"], values["change"]), ({"cpu": 0}, 0, 0))
+
+    def test_a_scalar_entry_with_a_value_keeps_it_whatever_empty_says(self):
+        found, base = self.read(metric_entry(empty="zero"), [metric(value=90)])
+
+        self.assertEqual((found["keys"]["cpu"]["values"]["value"], base["blind_spots"]), (90, []))
+
+    def test_a_scalar_entry_without_the_option_keeps_an_empty_value_as_a_blind_spot(self):
+        found, base = self.read(metric_entry(), [metric(value=None)])
+
+        self.assertEqual((base["blind_spots"], base["deferred"], "cpu" in found["keys"]), (self.GAP, ["cpu"], False))
+
+    def test_a_scalar_entry_with_gap_keeps_an_empty_value_as_a_blind_spot(self):
+        base = self.read(metric_entry(empty="gap"), [metric(value=None)])[1]
+
+        self.assertEqual(base["blind_spots"], self.GAP)
+
+    def test_a_zero_scalar_entry_without_a_record_is_a_blind_spot(self):
+        base = self.read(metric_entry(empty="zero"), [])[1]
+
+        self.assertEqual(base["blind_spots"], self.GAP)
+
+    def test_a_zero_scalar_entry_that_failed_is_a_blind_spot_with_the_failure(self):
+        found, base = self.read(metric_entry(empty="zero"), [], entries={"cpu": failed("HTTP 400 POST /query")})
+
+        self.assertEqual((base["blind_spots"], "cpu" in found["keys"]), ([{"key": "cpu", "gap": "HTTP 400 POST /query"}], False))
+
+    def test_a_zero_scalar_entry_not_found_is_a_blind_spot(self):
+        base = self.read(metric_entry(empty="zero"), [], entries={"cpu": missing()})[1]
+
+        self.assertEqual(base["blind_spots"], [{"key": "cpu", "gap": "not found"}])
+
+    def test_a_zero_top_entry_reads_no_group_without_a_blind_spot(self):
+        found, base = self.read(top_entry(empty="zero"), [metric(groups=[])], stored=self.TRACKED)
+
+        self.assertEqual((base["blind_spots"], base["deferred"], sorted(found["keys"])), ([], [], []))
+
+    def test_a_zero_top_entry_resolves_its_tracked_groups_as_missing(self):
+        found = self.read(top_entry(empty="zero"), [metric(groups=[])], stored=self.TRACKED)[0]
+
+        self.assertEqual(found["auto"], {"cpu-gone": auto("group missing")})
+
+    def test_a_top_entry_without_the_option_keeps_no_group_as_a_blind_spot(self):
+        base = self.read(top_entry(), [metric(groups=[])], stored=self.TRACKED)[1]
+
+        self.assertEqual((base["blind_spots"], base["deferred"]), (self.GAP, ["cpu", "cpu-gone"]))
+
+    def test_a_zero_top_entry_that_failed_is_a_blind_spot_with_the_failure(self):
+        base = self.read(top_entry(empty="zero"), [], entries={"cpu": failed("HTTP 400 POST /query")})[1]
+
+        self.assertEqual(base["blind_spots"], [{"key": "cpu", "gap": "HTTP 400 POST /query"}])
+
+    def test_a_zero_top_entry_resolves_a_tracked_entry_key_as_group_missing(self):
+        stored = make_state(items={"cpu": make_item()})
+        found = self.read(top_entry(empty="zero"), [metric(groups=[])], stored=stored)[0]
+
+        self.assertEqual(found["auto"], {"cpu": auto("group missing")})
+
+    def test_a_top_entry_with_groups_still_marks_the_tracked_entry_key_as_replaced_by_groups(self):
+        stored = make_state(items={"cpu": make_item()})
+        found = self.read(top_entry(empty="zero"), [metric(groups=[{"group": "a", "value": 3}])], stored=stored)[0]
+
+        self.assertEqual(found["auto"], {"cpu": auto("replaced by groups")})
+
+    def test_a_zero_top_entry_without_a_record_is_a_blind_spot(self):
+        found, base = self.read(top_entry(empty="zero"), [], stored=self.TRACKED)
+
+        self.assertEqual((base["blind_spots"], base["deferred"], found["auto"]), (self.GAP, ["cpu", "cpu-gone"], {}))
+
+    def test_a_zero_top_entry_not_found_is_a_blind_spot(self):
+        found, base = self.read(top_entry(empty="zero"), [], entries={"cpu": missing()}, stored=self.TRACKED)
+
+        self.assertEqual((base["blind_spots"], found["auto"]), ([{"key": "cpu", "gap": "not found"}], {}))
+
+    def test_a_zero_top_entry_with_groups_keeps_them(self):
+        found = self.read(top_entry(empty="zero"), [metric(groups=[{"group": "a", "value": 3}])])[0]
+
+        self.assertEqual(sorted(found["keys"]), ["cpu-a"])
+
+
 class HourlyTest(EvaluateCase):
     HOURLY = [{"ts": HOUR_0, "value": 70}, {"ts": HOUR_1, "value": 85}]
 

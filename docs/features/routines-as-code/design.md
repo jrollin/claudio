@@ -1325,6 +1325,21 @@ A degraded run's message is one line that starts with `degraded:` and names the 
 
 **Rationale**: it measures continuity from a live state, which is how the rollout starts.
 
+### TD-56: Empty reads as zero
+
+**Choice**:
+- A `scalar` or `top` pack entry may set `empty`: `gap` (default) or `zero`. `roles.py` rejects it on an `hourly` or monitor entry and rejects any other value, naming the key path (AC-43.5).
+- The adapters are unchanged: an empty successful read already yields a record with no value, and a failed read no record or a failed entry. A response whose value is not a finite number also reads as no value, so under `zero` it reads as 0.
+- The metric cursor of such an entry is written by `features.py` (`fold_read_values`), from the observed document's value, so a zero read stores 0 and the next run compares with 0; the adapter's own cursor, which skips a null value, is not consulted for it.
+- `features.py` (shared by both engines) maps a record of an entry with `empty: zero` and no value to a value of 0: a `scalar` entry gets value 0, a `top` entry no group, observed. A zero `top` read resolves a tracked entry key and its tracked groups as `group missing` in one run, where a read with groups marks the entry key as replaced by groups. A missing record or a failed read stays a gap (BR-65).
+- `tribe_features.py`, which builds the `trend:` documents, gives a trend of such an entry with `trend_reason` "no datapoints" and no failure 0 for `value` (the window value, 0 here), `max_7d`, `mean_7d`, `max_span` and `mean_span`, and a null `growth_monthly`, with no trend blind spot.
+
+**Alternatives considered**:
+- Reading every empty result as 0: rejected, a metric that stops reporting would look healthy.
+- Detecting zero from the query text (a status filter): rejected, brittle and vendor-specific.
+
+**Rationale**: only the pack author knows whether a series can be legitimately empty; the default keeps the safe reading.
+
 ## Implementation Considerations
 
 ### Data Model
