@@ -108,6 +108,7 @@ def _is_pinned_url(value):
 ANY = Rule(lambda value: True, "")
 STRING = Rule(lambda value: isinstance(value, str), "must be a string")
 TEXT = Rule(lambda value: isinstance(value, str) and value != "", "must be a non-empty string")
+NON_BLANK = Rule(lambda value: isinstance(value, str) and value.strip() != "", "must be non-blank text")
 INTEGER = Rule(is_integer, "must be an integer")
 NUMBER = Rule(is_number, "must be a finite number")
 BOOLEAN = Rule(lambda value: isinstance(value, bool), "must be a boolean")
@@ -151,7 +152,8 @@ ROLE_OPTIONS = {
         "query": Omittable(STRING),
     },
     "issue_tracker": {
-        "filter": Rule(_matches(DIGITS), "must be a filter id of digits only"),
+        "filter": Omittable(Rule(_matches(DIGITS), "must be a filter id of digits only")),
+        "jql": Omittable(NON_BLANK),
         "query": Omittable(STRING),
         "open_sprints": Omittable(BOOLEAN),
     },
@@ -532,6 +534,8 @@ def _validate_source(source, path, providers, place, role_of, engine, owner=None
         _validate_page_options(source, path, engine)
     if role == "chat":
         _validate_chat_options(source, path)
+    if role == "issue_tracker":
+        _validate_issue_options(source, path)
 
 
 def _validate_recap_source(source, path, role, owner):
@@ -555,6 +559,13 @@ def _validate_chat_options(source, path):
         seen[search["name"]] = index
         if search["since"] != "window":
             _validate_since(search["since"], f"{search_path}.since")
+
+
+def _validate_issue_options(source, path):
+    if ("filter" in source) == ("jql" in source):
+        raise ConfigError(f"{path}: an issue tracker source sets exactly one of filter and jql")
+    if "jql" in source and source.get("open_sprints") is True:
+        raise ConfigError(f"{path}.open_sprints: needs filter, a jql source reads no open sprint")
 
 
 def _validate_since(since, path):

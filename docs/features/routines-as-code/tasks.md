@@ -1085,9 +1085,9 @@ Owner-gated: needs the merged pull request, a release tag, the transport and its
 - An issue tracker source sets exactly one of `filter` and `jql` (non-blank). With `jql`, the collector queries `(<jql>) AND updated >= "<window start>" ORDER BY key ASC` on both transports; `open_sprints` needs `filter`.
 - Tests: the api request and the relay call carry the built JQL; both transports give the same records; a source with both or neither fails the load with its key path; `open_sprints` with `jql` fails the load.
 - **Refs**: US-53, TD-67
-- **Files**: `plugins/claudio-routines/runtime/providers/jira.py` (modify), `plugins/claudio-routines/runtime/providers/test_jira.py` (modify), `plugins/claudio-routines/runtime/roles.py` (modify), `plugins/claudio-routines/runtime/test_roles.py` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify)
+- **Files**: `plugins/claudio-routines/runtime/providers/jira.py` (modify), `plugins/claudio-routines/runtime/providers/test_jira.py` (modify), `plugins/claudio-routines/runtime/roles.py` (modify), `plugins/claudio-routines/runtime/test_roles.py` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify), `plugins/claudio-routines/README.md` (modify)
 - **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
-- **Status**: Not Started
+- **Status**: Complete
 
 ### T-100: Code host searches with pull request activity
 - A code host source sets exactly one of `repos` and `searches` (a non-empty list of query strings), and may set `exclude_authors`. With `searches`, the api collector runs each search with `updated:>=<window start date>`, keeps each pull request once, and reads its comments, reviews and review comments in the window, as TD-67 describes. The collection adds `activity`; `pull_requests` keeps its schema.

@@ -41,10 +41,14 @@ SOURCE = {
     "provider_config": PROVIDER,
 }
 RELAY_SOURCE = {**SOURCE, "transport": {"cloud": "mcp", "local": "mcp"}}
+JQL = "project = PROJ AND type in (Bug, Task)"
+JQL_SOURCE = {**{key: value for key, value in SOURCE.items() if key not in ("filter", "open_sprints")}, "jql": JQL}
+RELAY_JQL_SOURCE = {**JQL_SOURCE, "transport": RELAY_SOURCE["transport"]}
 FIELDS = ["summary", "issuetype", "status", "priority", "created", "updated"]
 STORED = {"updated": "2026-10-16T15:00:00Z"}
 STORED_UPDATED = "2026-10-16T15:00:00Z"
 UPDATED_JQL = f'filter = {FILTER} AND ({QUERY}) AND updated >= "2026-10-15 14:00" ORDER BY key ASC'
+JQL_UPDATED_JQL = f'({JQL}) AND ({QUERY}) AND updated >= "2026-10-15 14:00" ORDER BY key ASC'
 SPRINT_JQL = f"filter = {FILTER} AND sprint in openSprints() ORDER BY key ASC"
 SHARED_OVER_API = ("api_updated_page_1.json", "api_updated_page_2.json", "api_sprint.json")
 SHARED_OVER_RELAY = ("relay_updated_page_1.json", "relay_updated_page_2.json", "relay_sprint.json")
@@ -277,6 +281,28 @@ class QueryTest(unittest.TestCase):
         opener, _ = read_shared(source={**SOURCE, "query": "  "})
 
         self.assertEqual(sent(opener.requests[0])["jql"], f'filter = {FILTER} AND updated >= "2026-10-15 14:00" ORDER BY key ASC')
+
+    def test_asks_for_the_jql_issues_updated_since_the_bound_minus_24_hours(self):
+        opener, _ = run(*(ok(name) for name in UPDATED_ONLY_OVER_API), source=JQL_SOURCE)
+
+        self.assertEqual(sent(opener.requests[0]), {"jql": JQL_UPDATED_JQL, "fields": FIELDS, "maxResults": 100})
+
+    def test_a_jql_source_follows_the_next_page_token(self):
+        opener, _ = run(*(ok(name) for name in UPDATED_ONLY_OVER_API), source=JQL_SOURCE)
+
+        self.assertEqual(sent(opener.requests[1])["nextPageToken"], "next-page-2")
+
+    def test_a_jql_source_without_a_query_wraps_only_the_jql(self):
+        source = {key: value for key, value in JQL_SOURCE.items() if key != "query"}
+
+        opener, _ = run(*(ok(name) for name in UPDATED_ONLY_OVER_API), source=source)
+
+        self.assertEqual(sent(opener.requests[0])["jql"], f'({JQL}) AND updated >= "2026-10-15 14:00" ORDER BY key ASC')
+
+    def test_a_jql_source_reads_no_open_sprint(self):
+        opener, _ = run(*(ok(name) for name in UPDATED_ONLY_OVER_API), source=JQL_SOURCE)
+
+        self.assertEqual(len(opener.requests), 2)
 
     def test_without_a_stored_cursor_the_read_starts_at_the_first_read_start(self):
         opener, _ = read_shared(cursor=None)
@@ -516,6 +542,21 @@ class ErrorsTest(unittest.TestCase):
     def test_a_filter_the_search_rejects_makes_the_source_unreadable(self):
         self.assertEqual(self.refused(400), (f"filter {FILTER} or its query rejected: HTTP 400 POST {SEARCH}", 400))
 
+    def test_a_jql_the_user_cannot_run_makes_the_source_unreadable(self):
+        error = unreadable(self, status(403), source=JQL_SOURCE)
+
+        self.assertEqual((str(error), error.status), (f"jql not found or forbidden: HTTP 403 POST {SEARCH}", 403))
+
+    def test_a_jql_the_search_rejects_makes_the_source_unreadable(self):
+        error = unreadable(self, status(400), source=JQL_SOURCE)
+
+        self.assertEqual((str(error), error.status), (f"jql or its query rejected: HTTP 400 POST {SEARCH}", 400))
+
+    def test_a_refusal_never_repeats_the_jql(self):
+        error = unreadable(self, status(400), source=JQL_SOURCE)
+
+        self.assertNotIn(JQL, str(error))
+
     def test_the_open_sprint_read_failing_makes_the_source_unreadable(self):
         error = unreadable(self, ok("api_updated_page_2.json"), status(400))
 
@@ -591,6 +632,14 @@ class PlanTest(unittest.TestCase):
     def test_first_step_searches_the_updated_issues_in_the_full_view(self):
         self.assertEqual(relay_plan({})["calls"], [search_call("issues-1", UPDATED_JQL)])
 
+    def test_a_jql_source_searches_the_built_jql_in_the_full_view(self):
+        self.assertEqual(relay_plan({}, source=RELAY_JQL_SOURCE)["calls"], [search_call("issues-1", JQL_UPDATED_JQL)])
+
+    def test_a_jql_source_ends_the_plan_after_the_last_updated_page(self):
+        step = relay_plan(responses(*UPDATED_ONLY_OVER_RELAY), source=RELAY_JQL_SOURCE)
+
+        self.assertEqual(step, {"done": True, "partial": None, "calls": []})
+
     def test_first_step_is_not_done(self):
         self.assertFalse(relay_plan({})["done"])
 
@@ -655,6 +704,13 @@ class TransportEqualityTest(unittest.TestCase):
 
         self.assertEqual(state.dump(over_relay), state.dump(over_api))
 
+    def test_both_transports_give_the_same_records_for_a_jql_source(self):
+        _, over_api = run(*(ok(name) for name in UPDATED_ONLY_OVER_API), source=JQL_SOURCE)
+
+        over_relay = relay(responses(*UPDATED_ONLY_OVER_RELAY), source=RELAY_JQL_SOURCE)
+
+        self.assertEqual(state.dump(over_relay), state.dump(over_api))
+
     def test_relayed_records_match_the_expected_records(self):
         self.assertEqual(relay(responses(*SHARED_OVER_RELAY))["records"], {"issues": EXPECTED})
 
@@ -706,6 +762,11 @@ class RelayFailureTest(unittest.TestCase):
         error = relay_failure(self, responses("relay_error.json"))
 
         self.assertEqual(str(error), f"searchJiraIssuesUsingJql: filter {FILTER} not read: connector error")
+
+    def test_error_response_names_the_tool_and_the_jql_source(self):
+        error = relay_failure(self, responses("relay_error.json"), source=RELAY_JQL_SOURCE)
+
+        self.assertEqual(str(error), "searchJiraIssuesUsingJql: jql not read: connector error")
 
     def test_error_text_never_reaches_the_reason(self):
         error = relay_failure(self, {"issues-1": json.dumps({"error": "filter = 10 AND (secret query)"})})

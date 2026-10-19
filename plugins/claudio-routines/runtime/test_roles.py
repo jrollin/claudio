@@ -2432,6 +2432,13 @@ class IssueTrackerContractTest(ConfigCase, CollectionCase):
         routine_sources(config)["issues"][option] = value
         return config
 
+    def jql_config(self):
+        config = tracker_config()
+        source = routine_sources(config)["issues"]
+        del source["filter"], source["open_sprints"]
+        source["jql"] = "project = PROJ"
+        return config
+
     def test_accepts_a_source_with_a_filter_a_query_and_open_sprints(self):
         self.assertIsNone(roles.validate_config(tracker_config(), ROUTINE, "local", role_of))
 
@@ -2449,10 +2456,36 @@ class IssueTrackerContractTest(ConfigCase, CollectionCase):
     def test_rejects_a_numeric_filter(self):
         self.assert_config_error(self.invalid_option("filter", 10042), self.SOURCE_PATH + ".filter")
 
-    def test_rejects_a_source_without_a_filter(self):
+    def test_rejects_a_source_with_neither_a_filter_nor_a_jql(self):
         config = tracker_config()
         del routine_sources(config)["issues"]["filter"]
-        self.assert_config_error(config, self.SOURCE_PATH + ".filter")
+        self.assert_config_error(config, self.SOURCE_PATH)
+
+    def test_rejects_a_source_with_both_a_filter_and_a_jql(self):
+        self.assert_config_error(self.invalid_option("jql", "project = PROJ"), self.SOURCE_PATH)
+
+    def test_accepts_a_source_with_a_jql_and_a_query(self):
+        self.assertIsNone(roles.validate_config(self.jql_config(), ROUTINE, "local", role_of))
+
+    def test_accepts_a_jql_source_with_open_sprints_off(self):
+        config = self.jql_config()
+        routine_sources(config)["issues"]["open_sprints"] = False
+        self.assertIsNone(roles.validate_config(config, ROUTINE, "local", role_of))
+
+    def test_rejects_open_sprints_on_a_jql_source(self):
+        config = self.jql_config()
+        routine_sources(config)["issues"]["open_sprints"] = True
+        self.assert_config_error(config, self.SOURCE_PATH + ".open_sprints")
+
+    def test_rejects_a_blank_jql(self):
+        config = self.jql_config()
+        routine_sources(config)["issues"]["jql"] = "  "
+        self.assert_config_error(config, self.SOURCE_PATH + ".jql")
+
+    def test_rejects_a_jql_that_is_not_a_string(self):
+        config = self.jql_config()
+        routine_sources(config)["issues"]["jql"] = ["project = PROJ"]
+        self.assert_config_error(config, self.SOURCE_PATH + ".jql")
 
     def test_rejects_a_query_that_is_not_a_string(self):
         self.assert_config_error(self.invalid_option("query", ["labels = digest"]), self.SOURCE_PATH + ".query")
