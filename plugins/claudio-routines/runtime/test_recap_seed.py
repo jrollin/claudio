@@ -128,6 +128,8 @@ class ConvertedStateTest(SeedCase):
         expected = {
             "kind": "dm",
             "channel": CHANNEL_A,
+            "channel_name": None,
+            "person": None,
             "title": "Review the export plan",
             "first_seen": "2026-10-14T07:45:00Z",
             "last_ts": f"{ts('2026-10-15T06:12:10Z')}.000000",

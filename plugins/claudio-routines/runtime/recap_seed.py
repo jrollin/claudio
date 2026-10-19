@@ -43,6 +43,8 @@ def convert_unit(unit):
     return {
         "kind": unit["kind"],
         "channel": unit["channel"],
+        "channel_name": None,
+        "person": None,
         "title": cut_title(unit["title"]),
         "first_seen": state.utc_text(unit["first_seen"]),
         "last_ts": f"{unit['last_ts']}.000000",

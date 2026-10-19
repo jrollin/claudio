@@ -12,6 +12,7 @@ STATUSES = ("waiting", "promise", "waiting_on_others", "team_ask", "handled", "a
 HELD_STATUSES = STATUSES[:2]
 TITLE_WORDS = 8
 KEY_CAP = 80
+NAME_CAP = 80
 CHANNEL_ID = "[A-Za-z0-9]{1,32}"
 SLACK_TS = "[0-9]+[.][0-9]+"
 DM_KEY = re.compile(f"dm-({CHANNEL_ID})")
@@ -19,6 +20,7 @@ THREAD_KEY = re.compile(f"thread-({CHANNEL_ID})-({SLACK_TS})")
 SLACK_TS_TEXT = re.compile(SLACK_TS)
 BLIND_SPOT_KEY_TEXT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,79}")
 UTC_TIME_TEXT = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+USER_ID_TEXT = re.compile(CHANNEL_ID)
 LABEL_LIMITS = f"of at most {state.LABEL_CAP} characters without control characters"
 
 
@@ -47,6 +49,14 @@ def is_title(value):
     return state.is_label(value) and 0 < word_count(value) <= TITLE_WORDS
 
 
+def is_user_id(value):
+    return isinstance(value, str) and USER_ID_TEXT.fullmatch(value) is not None
+
+
+def is_name_label(value):
+    return state.is_label(value) and 0 < len(value) <= NAME_CAP
+
+
 def is_utc_time(value):
     return isinstance(value, str) and UTC_TIME_TEXT.fullmatch(value) is not None and state.parses(state.parse_time, value)
 
@@ -63,6 +73,8 @@ BLIND_SPOT_KEY = leaf(
     lambda value: isinstance(value, str) and BLIND_SPOT_KEY_TEXT.fullmatch(value) is not None,
     "a key of letters, digits, dots, colons and dashes, at most 80 characters",
 )
+NAME_LABEL = leaf(is_name_label, f"a non-empty string of at most {NAME_CAP} characters without control characters")
+USER_ID = leaf(is_user_id, "a chat user id of letters and digits, at most 32 characters")
 TITLE = leaf(is_title, f"a non-empty string of at most {TITLE_WORDS} words " + LABEL_LIMITS)
 UTC_TIME = leaf(is_utc_time, "a UTC time like 2026-01-31T08:00:00Z")
 MESSAGE_TS = leaf(lambda value: isinstance(value, str) and SLACK_TS_TEXT.fullmatch(value) is not None, "a message ts like 1791990730.002679")
@@ -73,6 +85,8 @@ UNIT_STATUS = one_of(STATUSES)
 UNIT_SPEC = {
     "kind": UNIT_KIND,
     "channel": NAME,
+    "channel_name": Nullable(NAME_LABEL),
+    "person": Nullable({"id": USER_ID, "name": NAME_LABEL}),
     "title": TITLE,
     "first_seen": UTC_TIME,
     "last_ts": MESSAGE_TS,

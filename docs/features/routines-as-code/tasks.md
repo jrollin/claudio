@@ -905,10 +905,10 @@ Runs in a local session with the chat, issue tracker, document store and observa
 - `recap.py apply` maps kinds to statuses, counts `runs_waiting`, sets `late`, resolves a stored waiting or promise unit once, drops a unit past `drop_after_days`, stores no `noise` unit, keeps each unit's `channel_name` and `person` (TD-62), and writes the next state, the summary and the run record (TD-62).
 - Tests: each kind to its status; `runs_waiting` across runs; a waiting unit late after 3 working days and not before; a promise late after its due time and, with none, after 1 business day; a resolved unit listed once then stored as handled; a dropped unit; a noise unit not stored; no message text, summary or reading in the state or the record; a report-only run leaves the state as it was.
 - **Refs**: US-48, TD-62
-- **Files**: `plugins/claudio-routines/runtime/recap_state.py` (modify), `plugins/claudio-routines/runtime/test_recap_state.py` (modify), `plugins/claudio-routines/runtime/recap_lifecycle.py` (new), `plugins/claudio-routines/runtime/test_recap_lifecycle.py` (new), `plugins/claudio-routines/runtime/recap.py` (modify)
+- **Files**: `plugins/claudio-routines/runtime/recap_state.py` (modify), `plugins/claudio-routines/runtime/test_recap_state.py` (modify), `plugins/claudio-routines/runtime/recap_lifecycle.py` (new), `plugins/claudio-routines/runtime/test_recap_lifecycle.py` (new), `plugins/claudio-routines/runtime/recap.py` (modify), `plugins/claudio-routines/runtime/recap_seed.py` (modify), `plugins/claudio-routines/runtime/test_recap_seed.py` (modify)
 - **Blocked by**: T-81
 - **Rules**: BR-67
-- **Status**: Not Started
+- **Status**: Complete
 
 ### T-83: Recap message
 - `recap.py message` renders the layout of US-49 and TD-63, sets the post flag, and renders the degraded messages.

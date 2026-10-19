@@ -25,6 +25,7 @@ PREVIOUS = "2026-10-15T07:45:00Z"
 NOW = "2026-10-16T07:45:00Z"
 CHANNEL_A = "CHAN" + "1" * 6
 CHANNEL_B = "CHAN" + "2" * 6
+USER_A = "U" + "1" * 6
 ROOT_TS = "1791990000.000100"
 LAST_TS = "1791990730.002679"
 DM_A = f"dm-{CHANNEL_A}"
@@ -37,6 +38,8 @@ def make_unit(**fields):
     unit = {
         "kind": "dm",
         "channel": CHANNEL_A,
+        "channel_name": None,
+        "person": None,
         "title": "Review the export plan",
         "first_seen": "2026-10-14T07:45:00Z",
         "last_ts": LAST_TS,
@@ -147,6 +150,14 @@ class AcceptedStateTest(CheckStateCase):
 
     def test_accepts_a_title_of_exactly_8_words(self):
         self.assertIsNone(recap_state.check_state(make_state(units={DM_A: make_unit(title="one two three four five six seven eight")})))
+
+    def test_accepts_a_unit_with_a_channel_name_and_a_person(self):
+        unit = make_unit(channel_name="#ops", person={"id": USER_A, "name": "Peer Name"})
+        self.assertIsNone(recap_state.check_state(make_state(units={DM_A: unit})))
+
+    def test_accepts_a_channel_name_and_a_person_name_of_exactly_80_characters(self):
+        unit = make_unit(channel_name="n" * 80, person={"id": USER_A, "name": "p" * 80})
+        self.assertIsNone(recap_state.check_state(make_state(units={DM_A: unit})))
 
     def test_accepts_a_state_without_units_or_blind_spots(self):
         self.assertIsNone(recap_state.check_state(make_state(units={}, blind_spots=[])))
@@ -342,6 +353,39 @@ class UnitFieldRejectionTest(CheckStateCase):
     def test_rejects_a_late_flag_that_is_a_boolean(self):
         self.rejects_unit("late", late=True)
 
+    def test_rejects_a_channel_name_over_80_characters(self):
+        self.rejects_unit("channel_name", channel_name="n" * 81)
+
+    def test_rejects_an_empty_channel_name(self):
+        self.rejects_unit("channel_name", channel_name="")
+
+    def test_rejects_a_channel_name_with_a_control_character(self):
+        self.rejects_unit("channel_name", channel_name="ops\nteam")
+
+    def test_rejects_a_channel_name_that_is_not_text(self):
+        self.rejects_unit("channel_name", channel_name=3)
+
+    def test_rejects_a_person_that_is_not_an_object(self):
+        self.rejects_unit("person", person=USER_A)
+
+    def test_rejects_a_person_without_a_name(self):
+        self.rejects_unit("person.name", person={"id": USER_A})
+
+    def test_rejects_a_person_without_an_id(self):
+        self.rejects_unit("person.id", person={"name": "Peer Name"})
+
+    def test_rejects_a_person_id_that_is_not_an_id(self):
+        self.rejects_unit("person.id", person={"id": "not an id", "name": "Peer Name"})
+
+    def test_rejects_a_person_name_over_80_characters(self):
+        self.rejects_unit("person.name", person={"id": USER_A, "name": "p" * 81})
+
+    def test_rejects_a_person_name_with_a_control_character(self):
+        self.rejects_unit("person.name", person={"id": USER_A, "name": "Peer\nName"})
+
+    def test_rejects_an_unknown_key_in_a_person(self):
+        self.rejects_unit("person.email", person={"id": USER_A, "name": "Peer Name", "email": "peer@example.test"})
+
     def test_rejects_a_due_time_with_an_offset(self):
         self.rejects_unit("due", due="2026-10-16T14:00:00+02:00")
 
@@ -433,7 +477,7 @@ MISSING_KEYS = (
     "schema", "digest", "run", "units", "blind_spots",
     "run.at", "run.previous_at", "run.window",
     "run.window.from_ts", "run.window.to_ts",
-    *(f"units.{DM_A}.{field}" for field in ("kind", "channel", "title", "first_seen", "last_ts", "status", "runs_waiting", "late", "due")),
+    *(f"units.{DM_A}.{field}" for field in ("kind", "channel", "channel_name", "person", "title", "first_seen", "last_ts", "status", "runs_waiting", "late", "due")),
 )
 for key_path in MISSING_KEYS:
     setattr(MissingKeyTest, "test_rejects_missing_" + re.sub(r"[^a-zA-Z0-9]", "_", key_path), missing_key_test(key_path))
