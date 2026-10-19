@@ -488,7 +488,7 @@ Config load checks every source before any provider call, and exits 2 naming the
 The digest post stays a model call to the chat channel's connector in both places.
 
 **Alternatives considered**:
-- Pick the transport by the credentials present: rejected, the transport would depend on the environment, not on git.
+- Pick the transport by the credentials present, with no order in git: rejected, the transport would depend on the environment alone. TD-66 keeps git as the source of the order and lets the environment only skip a transport it cannot use.
 - One transport per place for every source: rejected, a provider with no connector, or no key in that place, would block the whole place.
 
 **Rationale**: git decides how each source is read in each place, and a missing credential is a reported blind spot, not a silent switch.
@@ -1508,6 +1508,44 @@ A degraded run's message is one line that starts with `degraded:` and names the 
 - `recap.py seed --from <json>` converts the document store state (schema 1, units with kind, channel, title, permalink, first_seen, last_ts, status, runs_waiting, late) into the runtime state: it drops `permalink` (rebuilt from keys), maps statuses, truncates titles to 8 words and validates; it fails naming the key path of a unit it cannot map (AC-50.2).
 - After the switch, the template reads no document store page (AC-50.3).
 
+### TD-65: Raw store and replay
+
+**Choice**:
+- Every source writes its raw results to `<run>/raw/<role>/<source>/`, with `<role>` the role `collect.py sources` prints (AC-51.1):
+  - `mcp`: the relay files as before, `calls.json` and `<source>-<n>.txt`.
+  - `api`: `collect.py fetch --responses <dir>` records each HTTP call as `<source>-<n>.json`, in call order (AC-51.2). A record holds `method`, `path` (the URL path), `query`, `body` (the request JSON or null), `status`, `link` (the `Link` response header or null), `response` (the decoded JSON or null) and `error` (null, or the class, message and status of the error the call raised). `HttpClient` takes an optional recorder; request headers never reach it (BR-71).
+- `places.<place>.runs_dir` (optional, absolute) is where a run creates its folder: `mktemp -d <runs_dir>/<slug>/<YYYYMMDDTHHMMSSZ>-XXXXXX`. Without it the folder goes under `/tmp` (AC-51.3). The owner's local `runs_dir` is an ignored folder of the private repository (BR-70).
+- `collect.py replay --config --routine --place --window --state --raw <run>/raw --out <dir>` writes every source's collection offline (AC-51.4):
+  - `mcp`: the `parse` of its raw folder.
+  - `api`: the adapter's `fetch` against a replay client that serves the records in order, checks each request against its record, re-raises a recorded error, and needs no credential.
+- `features`, `judge` with the run's stored judgment, `apply` and `digest` already run offline, so the README gives the replay of a whole run as a sequence of commands.
+
+**Alternatives considered**:
+- Pushing raw results to `claude/state`: rejected, chat and page text would stay in git history for good; the owner chose local storage.
+- Recording raw bytes: rejected, the adapters read decoded JSON, so bytes add size and nothing a replay uses.
+- A recording library: rejected, the runtime is stdlib only.
+
+**Rationale**: a run on real data can be replayed offline to test a parser, evaluator or digest change, with the same layout for every collector.
+
+### TD-66: Transport preference
+
+**Choice**:
+- `transport.<place>` on a provider or a source is `api`, `mcp` or an ordered list of both without repeats (AC-52.1). `config_tree` resolves it to a list on every source; a single value becomes a one-item list.
+- A transport is usable when (AC-52.2, BR-72):
+  - `api`: every variable of `api.credentials` holds a non-blank value;
+  - `mcp`: always, since only the session can tell whether its connector is there; the environment check names the connector as before.
+- `collect.py sources --out <run>/sources.json` picks, per source, the first usable transport and writes `source`, `role`, `provider`, `transport` (the chosen one, or null) and `skipped` (each transport passed over, with its missing variables) (AC-52.3).
+- `check-env` makes the same choice: a `fallback <source> <from> <to> <variable>` line per skipped transport, exit 0. `missing` lines appear only for a source with no usable transport (AC-52.6).
+- `fetch`, `plan` and `parse` take `--sources <run>/sources.json` and use the chosen transport. A command that does not match it exits 2, as a wrong transport does today. Without `--sources` they choose the same way from the environment.
+- The collection and the run record keep the chosen transport and the `skipped` list (AC-52.5). A failed read never triggers a second choice (AC-52.4).
+- `HttpClient` and `check-env` treat a blank value as missing (BR-72).
+
+**Alternatives considered**:
+- Fall back after a failed api read too: rejected by the owner, a failed read stays a blind spot.
+- Let the model pick the transport: rejected, the choice is a fact the script decides, written to a file every later command reads.
+
+**Rationale**: api is the default wherever its credentials exist, the connector covers a place without them, and git still decides the order.
+
 ## Implementation Considerations
 
 ### Data Model
@@ -2097,6 +2135,9 @@ sequenceDiagram
 | `plugins/claudio-routines/skills/routines/scripts/routines.py`, `lint.py`, `SKILL.md`, `test_routines.py` | modify | Tribe judgment: `/routines seed`, the settings deny check of `lint --private`, the tribe template contract |
 | `plugins/claudio-routines/README.md`, `runtime/providers/README.md`, `example/`, `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` | modify | Tribe judgment: docs, example, version bump |
 | `README.md` | modify | Tribe judgment: the `runtime/tribe.py` row, the `seed` usage line and the settings check of `lint --private` |
+| `plugins/claudio-routines/runtime/providers/_http.py`, `collect.py` | modify | Raw store: optional HTTP recorder, `fetch --responses`, `replay` |
+| `plugins/claudio-routines/runtime/providers/_replay.py` | new | Replay client serving recorded HTTP calls in order |
+| `plugins/claudio-routines/skills/routines/scripts/routines.py`, `templates/*.md`, `example/config.json` | modify | Raw folders by role, `places.<place>.runs_dir` and the run folder under it |
 
 Tasks create the private repository files (`config.json`, `config/routines/*.json`, `templates/prod-watch.md`, `templates/prod-watch-runtime.md`, `templates/tribe-digest.md`, `templates/chat-recap.md`, `templates/weekly-status.md`, `routines/*`, `reference/` compare script and reasons) outside this repository; this inventory never lists their content.
 

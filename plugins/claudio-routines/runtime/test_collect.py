@@ -15,6 +15,9 @@ import state
 from support import publication_values
 from providers._http import PAGE_CAP, PartialRead, SourceUnreadable
 from providers._errors import CredentialsMissing
+from providers.test_http import PATH as HTTP_PATH
+from providers.test_http import SECRET as HTTP_SECRET
+from providers.test_http import FakeOpener, FakeResponse, http_error, make_client
 from test_recap_features import OWNER as RECAP_OWNER
 from test_recap_features import make_routine as make_recap_routine
 from test_recap_state import CHANNEL_A as RECAP_CHANNEL_A
@@ -295,13 +298,14 @@ class CollectTestCase(unittest.TestCase):
         config = self.write("config.json", self.config)
         return self.run_main(command, "--config", config, "--routine", ROUTINE, "--place", place)
 
-    def fetch(self, source="monitors", place="cloud", out=None):
+    def fetch(self, source="monitors", place="cloud", out=None, responses=None):
         config = self.write("config.json", self.config)
         window = self.write("window.json", self.window)
         stored = self.write("state.json", self.state)
         return self.run_main(
             "fetch", "--config", config, "--routine", ROUTINE, "--source", source, "--place", place,
             "--window", window, "--state", stored, "--out", out or self.path("collection.json"),
+            *([] if responses is None else ["--responses", responses]),
         )
 
     def collection(self):
@@ -356,6 +360,11 @@ class ParserTest(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
             self.parse("plan", *self.COMMON, "--source", "s", "--window", "w", "--state", "s", "--out", "o")
         self.assertEqual(raised.exception.code, 2)
+
+    def test_fetch_takes_an_optional_responses_directory(self):
+        fetch = ["--source", "s", "--window", "w", "--state", "s", "--out", "o"]
+        parsed = [self.parse("fetch", *self.COMMON, *fetch).responses, self.parse("fetch", *self.COMMON, *fetch, "--responses", "d").responses]
+        self.assertEqual(parsed, [None, "d"])
 
     def test_fetch_requires_the_output_path(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
@@ -1180,6 +1189,115 @@ class RoutineRulesTest(CollectTestCase):
     def test_sources_exits_3_on_an_invalid_routine_rule(self):
         self.config["routines"][ROUTINE]["rules"] = [""]
         self.assertEqual(self.run_command("sources")[0], 3)
+
+
+class RecordedFetchTest(CollectTestCase):
+    def setUp(self):
+        super().setUp()
+        self.opener = FakeOpener()
+        self.obs.api_client = lambda provider, opener=None, environ=None, sleep=None: make_client(self.opener, sleeps=[])
+        self.raw = self.path("raw/observability/monitors")
+
+    def reads(self, *calls):
+        original = self.obs.fetch
+
+        def fetch(source, window, cursor, entries, http):
+            for call in calls:
+                call(http)
+            return original(source, window, cursor, entries, http)
+
+        self.obs.fetch = fetch
+
+    def recorded(self):
+        names = sorted(os.listdir(self.raw))
+        return names, [json.loads(self.read_raw(name)) for name in names]
+
+    def read_raw(self, name):
+        with open(os.path.join(self.raw, name), "rb") as handle:
+            return handle.read()
+
+    def test_writes_one_file_per_call_in_call_order(self):
+        self.opener.outcomes = [FakeResponse(b'{"n": 1}'), FakeResponse(b'{"n": 2}')]
+        self.reads(lambda http: http.get(HTTP_PATH, {"page": 1}), lambda http: http.post(HTTP_PATH, {"q": "x"}))
+        self.assertEqual(self.fetch(responses=self.raw)[0], 0)
+        expected = [
+            {"method": "GET", "path": HTTP_PATH, "query": "page=1", "body": None, "status": 200, "link": None, "response": {"n": 1}, "error": None},
+            {"method": "POST", "path": HTTP_PATH, "query": "", "body": {"q": "x"}, "status": 200, "link": None, "response": {"n": 2}, "error": None},
+        ]
+        self.assertEqual(self.recorded(), (["monitors-1.json", "monitors-2.json"], expected))
+
+    def test_writes_canonical_json(self):
+        self.opener.outcomes = [FakeResponse(b'{"b": 1, "a": "\\u00e9"}')]
+        self.reads(lambda http: http.get(HTTP_PATH))
+        self.fetch(responses=self.raw)
+        raw = self.read_raw("monitors-1.json")
+        self.assertEqual(raw, state.dump(json.loads(raw)))
+
+    def test_creates_the_folder_and_its_parents(self):
+        self.assertEqual((self.fetch(responses=self.raw)[0], os.listdir(self.raw)), (0, []))
+
+    def test_a_record_holds_no_request_header_and_no_credential_value(self):
+        self.opener.outcomes = [FakeResponse(b'{"n": 1}')]
+        self.reads(lambda http: http.post(HTTP_PATH, {"q": "x"}))
+        self.fetch(responses=self.raw)
+        text = "".join(self.read_raw(name).decode("utf-8") for name in os.listdir(self.raw))
+        self.assertEqual((HTTP_SECRET in text, "Authorization" in text, "Bearer" in text), (False, False, False))
+
+    def test_a_failed_call_is_recorded_with_its_status_and_error(self):
+        self.opener.outcomes = [http_error(404)]
+        self.reads(lambda http: http.get(HTTP_PATH))
+        self.fetch(responses=self.raw)
+        error = {"class": "SourceUnreadable", "message": "HTTP 404 GET " + HTTP_PATH, "status": 404}
+        record = self.recorded()[1][0]
+        self.assertEqual((record["status"], record["response"], record["error"]), (404, None, error))
+
+    def test_a_failed_call_still_fails_the_read(self):
+        self.opener.outcomes = [http_error(404)]
+        self.reads(lambda http: http.get(HTTP_PATH))
+        code, _, _ = self.fetch(responses=self.raw)
+        collection = self.collection()
+        self.assertEqual((code, collection["read"], collection["reason"]), (0, False, f"{OBS_HOST}: HTTP 404 GET {HTTP_PATH}"))
+
+    def test_a_fetch_that_fails_midway_keeps_the_records_so_far(self):
+        self.opener.outcomes = [FakeResponse(b'{"n": 1}'), http_error(403)]
+        self.reads(lambda http: http.get(HTTP_PATH), lambda http: http.get(HTTP_PATH), lambda http: http.get(HTTP_PATH))
+        self.fetch(responses=self.raw)
+        names, records = self.recorded()
+        self.assertEqual((names, [record["status"] for record in records]), (["monitors-1.json", "monitors-2.json"], [200, 403]))
+
+    def test_a_retried_call_is_one_record_with_its_final_outcome(self):
+        self.opener.outcomes = [http_error(503), FakeResponse(b'{"n": 1}')]
+        self.reads(lambda http: http.get(HTTP_PATH))
+        self.fetch(responses=self.raw)
+        names, records = self.recorded()
+        self.assertEqual((names, records[0]["status"], records[0]["response"]), (["monitors-1.json"], 200, {"n": 1}))
+
+    def test_a_lone_surrogate_of_a_response_is_recorded_as_a_replacement_character(self):
+        self.opener.outcomes = [FakeResponse(b'{"text": "a\\ud800b"}')]
+        self.reads(lambda http: http.get(HTTP_PATH))
+        code, _, _ = self.fetch(responses=self.raw)
+        self.assertEqual((code, self.recorded()[1][0]["response"]), (0, {"text": "a\ufffdb"}))
+
+    def test_a_folder_that_holds_a_file_is_refused_with_exit_2_naming_it(self):
+        os.makedirs(self.raw)
+        with open(os.path.join(self.raw, "monitors-1.json"), "w", encoding="utf-8") as handle:
+            handle.write("{}")
+        code, _, stderr = self.fetch(responses=self.raw)
+        self.assertEqual((code, self.raw in stderr, self.obs.calls, os.path.exists(self.path("collection.json"))), (2, True, [], False))
+
+    def test_a_record_that_cannot_be_written_exits_2_naming_the_file(self):
+        self.opener.outcomes = [FakeResponse(b"{}")]
+        self.reads(lambda http: http.get(HTTP_PATH))
+        write_all = state.write_all
+
+        def failing(documents):
+            if any(os.path.basename(path) == "monitors-1.json" for path, _ in documents):
+                raise state.InputError("cannot write monitors-1.json: disk full")
+            return write_all(documents)
+
+        with mock.patch.object(state, "write_all", failing):
+            code, _, stderr = self.fetch(responses=self.raw)
+        self.assertEqual((code, stderr, os.path.exists(self.path("collection.json"))), (2, "collect.py: cannot write monitors-1.json: disk full\n", False))
 
 
 class FetchNotReadTest(CollectTestCase):

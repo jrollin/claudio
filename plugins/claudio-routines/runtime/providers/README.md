@@ -4,8 +4,28 @@ One module per vendor reads one role through `_http.py`. This file lists, per ve
 
 ## Saved connector responses
 
-- The model saves each connector result unchanged as `<responses>/<call id>.txt`, copying the file when the harness saved the result to one.
+- The model saves each connector result unchanged as `<responses>/<call id>.txt`, copying the file when the harness saved the result to one. A run keeps `<responses>` at `<run>/raw/<role>/<source>`.
 - A harness-saved file holds a JSON list of `{"type": "text", "text": ...}` blocks. `collect.py` joins those texts before the adapter reads the response, so code-script checksums and digests apply to the result itself. Any other content reaches the adapter unchanged.
+
+## Recorded HTTP calls
+
+- `HttpClient` has a `recorder` attribute, `None` by default. When set, it is called once per `get`, `post` or `get_url` call with the record of that call, after the call ends.
+- `collect.py fetch --responses <dir>` sets it. `<dir>` is created when absent and must be empty; a folder that holds any entry is refused with exit 2, naming it.
+- Each record is written as its call ends, to `<dir>/<source>-<n>.json` as canonical JSON, with `n` from 1 in call order. A fetch that fails midway keeps the records so far.
+- A record holds exactly these keys:
+  - `method`: `GET` or `POST`.
+  - `path`: the path of the requested URL, `base_url` path included.
+  - `query`: the query string without `?`, as sent, `""` when none.
+  - `body`: the request JSON for a `POST`, `null` for a `GET`.
+  - `status`: `200` on a read answer, the HTTP status on an HTTP error, `null` when the call got no answer.
+  - `link`: the `Link` response header of a read answer, else `null`.
+  - `response`: the decoded JSON of a read answer, else `null`.
+  - `error`: `null`, or `{"class", "message", "status"}` of the exception the call raised (`SourceUnreadable`, `PartialRead`, `CredentialsMissing`), `status` being the exception's own status.
+- A failed call is recorded, then raises as it does without a recorder. A call retried after a 429 or 5xx answer writes one record, the final outcome.
+- A `get_url` link refused for leaving the `base_url` host is a failed call: it is recorded with no status and no request.
+- A request header never reaches the recorder, and credentials only travel in request headers, so a record holds no credential value.
+- A lone surrogate in a record is written as U+FFFD, as in the collection.
+- A record holds the source's content, so the folder is never pushed to `claude/state`.
 
 ## Credentials in the config
 

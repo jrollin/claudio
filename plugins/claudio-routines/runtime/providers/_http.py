@@ -75,6 +75,7 @@ class HttpClient:
         self.sleep = sleep if sleep is not None else time.sleep
         self.clock = clock if clock is not None else time.monotonic
         self.response_headers = None
+        self.recorder = None
 
     def get(self, path, params=None):
         query = "?" + urllib.parse.urlencode(params, doseq=True) if params else ""
@@ -84,10 +85,7 @@ class HttpClient:
         return self._call("POST", self._url(path), path, json.dumps(body).encode("utf-8"))
 
     def get_url(self, url):
-        parts = urllib.parse.urlsplit(url)
-        if parts.scheme != self.base.scheme or parts.netloc.lower() != self.base.netloc.lower():
-            raise SourceUnreadable(f"link refused GET {parts.path}: not on the base_url host")
-        return self._call("GET", url, parts.path, None)
+        return self._call("GET", url, urllib.parse.urlsplit(url).path, None)
 
     def _url(self, path):
         if not path.startswith("/"):
@@ -136,17 +134,52 @@ class HttpClient:
         return b"".join(chunks)
 
     def _call(self, method, url, path, data):
+        parts = urllib.parse.urlsplit(url)
+        record = {
+            "method": method,
+            "path": parts.path,
+            "query": parts.query,
+            "body": None if data is None else json.loads(data),
+            "status": None,
+            "link": None,
+            "response": None,
+            "error": None,
+        }
+        try:
+            decoded = self._exchange(method, url, path, data, record)
+        except Exception as exc:
+            record["error"] = {"class": type(exc).__name__, "message": str(exc), "status": getattr(exc, "status", None)}
+            self._record(record)
+            raise
+        self._record(record)
+        return decoded
+
+    def _record(self, record):
+        if self.recorder is not None:
+            self.recorder(record)
+
+    def _exchange(self, method, url, path, data, record):
         self.response_headers = None
+        self._check_host(method, url)
         request = urllib.request.Request(url, data=data, headers=self._headers(data), method=method)
         status, headers, body = self._attempt(request, method, path)
         if status is not None and is_retryable(status):
             self.sleep(retry_delay(headers))
             status, headers, body = self._attempt(request, method, path)
+        record["status"] = 200 if status is None else status
         if status is None:
-            return self._decode(body, headers, method, path)
+            decoded = self._decode(body, headers, method, path)
+            record["link"] = headers.get("Link")
+            record["response"] = decoded
+            return decoded
         if 300 <= status < 400:
             raise SourceUnreadable(f"redirect refused {method} {path}")
         raise SourceUnreadable(f"HTTP {status} {method} {path}", status)
+
+    def _check_host(self, method, url):
+        parts = urllib.parse.urlsplit(url)
+        if parts.scheme != self.base.scheme or parts.netloc.lower() != self.base.netloc.lower():
+            raise SourceUnreadable(f"link refused {method} {parts.path}: not on the base_url host")
 
     def _decode(self, body, headers, method, path):
         if len(body) > BODY_CAP:

@@ -3,7 +3,7 @@
 ---
 feature: routines-as-code
 spec_version: 1
-total_tasks: 93
+total_tasks: 97
 phases:
   - name: "Leak guard"
     tasks: [T-1, T-2, T-3]
@@ -41,6 +41,10 @@ phases:
     tasks: [T-75, T-76, T-77, T-87, T-88, T-89, T-90, T-91, T-92, T-93]
   - name: "Chat recap engine"
     tasks: [T-78, T-79, T-80, T-81, T-82, T-83, T-84, T-85, T-86]
+  - name: "Raw data and replay"
+    tasks: [T-94, T-95, T-96]
+  - name: "Transport preference"
+    tasks: [T-97]
 depends_on: []
 ---
 
@@ -1007,6 +1011,60 @@ Owner-gated: needs the merged pull request, a release tag, the transport and its
 - **Verify**: `python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --private "$CLAUDIO_PRIVATE_DIR" && python3 plugins/claudio-routines/skills/routines/scripts/routines.py diff <slug>`
 - **Blocked by**: T-85
 - **Rules**: BR-67, BR-68
+- **Status**: Not Started
+
+## Phase 19: Raw data and replay
+
+### T-94: Record every raw source result by role
+- `HttpClient` takes an optional recorder, called once per call with the record of TD-65: method, path, query, request body, status, `Link` header, decoded response, error. A failed call is recorded, then raises as before. Request headers never reach the recorder.
+- `collect.py fetch` takes `--responses <dir>`: it creates the folder and writes one `<source>-<n>.json` per HTTP call, in order, as canonical JSON. A folder that already holds a file is refused with exit 2, naming it.
+- The runnable templates write every source's raw results to `<run>/raw/<role>/<source>/`: the `mcp` plan, parse and save paths, and the `api` fetch with `--responses`. `<role>` is the role `collect.py sources` prints.
+- Tests: a recorded fetch writes one file per call in order, with no request header and no credential value; a failed call is recorded with its status and error and still fails the read; a folder that holds a file is refused; every runnable template saves under `<run>/raw/<role>/<source>/` and passes `--responses` to `fetch`.
+- **Refs**: US-51, TD-65
+- **Files**: `plugins/claudio-routines/runtime/providers/_http.py` (modify), `plugins/claudio-routines/runtime/providers/test_http.py` (modify), `plugins/claudio-routines/runtime/collect.py` (modify), `plugins/claudio-routines/runtime/test_collect.py` (modify), `plugins/claudio-routines/skills/routines/templates/prod-watch.md` (modify), `plugins/claudio-routines/skills/routines/templates/tribe-digest.md` (modify), `plugins/claudio-routines/skills/routines/templates/chat-recap.md` (modify), `plugins/claudio-routines/skills/routines/scripts/test_routines.py` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify), `plugins/claudio-routines/README.md` (modify)
+- **Verify**: `for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
+- **Rules**: BR-70, BR-71
+- **Status**: Complete
+
+### T-95: Keep local run folders under the place's runs folder
+- `places.<place>.runs_dir` is optional and absolute; render fills `{{runs.dir}}` with it, or `/tmp` without it. The place check refuses a relative path, naming the key path, so render and lint fail on it.
+- The runnable templates create the run folder with `mkdir -p {{runs.dir}}/<slug>` and `mktemp -d {{runs.dir}}/<slug>/<YYYYMMDDTHHMMSSZ>-XXXXXX`, the time from `date -u +%Y%m%dT%H%M%SZ`.
+- `example/config.json` shows `runs_dir` on the local place.
+- Tests: render fills `runs_dir` and falls back to `/tmp`; a relative `runs_dir` fails with its key path; every runnable template creates its run folder under `{{runs.dir}}`.
+- **Refs**: US-51, TD-65
+- **Files**: `plugins/claudio-routines/skills/routines/scripts/routines.py` (modify), `plugins/claudio-routines/skills/routines/scripts/test_routines.py` (modify), `plugins/claudio-routines/example/config.json` (modify), `plugins/claudio-routines/skills/routines/templates/prod-watch.md` (modify), `plugins/claudio-routines/skills/routines/templates/tribe-digest.md` (modify), `plugins/claudio-routines/skills/routines/templates/chat-recap.md` (modify), `plugins/claudio-routines/skills/routines/SKILL.md` (modify), `plugins/claudio-routines/README.md` (modify)
+- **Verify**: `for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
+- **Blocked by**: T-94
+- **Rules**: BR-70
+- **Status**: Not Started
+
+### T-96: Replay a run's collections from its raw folder
+- `collect.py replay --config --routine --place --window --state --raw <run>/raw --out <dir>` writes every source's collection of that place: an `mcp` source through the `parse` of `<raw>/<role>/<source>`, an `api` source through the adapter's `fetch` against a replay client.
+- The replay client serves the records in order; a request that differs from its record, or one past the last record, fails with exit 3, naming the source, the call number and the request. A recorded error is raised again with its message and status. It reads no environment variable.
+- The README gives the offline replay of a whole run: `replay`, then `features`, `judge` with the stored judgment, `apply` and `digest`, each on the run's files.
+- Tests: a fetch recorded through a fake opener replays to a byte-identical collection for each api provider (chat, documents, issues, observability, code host); a request that differs from its record fails naming it; a recorded HTTP error replays to the same not-read collection; an `mcp` source replays through `parse` to the run's collection.
+- **Refs**: US-51, TD-65
+- **Files**: `plugins/claudio-routines/runtime/collect.py` (modify), `plugins/claudio-routines/runtime/providers/_replay.py` (new), `plugins/claudio-routines/runtime/test_collect.py` (modify), `plugins/claudio-routines/runtime/providers/test_replay.py` (new), `plugins/claudio-routines/runtime/providers/README.md` (modify), `plugins/claudio-routines/README.md` (modify)
+- **Verify**: `for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
+- **Blocked by**: T-94
+- **Rules**: BR-71
+- **Status**: Not Started
+
+## Phase 20: Transport preference
+
+### T-97: Prefer api, fall back to the connector when a credential is missing
+- `config_tree` accepts `transport.<place>` as `api`, `mcp` or an ordered list of both without repeats, on a provider and on a source, and resolves every source's transport per place to a list. A repeat, an empty list or another value fails the load with its key path.
+- `collect.py sources --out <run>/sources.json` writes, per source, the first usable transport and the skipped ones with their missing variables (TD-66). `check-env` prints a `fallback` line per skipped transport and `missing` lines only for a source with no usable transport.
+- `fetch`, `plan` and `parse` take `--sources <run>/sources.json` and refuse a command that does not match the chosen transport. The collection and the run record keep the chosen transport and `skipped`.
+- A blank credential value counts as missing in `check-env`, the choice and `HttpClient` (BR-72).
+- The runnable templates run `sources` with `--out <run>/sources.json`, pass `--sources` to every `fetch`, `plan` and `parse`, and collect each source through the transport `sources` printed. They keep the rule that a failed read never switches transport.
+- `example/config.json` shows a provider with `["api", "mcp"]`.
+- Tests: a list picks api when every variable holds a value, the next transport when one is unset, empty or blank, and none when no listed transport is usable; a single value behaves as before; a repeat or an empty list fails the load with its key path; `fetch` on a source whose choice is `mcp` exits 2; the collection and the run record hold `skipped`; the HTTP client refuses a blank credential; every runnable template passes `--sources`.
+- **Refs**: US-13, US-24, US-52, TD-19, TD-35, TD-66
+- **Files**: `plugins/claudio-routines/runtime/config_tree.py` (modify), `plugins/claudio-routines/runtime/test_config_tree.py` (modify), `plugins/claudio-routines/runtime/collect.py` (modify), `plugins/claudio-routines/runtime/test_collect.py` (modify), `plugins/claudio-routines/runtime/roles.py` (modify), `plugins/claudio-routines/runtime/providers/_http.py` (modify), `plugins/claudio-routines/runtime/providers/test_http.py` (modify), `plugins/claudio-routines/skills/routines/templates/prod-watch.md` (modify), `plugins/claudio-routines/skills/routines/templates/tribe-digest.md` (modify), `plugins/claudio-routines/skills/routines/templates/chat-recap.md` (modify), `plugins/claudio-routines/skills/routines/scripts/test_routines.py` (modify), `plugins/claudio-routines/example/config.json` (modify), `plugins/claudio-routines/README.md` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify)
+- **Verify**: `for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
+- **Blocked by**: T-94
+- **Rules**: BR-24, BR-25, BR-72
 - **Status**: Not Started
 
 ## Related Features

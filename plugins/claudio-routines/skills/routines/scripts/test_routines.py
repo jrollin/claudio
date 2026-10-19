@@ -3023,11 +3023,11 @@ class ShippedFilesTest(Case):
 
     def test_prod_watch_plans_an_mcp_source_from_its_saved_responses(self):
         plan = [line for line in self.prod_watch_commands("collect.py") if "collect.py plan " in line]
-        self.assertEqual([line.endswith("--responses <run>/responses/<source> --out <run>/plan.json") for line in plan], [True])
+        self.assertEqual([line.endswith("--responses <run>/raw/<role>/<source> --out <run>/plan.json") for line in plan], [True])
 
     def test_prod_watch_parses_the_saved_responses_into_the_collection(self):
         parse = [line for line in self.prod_watch_commands("collect.py") if "collect.py parse " in line]
-        expected = "--responses <run>/responses/<source> --out <run>/collections/<source>.json"
+        expected = "--responses <run>/raw/<role>/<source> --out <run>/collections/<source>.json"
         self.assertEqual([line.endswith(expected) for line in parse], [True])
 
     def test_prod_watch_repeats_the_plan_until_done(self):
@@ -3037,7 +3037,7 @@ class ShippedFilesTest(Case):
         self.assertIn("with its `arguments` exactly as given", self.prod_watch_step("Collect"))
 
     def test_prod_watch_saves_each_result_unchanged_under_its_call_id(self):
-        self.assertIn("Save each result unchanged as `<run>/responses/<source>/<id>.txt`", self.prod_watch_step("Collect"))
+        self.assertIn("Save each result unchanged as `<run>/raw/<role>/<source>/<id>.txt`", self.prod_watch_step("Collect"))
 
     def test_prod_watch_copies_a_result_the_harness_saved_to_a_file(self):
         self.assertIn("When the harness saved the result to a file, copy that file.", self.prod_watch_step("Collect"))
@@ -3327,6 +3327,33 @@ class ShippedFilesTest(Case):
                 text = read(os.path.join(SHIPPED_TEMPLATES, f"{name}.md"))
                 self.assertIn("fetch --no-prune origin +claude/state:refs/remotes/origin/claude/state", text)
                 self.assertNotIn("fetch origin +claude/state", text)
+
+    def runnable_collect_step(self, name):
+        text = read(os.path.join(SHIPPED_TEMPLATES, f"{name}.md"))
+        start = text.index(": Collect\n")
+        return text[start: text.index("\n## ", start)]
+
+    def test_every_runnable_template_names_the_role_of_each_source_it_collects(self):
+        expected = "write its name literally wherever a command says `<source>` and its `role` wherever a command says `<role>`."
+        for name in ("prod-watch", "tribe-digest", "chat-recap"):
+            with self.subTest(template=name):
+                self.assertIn(expected, self.runnable_collect_step(name))
+
+    def test_every_runnable_template_keeps_the_raw_results_of_a_source_by_role(self):
+        for name in ("prod-watch", "tribe-digest", "chat-recap"):
+            with self.subTest(template=name):
+                step = self.runnable_collect_step(name)
+                relay = [line for line in step.splitlines() if "collect.py plan " in line or "collect.py parse " in line]
+                self.assertEqual(
+                    ([("--responses <run>/raw/<role>/<source> " in line) for line in relay], "`<run>/raw/<role>/<source>/<id>.txt`" in step, "<run>/responses" in step),
+                    ([True, True], True, False),
+                )
+
+    def test_every_runnable_template_records_the_http_calls_of_an_api_source_by_role(self):
+        for name in ("prod-watch", "tribe-digest", "chat-recap"):
+            with self.subTest(template=name):
+                fetch = [line for line in self.runnable_collect_step(name).splitlines() if "collect.py fetch " in line]
+                self.assertEqual([("--responses <run>/raw/<role>/<source> --out <run>/collections/<source>.json" in line) for line in fetch], [True])
 
     def runnable_save_step(self, name):
         text = read(os.path.join(SHIPPED_TEMPLATES, f"{name}.md"))

@@ -1,5 +1,6 @@
 import argparse
 import errno
+import itertools
 import json
 import os
 import re
@@ -28,6 +29,7 @@ NO_RESPONSE = "no response saved (connector missing or relay not run)"
 CALLS_FILE = "calls.json"
 DAY_SECONDS = 86400
 RESPONSE_SUFFIX = ".txt"
+RECORD_SUFFIX = ".json"
 LONE_SURROGATE = re.compile(r"[\ud800-\udfff]")
 REPLACEMENT = "\ufffd"
 SPACE_RUN = re.compile(r" {2,}")
@@ -271,6 +273,8 @@ def read_source(draft, where, read):
         collection = draft.read(read())
     except SourceUnreadable as error:
         return draft.not_read(failure_reason(error, where))
+    except state.InputError:
+        raise
     except Exception as error:
         return draft.not_read(f"{where}: adapter error: {type(error).__name__}")
     try:
@@ -343,15 +347,45 @@ def write_collection(args, collection):
     state.write_all([(args.out, state.dump(cleaned(collection)))])
 
 
+def open_records(directory):
+    try:
+        os.makedirs(directory, exist_ok=True)
+        held = sorted(os.listdir(directory))
+    except OSError as error:
+        raise state.InputError(f"responses: cannot create {directory}: {error.strerror}") from error
+    if held:
+        raise state.InputError(f"responses: {directory} already holds {held[0]}")
+
+
+def record_writer(directory, name):
+    numbers = itertools.count(1)
+
+    def write(record):
+        path = os.path.join(directory, f"{name}-{next(numbers)}{RECORD_SUFFIX}")
+        state.write_all([(path, state.dump(without_lone_surrogates(record)))])
+
+    return write
+
+
+def recording_client(adapter, provider, args):
+    client = adapter.api_client(provider)
+    if args.responses is not None:
+        client.recorder = record_writer(args.responses, args.source)
+    return client
+
+
 def run_fetch(args):
     provider, source, window, draft = prepare(args, "api")
+    if args.responses is not None:
+        open_records(args.responses)
     if draft.skipped is not None:
         write_collection(args, draft.not_read(draft.skipped))
         return 0
     adapter = providers.load(provider["adapter"])
     host = urlsplit(provider["api"]["base_url"]).hostname
     write_collection(
-        args, read_source(draft, host, lambda: adapter.fetch(source, window, draft.cursor, draft.selected, adapter.api_client(provider)))
+        args,
+        read_source(draft, host, lambda: adapter.fetch(source, window, draft.cursor, draft.selected, recording_client(adapter, provider, args))),
     )
     return 0
 
@@ -546,6 +580,7 @@ def build_parser():
         for flag in ("--config", "--routine", *flags):
             command.add_argument(flag, required=True)
         command.add_argument("--place", required=True, choices=roles.PLACES)
+    commands.choices["fetch"].add_argument("--responses")
     return parser
 
 
