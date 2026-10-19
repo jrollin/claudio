@@ -1758,6 +1758,18 @@ class CallCapTest(RelayTestCase):
         self.parse()
         self.assertEqual([self.collection()["read"], self.collection()["reason"]], [False, "partial: call cap"])
 
+    def test_ends_at_the_call_cap_of_the_source(self):
+        self.config["routines"][ROUTINE]["sources"]["sources-page"]["call_cap"] = 3
+        self.doc.pages = 4
+        self.fill(3)
+        self.assertEqual(self.plan_doc(), {"done": True, "partial": "call cap", "calls": []})
+
+    def test_keeps_listing_calls_past_the_default_cap_when_the_source_raises_it(self):
+        self.config["routines"][ROUTINE]["sources"]["sources-page"]["call_cap"] = collect.CALL_CAP + 10
+        self.doc.pages = collect.CALL_CAP + 1
+        self.fill(collect.CALL_CAP)
+        self.assertEqual(self.call_ids(), [f"sources-page-{collect.CALL_CAP + 1}"])
+
     def test_ends_without_partial_when_the_adapter_is_done_at_the_cap(self):
         self.doc.pages = collect.CALL_CAP
         self.fill(collect.CALL_CAP)

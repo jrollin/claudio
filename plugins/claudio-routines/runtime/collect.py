@@ -423,10 +423,10 @@ def adapter_step(adapter, source, window, draft, responses, connector):
     return step
 
 
-def next_step(step, responses):
+def next_step(step, responses, cap=CALL_CAP):
     if step["done"]:
         return ended(step["partial"])
-    if len(responses) >= CALL_CAP:
+    if len(responses) >= cap:
         return ended(CALL_CAP_PARTIAL)
     fresh = [call for call in step["calls"] if call["id"] not in responses]
     if not fresh:
@@ -440,7 +440,7 @@ def plan_step(adapter, source, window, draft, directory, connector):
         responses = read_responses(directory, [item for item in response_ids(directory) if call_id.fullmatch(item)])
     except SourceUnreadable as error:
         return ended(failure_reason(error, connector))
-    return next_step(adapter_step(adapter, source, window, draft, responses, connector), responses)
+    return next_step(adapter_step(adapter, source, window, draft, responses, connector), responses, source.get("call_cap", CALL_CAP))
 
 
 def run_plan(args):

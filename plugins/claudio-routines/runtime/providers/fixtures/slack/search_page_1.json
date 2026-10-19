@@ -1,0 +1,4 @@
+{
+  "results": "# Search Results for: \n\n## Messages (2 results)\n### Result 1 of 2\nChannel: DM (ID: D000001)\nParticipants: Bot App (ID: U000009), Owner Name (ID: U000001)\nFrom: Bot App (ID: U000009)  [BOT]\nTime: 2026-10-19 10:04:13 CEST\nMessage_ts: 1792397053.514349\nReply count: 1\nPermalink: [link](https://example.slack.test/archives/D000001/p1792397053514349?thread_ts=1792397053.514349&cid=D000001)\nText: \nmulti\nline text\n\n---\n\n### Result 2 of 2\nChannel: #general (ID: C000002)\nFrom: Peer Name <peer@example.test> (ID: U000002) \nTime: 2026-10-19 10:19:12 CEST\nMessage_ts: 1792397952.306719\nPermalink: [link](https://example.slack.test/archives/C000002/p1792397952306719)\nText: \nhello\n\n---\n\n",
+  "pagination_info": "For the next page of results use cursor `Q1VSUkVOVF9QQUdFOjI=`\n"
+}

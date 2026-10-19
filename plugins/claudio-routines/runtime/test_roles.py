@@ -2342,6 +2342,158 @@ class IssueTrackerContractTest(ConfigCase, CollectionCase):
         self.assert_collection_error(self.issues_collection(cursor={}), "cursor.updated")
 
 
+SEARCH_PATH = "routines.prod-watch.sources.chat.searches"
+
+
+def unit_records():
+    message = {
+        "user": "U000002",
+        "name": "Peer Name",
+        "bot": False,
+        "ts": "1780000000.000100",
+        "root_ts": None,
+        "text": "hello",
+    }
+    unit = {"channel": "D000001", "name": "DM", "participants": [{"id": "U000002", "name": "Peer Name"}], "messages": [message]}
+    return {**messages_records(), "units": [unit]}
+
+
+def chat_search(**overrides):
+    return {"name": "dms", "filters": "is:dm", "since": "window", **overrides}
+
+
+def searching_config(*searches, **options):
+    config = make_config()
+    source = routine_sources(config)["chat"]
+    del source["channels"]
+    source.update({"owner": "U000001", "searches": list(searches) or [chat_search()], **options})
+    return config
+
+
+class ChatSearchOptionsTest(ConfigCase):
+    def test_accepts_a_chat_source_with_searches_only(self):
+        self.assertIsNone(roles.validate_config(searching_config(), ROUTINE, "local", role_of))
+
+    def test_accepts_a_search_with_every_option(self):
+        search = chat_search(channel_types="im,mpim", keywords=["deploy"], since={"lookback_days": 7})
+        config = searching_config(search, chat_search(name="mentions"), reactions=True, search_page_cap=3)
+        self.assertIsNone(roles.validate_config(config, ROUTINE, "local", role_of))
+
+    def test_accepts_searches_next_to_channels(self):
+        config = searching_config()
+        routine_sources(config)["chat"]["channels"] = ["chan-alerts"]
+        self.assertIsNone(roles.validate_config(config, ROUTINE, "local", role_of))
+
+    def test_rejects_a_chat_source_with_neither_channels_nor_searches(self):
+        config = make_config()
+        del routine_sources(config)["chat"]["channels"]
+        self.assert_config_error(config, "routines.prod-watch.sources.chat")
+
+    def test_rejects_searches_without_an_owner(self):
+        config = searching_config()
+        del routine_sources(config)["chat"]["owner"]
+        self.assert_config_error(config, "routines.prod-watch.sources.chat.owner")
+
+    def test_rejects_reactions_without_an_owner(self):
+        config = make_config()
+        routine_sources(config)["chat"]["reactions"] = True
+        self.assert_config_error(config, "routines.prod-watch.sources.chat.owner")
+
+    def test_rejects_an_empty_search_list(self):
+        config = searching_config()
+        routine_sources(config)["chat"]["searches"] = []
+        self.assert_config_error(config, SEARCH_PATH)
+
+    def test_rejects_a_search_that_is_not_a_mapping(self):
+        config = searching_config()
+        routine_sources(config)["chat"]["searches"] = ["is:dm"]
+        self.assert_config_error(config, SEARCH_PATH + "[0]")
+
+    def test_rejects_a_search_without_a_name(self):
+        config = searching_config({"filters": "is:dm", "since": "window"})
+        self.assert_config_error(config, SEARCH_PATH + "[0].name")
+
+    def test_rejects_a_duplicate_search_name(self):
+        config = searching_config(chat_search(), chat_search())
+        self.assert_config_error(config, SEARCH_PATH + "[1].name")
+
+    def test_rejects_a_search_without_filters(self):
+        config = searching_config({"name": "dms", "since": "window"})
+        self.assert_config_error(config, SEARCH_PATH + "[0].filters")
+
+    def test_rejects_filters_that_are_not_a_string(self):
+        config = searching_config(chat_search(filters=["is:dm"]))
+        self.assert_config_error(config, SEARCH_PATH + "[0].filters")
+
+    def test_rejects_an_unknown_channel_type(self):
+        config = searching_config(chat_search(channel_types="im,thread"))
+        self.assert_config_error(config, SEARCH_PATH + "[0].channel_types")
+
+    def test_rejects_keywords_that_are_not_a_list_of_strings(self):
+        config = searching_config(chat_search(keywords=["deploy", 7]))
+        self.assert_config_error(config, SEARCH_PATH + "[0].keywords[1]")
+
+    def test_rejects_a_search_without_since(self):
+        config = searching_config({"name": "dms", "filters": "is:dm"})
+        self.assert_config_error(config, SEARCH_PATH + "[0].since")
+
+    def test_rejects_a_since_that_is_neither_window_nor_a_mapping(self):
+        config = searching_config(chat_search(since="week"))
+        self.assert_config_error(config, SEARCH_PATH + "[0].since")
+
+    def test_rejects_a_lookback_of_zero_days(self):
+        config = searching_config(chat_search(since={"lookback_days": 0}))
+        self.assert_config_error(config, SEARCH_PATH + "[0].since.lookback_days")
+
+    def test_rejects_a_since_without_lookback_days(self):
+        config = searching_config(chat_search(since={}))
+        self.assert_config_error(config, SEARCH_PATH + "[0].since.lookback_days")
+
+    def test_rejects_an_unknown_search_key(self):
+        config = searching_config(chat_search(keyword=["deploy"]))
+        self.assert_config_error(config, SEARCH_PATH + "[0].keyword")
+
+    def test_rejects_reactions_that_are_not_a_boolean(self):
+        config = searching_config(reactions="yes")
+        self.assert_config_error(config, "routines.prod-watch.sources.chat.reactions")
+
+    def test_rejects_a_search_page_cap_of_zero(self):
+        config = searching_config(search_page_cap=0)
+        self.assert_config_error(config, "routines.prod-watch.sources.chat.search_page_cap")
+
+    def test_accepts_the_largest_call_cap(self):
+        self.assertIsNone(roles.validate_config(searching_config(call_cap=300), ROUTINE, "local", role_of))
+
+    def test_rejects_a_call_cap_of_zero(self):
+        self.assert_config_error(searching_config(call_cap=0), "routines.prod-watch.sources.chat.call_cap")
+
+    def test_rejects_a_call_cap_above_300(self):
+        self.assert_config_error(searching_config(call_cap=301), "routines.prod-watch.sources.chat.call_cap")
+
+    def test_rejects_a_call_cap_that_is_not_an_integer(self):
+        self.assert_config_error(searching_config(call_cap="50"), "routines.prod-watch.sources.chat.call_cap")
+
+    def test_rejects_an_owner_that_is_not_a_string(self):
+        config = searching_config(owner=7)
+        self.assert_config_error(config, "routines.prod-watch.sources.chat.owner")
+
+    def test_accepts_a_chat_collection_with_units(self):
+        doc = make_collection("chat", unit_records(), {"ts": {}}, place="cloud")
+        self.assertIsNone(roles.validate_collection(doc))
+
+    def test_accepts_a_unit_message_with_the_owner_reaction(self):
+        records = unit_records()
+        records["units"][0]["messages"][0]["owner_reacted"] = False
+        self.assertIsNone(roles.validate_collection(make_collection("chat", records, {"ts": {}})))
+
+    def test_rejects_a_unit_message_without_its_bot_flag(self):
+        records = unit_records()
+        del records["units"][0]["messages"][0]["bot"]
+        with self.assertRaises(ValueError) as caught:
+            roles.validate_collection(make_collection("chat", records, {"ts": {}}))
+        self.assertEqual(str(caught.exception).partition(": ")[0], "records.units[0].messages[0].bot")
+
+
 class DumpTest(unittest.TestCase):
     def test_writes_sorted_indented_utf8_json_with_a_trailing_newline(self):
         expected = '{\n  "a": [\n    1\n  ],\n  "b": "café"\n}\n'.encode("utf-8")

@@ -1,0 +1,4 @@
+{
+  "results": "# Search Results for: \n\n## Messages (1 results)\n### Result 1 of 1\nChannel: #ops (ID: C000003)\nFrom: Peer Name <peer@example.test> (ID: U000002) \nTime: 2026-10-19 10:28:20 CEST\nMessage_ts: 1792398500.000100\nPermalink: [link](https://example.slack.test/archives/C000003/p1792398500000100?thread_ts=1792398000.000050&cid=C000003)\nText: \nCan you review?\n\n---\n\n",
+  "pagination_info": "\n"
+}
