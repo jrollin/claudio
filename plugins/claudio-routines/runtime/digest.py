@@ -1,11 +1,23 @@
 import argparse
+import functools
 import json
+import re
 import sys
+from datetime import datetime
 
 import state
 
 LEVELS = tuple(reversed(state.SEVERITY))
 RECORD_LISTS = (*state.CHANGES, "muted")
+MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+MARKS = {"now": "🔴", "within months": "🟠", "watch": "🟡"}
+ESCALATED = "⬆️"
+SEPARATOR = " · "
+OPEN_SHOWN = 3
+MONITOR_LINK = re.compile(r"[^?#]*?/monitors/([0-9]+)(?:[/?#]|$)")
+DOUBLE_STAR = re.compile(r"\*(?=\*)")
+LINK_ESCAPES = (("(", "%28"), (")", "%29"), (" ", "%20"), ("\\", "%5C"))
+WEB_SCHEMES = ("https://", "http://")
 
 
 def is_unix_time(value):
@@ -56,6 +68,9 @@ def check_record(document):
 def check_next_state(document):
     state.check_state(document)
     state.TEXT(document["digest"], "digest")
+    window = document["run"]["window"]
+    if window is not None:
+        UNIX_TIME(window["from_ts"], "run.window.from_ts")
 
 
 def check_base(document):
@@ -69,8 +84,12 @@ def load_input(path, label, checker):
         raise state.InputError(f"{error} (file {path})") from error
 
 
-def text(value):
+def clean(value):
     return state.clean_text(value, state.LABEL_CAP)
+
+
+def text(value):
+    return DOUBLE_STAR.sub("* ", clean(value)).replace("](", "] (")
 
 
 def value_text(value):
@@ -79,61 +98,102 @@ def value_text(value):
     return text(value if isinstance(value, str) else json.dumps(value, sort_keys=True, ensure_ascii=False))
 
 
-def block(heading, lines):
-    return "\n".join([heading, "", *lines]) if lines else ""
+def day_time(moment):
+    return f"{state.DAYS[moment.weekday()]} {moment:%H:%M}"
 
 
-def item_head(entry):
-    return [f"- {text(entry['title'])} ({entry['severity']}, {entry['when']})", f"  - Link: {text(entry['link'])}"]
+def date_time(moment):
+    return f"{moment:%d} {MONTHS[moment.month - 1]} {moment:%H:%M}"
+
+
+def title_lines(document, run_at):
+    city = run_at.tzinfo.key.rsplit("/", 1)[-1].replace("_", " ")
+    return [f"**{text(document['digest'])}, {date_time(run_at)} {city}**", window_line(document["run"], run_at.tzinfo)]
+
+
+def window_line(run, zone):
+    if run["previous_at"] is None or run["window"] is None:
+        return "(baseline)"
+    return f"(since {day_time(datetime.fromtimestamp(run['window']['from_ts'], zone))})"
+
+
+def since_text(items, run_at, key):
+    stored = items[key]["since"] if key in items else None
+    try:
+        moment = state.parse_time(stored).astimezone(run_at.tzinfo)
+    except (OverflowError, ValueError):
+        return value_text(stored)
+    return f"{moment:%H:%M}" if moment.date() == run_at.date() else date_time(moment)
+
+
+def link_text(entry):
+    link = clean(entry["link"])
+    match = MONITOR_LINK.match(link)
+    label = f"monitor {match.group(1)}" if match else "metric"
+    if not link.lower().startswith(WEB_SCHEMES):
+        return label
+    for character, escape in LINK_ESCAPES:
+        link = link.replace(character, escape)
+    return f"[{label}]({link})"
 
 
 def analysis_lines(entry):
     lines = []
     if "risk" in entry:
-        lines.append(f"  - Risk: {text(entry['risk'])}")
+        lines.append(f"- **Risk:** {text(entry['risk'])}")
     if entry.get("reason"):
-        lines.append("  - Reason:")
-        lines += [f"    - {claim['tag']}: {text(claim['claim'])}" for claim in entry["reason"]]
+        lines.append("- **Reason:** " + "; ".join(f"{text(claim['claim']).removesuffix('.')} ({claim['tag']})" for claim in entry["reason"]))
     if "mitigation" in entry:
-        lines.append("  - Mitigation:")
-        lines += [f"    - {text(lead)}" for lead in entry["mitigation"]]
+        lines.append("- **Mitigation:** " + "; ".join(text(lead) for lead in entry["mitigation"]))
     if "action" in entry:
-        lines.append(f"  - Action: {text(entry['action'])}")
+        lines.append(f"- **Action:** {text(entry['action'])}")
     return lines
 
 
-def analysed_lines(entry):
-    return item_head(entry) + analysis_lines(entry)
+def entry_block(entry, since, prefix=""):
+    head = f"{prefix}{MARKS[entry['when']]} **{text(entry['title'])}**"
+    detail = SEPARATOR.join([entry["severity"], entry["when"], f"since {since(entry['key'])}", link_text(entry)])
+    return "\n".join([head, detail, *analysis_lines(entry)])
 
 
-def open_lines(entry, item):
-    head = f"- {text(entry['title'])}: since {value_text(item['since'])}, last value {value_text(item['last_value'])}, {text(item['link'])}"
-    return [head] + ([f"  - Action: {text(item['action'])}"] if "action" in item else [])
+def resolved_line(entry):
+    return f"✅ **{text(entry['title'])}**{SEPARATOR}{link_text(entry)}{SEPARATOR}last value {value_text(entry['last_value'])}"
 
 
-def stored_item(document, key):
-    if key not in document["items"]:
-        raise state.InputError(f"summary: still_open key {key} is not in the state items")
-    return document["items"][key]
+def open_line(level, entries):
+    titles = [text(entry["title"]) for entry in entries[:OPEN_SHOWN]]
+    rest = len(entries) - OPEN_SHOWN
+    return f"- {level}: " + ", ".join(titles + ([f"+{rest}"] if rest > 0 else []))
 
 
-def still_open_section(summary, document):
-    groups = []
-    for level in LEVELS:
-        lines = [line for entry in summary["still_open"][level] for line in open_lines(entry, stored_item(document, entry["key"]))]
-        if lines:
-            groups.append(block(f"### {level}", lines))
-    return "\n\n".join(["## Still open", *groups]) if groups else ""
+def section(heading, body):
+    return f"**{heading}**\n{body}" if body else ""
 
 
-def count_lines(summary):
-    counts = (("Muted changes", summary["muted_changes"]), ("Blind spots dropped", summary["blind_spots_dropped"]))
-    return [f"- {label}: {count}" for label, count in counts if count]
+def counted(count, noun):
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
 
 
-def cut_lines(summary):
-    cut = summary["cut"]
-    return [] if cut is None else [f"- Not read: {state.utc_text(cut['from_ts'])} to {state.utc_text(cut['to_ts'])}"]
+def labelled(label, parts, separator):
+    return f"**{label}:** {separator.join(parts)}" if parts else ""
+
+
+def open_total(summary):
+    return sum(len(entries) for entries in summary["still_open"].values())
+
+
+def summary_line(summary, total):
+    counts = (len(summary["new"]), "new"), (len(summary["escalated"]), "escalated"), (len(summary["resolved"]), "resolved"), (total, "still open")
+    return "- " + ", ".join(f"{count} {name}" for count, name in counts)
+
+
+def change_section(heading, entries, since, prefix=""):
+    return section(heading, "\n\n".join(entry_block(entry, since, prefix) for entry in entries))
+
+
+def still_open_section(summary, total):
+    levels = [(level, summary["still_open"][level]) for level in LEVELS]
+    return section(f"Still open ({total})", "\n".join(open_line(level, entries) for level, entries in levels if entries))
 
 
 def unread_sources(base):
@@ -141,45 +201,73 @@ def unread_sources(base):
     return {name: source for name, source in sorted(collected.items()) if not source["read"]}
 
 
-def unread_lines(unread):
-    return [f"- {text(name)}: {text(source['reason'] or 'no reason recorded')}" for name, source in unread.items()]
+def blind_spot_parts(summary, unread, items, zone):
+    spots = [spot for spot in summary["blind_spots"] if spot["key"] not in unread]
+    parts = [f"{text(items[spot['key']]['title'] if spot['key'] in items else spot['key'])} {text(spot['gap'])} ({counted(spot['runs'], 'run')})" for spot in spots]
+    parts += [f"{text(name)} not read ({text(source['reason'] or 'no reason recorded')})" for name, source in unread.items()]
+    cut = summary["cut"]
+    if cut is not None:
+        parts.append(f"metrics before {day_time(datetime.fromtimestamp(cut['to_ts'], zone))} not read")
+    return parts
 
 
-def blind_spot_lines(summary, unread):
-    return [f"- {text(spot['key'])}: {text(spot['gap'])} (runs: {spot['runs']})" for spot in summary["blind_spots"] if spot["key"] not in unread]
+def not_shown_parts(summary):
+    muted, dropped = summary["muted_changes"], summary["blind_spots_dropped"]
+    return ([counted(muted, "muted change")] if muted else []) + ([f"{counted(dropped, 'blind spot')} dropped"] if dropped else [])
 
 
-def title_line(document, record):
-    return f"# {text(document['digest'])}, {text(record['run_at'])}"
+def override_parts(summary):
+    return [f"{text(item['title'])} ({text(item['state'])})" for item in summary["overrides"]]
 
 
-def render(summary, document, record, base):
-    unread = unread_sources(base)
-    sections = [
-        block("## New", [line for entry in summary["new"] for line in analysed_lines(entry)]),
-        block("## Escalated", [line for entry in summary["escalated"] for line in analysed_lines(entry)]),
-        block("## Resolved", [line for entry in summary["resolved"] for line in item_head(entry)]),
-        still_open_section(summary, document),
-        block("## Not shown", count_lines(summary)),
-        block("## Blind spots", blind_spot_lines(summary, unread)),
-        block("## Cut", cut_lines(summary)),
-        block("## Unread sources", unread_lines(unread)),
-        block("## Overrides", [f"- {text(item['key'])}: {text(item['title'])}, state {text(item['state'])}" for item in summary["overrides"]]),
+def render(summary, document, record, base, zone):
+    run_at = state.parse_time(record["run_at"]).astimezone(zone)
+    since = functools.partial(since_text, document["items"], run_at)
+    total = open_total(summary)
+    gaps = [
+        labelled("Blind spots", blind_spot_parts(summary, unread_sources(base), document["items"], zone), "; "),
+        labelled("Not shown", not_shown_parts(summary), ", "),
+        labelled("Overrides", override_parts(summary), "; "),
     ]
-    return "\n\n".join([title_line(document, record), *[section for section in sections if section]]) + "\n"
+    sections = [
+        "\n".join(title_lines(document, run_at)),
+        section("Summary", summary_line(summary, total)),
+        change_section("New", summary["new"], since),
+        change_section("Escalated", summary["escalated"], since, ESCALATED),
+        section("Resolved", "\n".join(resolved_line(entry) for entry in summary["resolved"])),
+        still_open_section(summary, total),
+        "\n".join(line for line in gaps if line),
+    ]
+    return "\n\n".join(part for part in sections if part) + "\n"
+
+
+def check_still_open_keys(summary, document):
+    for level in LEVELS:
+        for entry in summary["still_open"][level]:
+            if entry["key"] not in document["items"]:
+                raise state.InputError(f"summary: still_open key {entry['key']} is not in the state items")
+
+
+def rendered(summary, document, record, base, zone):
+    try:
+        return render(summary, document, record, base, zone).encode("utf-8")
+    except OverflowError as error:
+        raise state.InputError(f"--tz {zone.key}: a time of the message is out of range ({error})") from error
 
 
 def run(args):
+    zone = state.load_zone(args.tz)
     summary = load_input(args.summary, "summary", check_summary)
     document = load_input(args.state, "state", check_next_state)
     record = load_input(args.record, "record", check_record)
     base = load_input(args.base, "base", check_base)
-    state.write_all([(args.out, render(summary, document, record, base).encode("utf-8"))])
+    check_still_open_keys(summary, document)
+    state.write_all([(args.out, rendered(summary, document, record, base, zone))])
 
 
 def build_parser():
     parser = argparse.ArgumentParser(prog="digest.py", description="Prod watch digest, rendered from the change summary")
-    for flag in ("--summary", "--state", "--record", "--base", "--out"):
+    for flag in ("--summary", "--state", "--record", "--base", "--tz", "--out"):
         parser.add_argument(flag, required=True)
     return parser
 

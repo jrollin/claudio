@@ -2820,7 +2820,7 @@ class ShippedFilesTest(Case):
     def test_prod_watch_renders_the_digest_once_from_the_summary_the_next_state_the_record_and_the_base(self):
         expected = (
             "python3 -B {{runtime.dir}}/plugins/claudio-routines/runtime/digest.py --summary <run>/summary.json "
-            "--state <run>/next.json --record <run>/record.json --base <run>/base.json --out <run>/digest.md"
+            "--state <run>/next.json --record <run>/record.json --base <run>/base.json --tz {{timezone}} --out <run>/digest.md"
         )
         self.assertEqual(self.digest_commands(), [expected])
 

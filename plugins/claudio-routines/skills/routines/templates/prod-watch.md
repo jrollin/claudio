@@ -253,7 +253,7 @@ git -C {{state.dir}} branch -q -D prod-watch-state-<run-at>
 The script renders the digest from `<run>/summary.json`, `<run>/next.json`, `<run>/record.json` and `<run>/base.json`:
 
 ```bash
-python3 -B {{runtime.dir}}/plugins/claudio-routines/runtime/digest.py --summary <run>/summary.json --state <run>/next.json --record <run>/record.json --base <run>/base.json --out <run>/digest.md
+python3 -B {{runtime.dir}}/plugins/claudio-routines/runtime/digest.py --summary <run>/summary.json --state <run>/next.json --record <run>/record.json --base <run>/base.json --tz {{timezone}} --out <run>/digest.md
 ```
 
 Exit code 2 means an input file is unreadable or invalid. Report the error and the file it names, and stop. The state stays as Step 11 left it. Report any other failure the same way.
