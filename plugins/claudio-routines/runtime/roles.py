@@ -30,6 +30,8 @@ RECAP_ENGINE = ENGINES[2]
 RECAP_LANDINGS = ("waiting", "good_to_know")
 RECAP_LOOKBACK_CAP = 365
 PAGE_FROM_STATE = ("previous_page",)
+PAGE_OPTIONS = ("page_id", "pages", "page_from_state", "edited_by")
+EDITED_CAP_MAX = 20
 TREND_AGGREGATORS = ("max", "min", "sum", "avg", "last")
 COLLECTION_SCHEMA = 1
 FNV_OFFSET = 2166136261
@@ -138,6 +140,10 @@ ROLE_OPTIONS = {
         "page_id": Omittable(PAGE_ID_TEXT),
         "pages": Omittable(ListOf(PAGE_ID_TEXT, non_empty=True)),
         "page_from_state": Omittable(Choice(PAGE_FROM_STATE)),
+        "edited_by": Omittable(Rule(lambda value: isinstance(value, str) and value.strip() != "", "must be non-blank text")),
+        "edited_cap": Omittable(
+            Rule(lambda value: is_integer(value) and 1 <= value <= EDITED_CAP_MAX, f"must be an integer from 1 to {EDITED_CAP_MAX}")
+        ),
     },
     "chat": {
         "channels": Omittable(ListOf(TEXT, non_empty=True)),
@@ -575,10 +581,15 @@ def _validate_since(since, path):
 
 
 def _validate_page_options(source, path, engine):
-    if sum(option in source for option in ("page_id", "pages", "page_from_state")) != 1:
-        raise ConfigError(f"{path}: a document store source sets exactly one of page_id, pages and page_from_state")
+    if sum(option in source for option in PAGE_OPTIONS) != 1:
+        raise ConfigError(f"{path}: a document store source sets exactly one of " + ", ".join(PAGE_OPTIONS))
     if "page_from_state" in source and engine != TRIBE_ENGINE:
         raise ConfigError(f"{path}.page_from_state: only a routine with the {TRIBE_ENGINE} engine keeps a previous page")
+    if "edited_cap" in source and "edited_by" not in source:
+        raise ConfigError(f"{path}.edited_cap: needs edited_by")
+    relayed = next((place for place in PLACES if source["transport"][place] == "mcp"), None)
+    if "edited_by" in source and relayed is not None:
+        raise ConfigError(f"{path}.edited_by: reads over api only, the {relayed} transport is mcp")
 
 
 def validate_pack(pack, sources, routine=None, *, rules):

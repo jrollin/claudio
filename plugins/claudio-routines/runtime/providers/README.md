@@ -216,12 +216,17 @@ Create the API token for a user who can browse the projects of the filter and ca
 ## notion
 
 - Role: document store.
-- Calls: `GET /v1/pages/{page_id}` for the page, and `GET /v1/blocks/{id}/children` for its blocks, the blocks nested under them and the rows of each table.
+- Calls: `GET /v1/pages/{page_id}` for the page, and `GET /v1/blocks/{id}/children` for its blocks, the blocks nested under them and the rows of each table; `POST /v1/search` for a source with `edited_by`.
 - Request cap: a source makes at most 50 requests over the api transport, counting the page, each page of blocks (nested ones included) and each page of table rows. A source that needs more is not read (`partial: request cap`).
 - Nesting: over the `api` transport, the children of a block that has them are read depth first, in page order, up to 4 levels below the page; deeper children are not read, without an error. A text block keeps its record and is followed by its children's, a `toggle` and a `callout` read as `paragraph`, a synced block adds its original's children (a reference reads the block it is synced from), a `column_list` and a `column` add only their children, and `child_page`, `child_database`, `link_to_page` and any other type stay `other` with their children unread. The connector does not read nested blocks.
 - Page id: letters, digits and dashes only.
-- Source kinds: a source sets exactly one of `page_id` (the sources page, read in full every run) or `pages` (a list of page ids, the changed documents; list pages, not databases). Both kinds give `pages` records with a `link`, `<base>/<page id without dashes>`, where the base is `links_base` when set, else `https://www.notion.so`.
+- Source kinds: a source sets exactly one of `page_id` (the sources page, read in full every run), `pages` (a list of page ids, the changed documents; list pages, not databases), `page_from_state` or `edited_by`. The page kinds give `pages` records with a `link`, `<base>/<page id without dashes>`, where the base is `links_base` when set, else `https://www.notion.so`.
 - To-do flag: every block an adapter emits carries `checked`: `true` or `false` for a to-do and `null` for any other block. The collection check accepts a block without the key. Over the api transport it is the to-do's `checked` flag (a missing or non-boolean flag reads as `false`); over the connector it is the `- [ ]` marker (`false`) or the `- [x]` / `- [X]` marker (`true`) of a list item, in either `-` or `*` form.
+- Pages edited by a user: `edited_by` (a non-blank user id) in place of `page_id` and `pages`, with the optional `edited_cap` (an integer from 1 to 20, default 10) that needs `edited_by`. The `api` transport only: a source with `edited_by` whose transport for a place is `mcp` fails the config load, naming `<source>.edited_by`.
+  - Search: `POST /v1/search` with `{"filter": {"property": "object", "value": "page"}, "sort": {"timestamp": "last_edited_time", "direction": "descending"}, "page_size": 100}`, then `start_cursor` while `has_more`. The walk stops at the first page edited before the window start, and a read that still has a next page after 20 search pages is not read (`partial: page cap`). A search request does not count against the 50 page requests.
+  - Kept pages: those whose `last_edited_by.id` is `edited_by` and whose edit time lies in the window, in search order (newest first). Each is read like a listed page, with the same records, cursor, entries and request cap.
+  - Cap: the search stops at the `edited_cap`-th matching page, so the read keeps the newest pages up to the cap. Each page takes at least 2 requests (the page call and its blocks), so the cap of 20 stays within the 50 page requests.
+  - Cursor: `{"pages": {<page id>: <edit time>}}` for the pages found in this run. A routine that keeps no document store cursor reads every page found.
 - Page from the state: a source of a `tribe` routine may set `page_from_state: previous_page` in place of `page_id` and `pages`. `collect.py` hands the adapter the page id of the state's `run.previous_page` as `page_id`, so the source is read like a sources page. A run with no previous page does not call the adapter: the collection is `read: false` with the reason `no previous digest page in the state`, empty records and the stored cursor.
 - Page writes: the adapter only reads. The digest page create, its task polls and the weekly heading are connector calls named by the routine's `publish` key, planned by `tribe.py publish-plan` and relayed by the model; the provider named there needs an `mcp` connector for the place.
 - Changed pages: records follow the configured page order, and the cursor is `{"pages": {<page id>: <edit time>}}`. A page whose edit time equals its stored one at minute precision is left out of the records, and a page that is unchanged or failed keeps its stored edit time in the cursor. Without a stored cursor every page is read.
@@ -266,7 +271,7 @@ Create an internal integration with this content capability only, and no comment
 | --- | --- |
 | Read content | the sources page and the listed pages, their blocks, nested blocks and table rows |
 
-An integration reads only the pages shared with it: add the integration to the sources page and to each listed page from the page's connections menu.
+An integration reads only the pages shared with it: add the integration to the sources page and to each listed page from the page's connections menu. A source with `edited_by` finds only the pages shared with the integration.
 
 ### Hosts
 

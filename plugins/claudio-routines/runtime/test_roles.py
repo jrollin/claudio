@@ -789,6 +789,60 @@ class PageFromStateOptionTest(ConfigCase):
         self.assert_config_error(config, self.SOURCE_PATH + ".page_from_state")
 
 
+class DocumentEditedByOptionTest(ConfigCase):
+    SOURCE_PATH = "routines.prod-watch.sources.sources-page"
+
+    def edited_config(self, transport=None, **options):
+        config = make_config()
+        source = routine_sources(config)["sources-page"]
+        del source["page_id"]
+        source["transport"] = transport or {"cloud": "api", "local": "api"}
+        source.update({"edited_by": "user-ab12", **options})
+        return config
+
+    def test_accepts_a_source_reading_the_pages_a_user_edited(self):
+        self.assertIsNone(roles.validate_config(self.edited_config(), ROUTINE, "local", role_of))
+
+    def test_accepts_an_edited_cap_from_1_to_20(self):
+        for cap in (1, 20):
+            with self.subTest(cap=cap):
+                self.assertIsNone(roles.validate_config(self.edited_config(edited_cap=cap), ROUTINE, "local", role_of))
+
+    def test_rejects_a_blank_edited_by(self):
+        self.assert_config_error(self.edited_config(edited_by="  "), self.SOURCE_PATH + ".edited_by")
+
+    def test_rejects_an_edited_by_that_is_not_a_string(self):
+        self.assert_config_error(self.edited_config(edited_by=7), self.SOURCE_PATH + ".edited_by")
+
+    def test_rejects_edited_by_next_to_pages(self):
+        self.assert_config_error(self.edited_config(pages=[page_id()]), self.SOURCE_PATH)
+
+    def test_rejects_edited_by_next_to_page_id(self):
+        self.assert_config_error(self.edited_config(page_id=page_id()), self.SOURCE_PATH)
+
+    def test_rejects_an_edited_cap_without_edited_by(self):
+        config = make_config()
+        routine_sources(config)["sources-page"]["edited_cap"] = 5
+        self.assert_config_error(config, self.SOURCE_PATH + ".edited_cap")
+
+    def test_rejects_an_edited_cap_below_1(self):
+        self.assert_config_error(self.edited_config(edited_cap=0), self.SOURCE_PATH + ".edited_cap")
+
+    def test_rejects_an_edited_cap_above_20(self):
+        self.assert_config_error(self.edited_config(edited_cap=21), self.SOURCE_PATH + ".edited_cap")
+
+    def test_rejects_an_edited_cap_that_is_not_an_integer(self):
+        self.assert_config_error(self.edited_config(edited_cap=True), self.SOURCE_PATH + ".edited_cap")
+
+    def test_rejects_edited_by_over_the_mcp_transport_of_the_place_checked(self):
+        config = self.edited_config(transport={"cloud": "api", "local": "mcp"})
+        self.assert_config_error(config, self.SOURCE_PATH + ".edited_by")
+
+    def test_rejects_edited_by_over_the_mcp_transport_of_the_other_place(self):
+        config = self.edited_config(transport={"cloud": "mcp", "local": "api"})
+        self.assert_config_error(config, self.SOURCE_PATH + ".edited_by")
+
+
 class FirstReadDaysTest(ConfigCase):
     KEY_PATH = "routines.prod-watch.first_read_days"
 
