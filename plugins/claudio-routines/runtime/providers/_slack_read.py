@@ -102,21 +102,17 @@ def _api_read(channel, window, stored, http, calls, roots):
     params = {"channel": channel, "oldest": str(start), "latest": str(window["to_ts"]), "limit": str(API_PAGE_SIZE)}
     try:
         history = _in_window(_api_pages(channel, HISTORY_PATH, params, http, calls), start, window)
-        replies = [reply for root in _roots(history) for reply in _api_replies(channel, root, window, http, calls)]
+        replies = [reply for root in _roots(history) for reply in _api_replies(channel, root, window, http, calls, start)]
     except ChannelFailed as failure:
         return Read(channel, [], [], failure.code, {})
     found, lost = _cited_replies(channel, roots, history, lambda root: _api_replies(channel, root, window, http, calls, window["from_ts"]))
     return Read(channel, history, [*replies, *found], None, lost)
 
 
-def _api_replies(channel, root, window, http, calls, newer_than=None):
-    params = {"channel": channel, "ts": root, "latest": str(window["to_ts"]), "limit": str(API_PAGE_SIZE)}
-    start = decimal.Decimal(root)
-    if newer_than is not None:
-        params["oldest"] = str(newer_than)
-        start = max(start, decimal.Decimal(newer_than))
+def _api_replies(channel, root, window, http, calls, oldest):
+    params = {"channel": channel, "ts": root, "oldest": str(oldest), "latest": str(window["to_ts"]), "limit": str(API_PAGE_SIZE)}
     items = _api_pages(channel, REPLIES_PATH, params, http, calls)
-    return [item._replace(thread_ts=root) for item in _in_window(items, start, window)]
+    return [item._replace(thread_ts=root) for item in _in_window(items, max(decimal.Decimal(root), decimal.Decimal(oldest)), window)]
 
 
 def _api_pages(channel, path, params, http, calls):
@@ -188,21 +184,21 @@ def _relay_read(relay, channel, window, stored, roots):
     try:
         items = _relay_pages(relay, TOOL, arguments, lambda call_id, text: _relay_page(channel, call_id, text, seen_ts, start))
         history = _in_window(items, start, window)
-        replies = [reply for root in _roots(history) for reply in _relay_replies(relay, channel, root, window)]
+        replies = [reply for root in _roots(history) for reply in _relay_replies(relay, channel, root, window, start)]
     except ChannelFailed as failure:
         return Read(channel, [], [], failure.code, {})
     found, lost = _cited_replies(channel, roots, history, lambda root: _relay_new_replies(relay, channel, root, window))
     return Read(channel, history, [*replies, *found], None, lost)
 
 
-def _relay_replies(relay, channel, root, window):
-    arguments = {"channel_id": channel, "message_ts": root, "response_format": "detailed"}
+def _relay_replies(relay, channel, root, window, oldest):
+    arguments = {"channel_id": channel, "message_ts": root, "oldest": str(oldest), "response_format": "detailed"}
     seen_ts = set()
     return _relay_pages(relay, THREAD_TOOL, arguments, lambda call_id, text: _thread_page(channel, call_id, text, root, window, seen_ts))
 
 
 def _relay_new_replies(relay, channel, root, window):
-    arguments = {"channel_id": channel, "message_ts": root, "response_format": "detailed"}
+    arguments = {"channel_id": channel, "message_ts": root, "oldest": str(window["from_ts"]), "response_format": "detailed"}
     start, seen_ts = max(decimal.Decimal(root), decimal.Decimal(window["from_ts"])), set()
     items = _relay_pages(relay, THREAD_TOOL, arguments, lambda call_id, text: _newer_page(channel, call_id, text, root, window, seen_ts, start))
     return [item for item in items if decimal.Decimal(item.ts) > start]
@@ -349,7 +345,7 @@ def _thread_replies(call_id, channel, root, lines, window, seen_ts):
     if not stamp or decimal.Decimal(stamp.group(1)) != decimal.Decimal(root):
         raise SourceUnreadable(f"{THREAD_TOOL}: response {call_id} is not thread {root}")
     marker = _replies_line(lines, root)
-    if marker is None and _ends_without_replies(lines):
+    if marker is None and _no_replies_line(lines) is not None:
         return []
     if marker is None:
         raise SourceUnreadable(f"{THREAD_TOOL}: response {call_id} without its replies line")
@@ -364,9 +360,11 @@ def _thread_replies(call_id, channel, root, lines, window, seen_ts):
     return [reply for reply in replies if decimal.Decimal(reply.ts) <= window["to_ts"]]
 
 
-def _ends_without_replies(lines):
-    kept = [line.strip() for line in lines[PARENT_LINES:] if line.strip()]
-    return bool(kept) and kept[-1] in NO_THREAD
+def _no_replies_line(lines):
+    for index in range(len(lines) - 1, PARENT_LINES - 1, -1):
+        if lines[index].strip():
+            return index if lines[index].strip() in NO_THREAD else None
+    return None
 
 
 def _replies_line(lines, root):

@@ -32,6 +32,7 @@ from ._slack_read import (
     _error_code,
     _is_count,
     _next_cursor,
+    _no_replies_line,
     _relay_body,
     _relay_pages,
     _relay_read,
@@ -415,7 +416,8 @@ def _unit_thread_page(channel, call_id, text, root, window, seen_ts):
 
 def _thread_parent(channel, root, lines):
     marker = _replies_line(lines, root)
-    kept, _ = _without_metadata(lines[PARENT_LINES : marker[0] if marker else len(lines)])
+    end = marker[0] if marker else _no_replies_line(lines)
+    kept, _ = _without_metadata(lines[PARENT_LINES : len(lines) if end is None else end])
     who = lines[1][len(FROM_OPEN) :] if lines[1].startswith(FROM_OPEN) else ""
     author, name, bot = _who_parts(who)
     return Item(channel, root, root, author, "\n".join(kept), name, bot)

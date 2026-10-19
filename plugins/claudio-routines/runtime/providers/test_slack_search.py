@@ -31,6 +31,7 @@ from providers.slack_support import (
     root_item,
     saved,
     thread_page,
+    thread_parent,
     thread_reply,
 )
 
@@ -271,6 +272,16 @@ class SearchRoutingTest(unittest.TestCase):
         reads = self.routed(hit("D1", "DM", PEER, "1792395000.000100"))
 
         self.assertNotIn(REACTIONS_TOOL, [tool for tool, _, _ in reads])
+
+
+class SearchThreadWithoutRepliesTest(unittest.TestCase):
+    def test_keeps_the_root_text_of_a_thread_answered_by_the_parent_and_the_no_thread_text(self):
+        parent = relay_text(thread_parent(THREAD_ROOT) + "\n\nNo thread messsages\n", "There are no more messages in this thread.")
+        responses = {"team-chat-1": search_text(hit("C3", "#ops", PEER, "1792398000.000050", reply=1)), "team-chat-2": parent}
+
+        unit = search_parse(search_source(), responses)["records"]["units"][0]
+
+        self.assertEqual(unit["messages"], [unit_message("U1", "Ada Example", THREAD_ROOT, "Release notes", root=THREAD_ROOT)])
 
 
 class SearchRelayRecordsTest(unittest.TestCase):
