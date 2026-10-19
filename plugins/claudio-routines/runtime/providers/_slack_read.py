@@ -349,6 +349,8 @@ def _thread_replies(call_id, channel, root, lines, window, seen_ts):
     if not stamp or decimal.Decimal(stamp.group(1)) != decimal.Decimal(root):
         raise SourceUnreadable(f"{THREAD_TOOL}: response {call_id} is not thread {root}")
     marker = _replies_line(lines, root)
+    if marker is None and _ends_without_replies(lines):
+        return []
     if marker is None:
         raise SourceUnreadable(f"{THREAD_TOOL}: response {call_id} without its replies line")
     first, total = marker
@@ -360,6 +362,11 @@ def _thread_replies(call_id, channel, root, lines, window, seen_ts):
     ends = [start for start, _ in starts[1:]] + [len(lines)]
     replies = [_thread_reply(channel, root, lines, start, ts, end) for (start, ts), end in zip(starts, ends)]
     return [reply for reply in replies if decimal.Decimal(reply.ts) <= window["to_ts"]]
+
+
+def _ends_without_replies(lines):
+    kept = [line.strip() for line in lines[PARENT_LINES:] if line.strip()]
+    return bool(kept) and kept[-1] in NO_THREAD
 
 
 def _replies_line(lines, root):
