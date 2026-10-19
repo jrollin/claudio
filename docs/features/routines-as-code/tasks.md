@@ -3,7 +3,7 @@
 ---
 feature: routines-as-code
 spec_version: 1
-total_tasks: 87
+total_tasks: 88
 phases:
   - name: "Leak guard"
     tasks: [T-1, T-2, T-3]
@@ -38,7 +38,7 @@ phases:
   - name: "Monitor priority and seed fixes"
     tasks: [T-72, T-73, T-74]
   - name: "Cloud run fixes"
-    tasks: [T-75, T-76, T-77, T-87]
+    tasks: [T-75, T-76, T-77, T-87, T-88]
   - name: "Chat recap engine"
     tasks: [T-78, T-79, T-80, T-81, T-82, T-83, T-84, T-85, T-86]
 depends_on: []
@@ -867,6 +867,14 @@ Runs in a local session with the chat, issue tracker, document store and observa
 - Tests: an equal copy passes; a different copy and a copy without a public template are findings naming the public template; a template that is not a runtime copy is not compared; the comparison uses the pinned commit, not a newer checkout; a prompt-only routine without sources passes the role check while one under a runtime template fails.
 - **Refs**: US-7, TD-65
 - **Files**: `docs/features/routines-as-code/design.md` (modify), `docs/features/routines-as-code/tasks.md` (modify), `plugins/claudio-routines/README.md` (modify), `plugins/claudio-routines/skills/routines/SKILL.md` (modify), `plugins/claudio-routines/skills/routines/scripts/routines.py` (modify), `plugins/claudio-routines/skills/routines/scripts/test_routines.py` (modify)
+- **Verify**: `for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
+- **Status**: Complete
+
+### T-88: Fetch the state branch without pruning
+- The three runnable templates fetch `claude/state` with `git fetch --no-prune origin +claude/state:refs/remotes/origin/claude/state`, so a local checkout whose git config sets `fetch.prune` keeps the ref the next command reads.
+- Tests: every runnable template fetches without pruning; the Prod watch load step keeps its explicit refspec.
+- **Refs**: US-16, TD-17
+- **Files**: `docs/features/routines-as-code/design.md` (modify), `docs/features/routines-as-code/tasks.md` (modify), `plugins/claudio-routines/skills/routines/templates/chat-recap.md` (modify), `plugins/claudio-routines/skills/routines/templates/prod-watch.md` (modify), `plugins/claudio-routines/skills/routines/templates/tribe-digest.md` (modify), `plugins/claudio-routines/skills/routines/scripts/test_routines.py` (modify)
 - **Verify**: `for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
 - **Status**: Complete
 

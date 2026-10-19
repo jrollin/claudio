@@ -3319,7 +3319,14 @@ class ShippedFilesTest(Case):
         return [block.split("```")[0].splitlines() for block in blocks if "push origin" in block]
 
     def test_prod_watch_fetches_the_state_branch_with_an_explicit_refspec(self):
-        self.assertIn("fetch origin +claude/state:refs/remotes/origin/claude/state", self.prod_watch_step("Load the state"))
+        self.assertIn("fetch --no-prune origin +claude/state:refs/remotes/origin/claude/state", self.prod_watch_step("Load the state"))
+
+    def test_every_runnable_template_fetches_the_state_branch_without_pruning(self):
+        for name in ("prod-watch", "tribe-digest", "chat-recap"):
+            with self.subTest(template=name):
+                text = read(os.path.join(SHIPPED_TEMPLATES, f"{name}.md"))
+                self.assertIn("fetch --no-prune origin +claude/state:refs/remotes/origin/claude/state", text)
+                self.assertNotIn("fetch origin +claude/state", text)
 
     def test_prod_watch_apply_writes_the_run_record(self):
         self.assertIn("--record <run>/record.json", self.prod_watch_step("Apply"))

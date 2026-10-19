@@ -29,7 +29,7 @@ Run `git -C {{runtime.dir}} rev-parse HEAD`, then `git -C {{runtime.dir}} status
 ## Step 2: Load the state
 
 ```bash
-git -C {{state.dir}} fetch origin +claude/state:refs/remotes/origin/claude/state
+git -C {{state.dir}} fetch --no-prune origin +claude/state:refs/remotes/origin/claude/state
 git -C {{state.dir}} show origin/claude/state:state/{{digest.slug}}.json > <run>/state.json
 ```
 
