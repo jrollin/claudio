@@ -768,6 +768,19 @@ THE run folder keeps every raw source result, sorted by role and source, and a r
 - [ ] A local run's folder lives under the place's `runs_dir`, named by routine and start time; without `runs_dir`, the run folder is a temporary folder under `/tmp` *(AC-51.3)*
 - [ ] `collect.py replay` rebuilds every collection of a run from its raw folder, byte-identical to the collections the run wrote, and fails naming the first request it holds no record for *(AC-51.4)*
 
+### Prefer the api transport, fall back to the connector {#US-52}
+
+WHEN a source lists several transports for a place
+THE collector reads it through the first listed transport the place can use: `api` when every credential variable of its provider holds a value, else the next one
+
+**Acceptance Criteria:**
+- [ ] A transport for a place is `api`, `mcp`, or an ordered list of both without repeats; a single value keeps its meaning *(AC-52.1)*
+- [ ] A credential variable that is unset, empty or blank counts as missing, per BR-72, in the transport choice, the environment check and the HTTP client *(AC-52.2)*
+- [ ] `collect.py sources` writes the choice of the run to `<run>/sources.json`: per source, the chosen transport and each skipped transport with its missing variables; `fetch`, `plan` and `parse` read the chosen transport from that file *(AC-52.3)*
+- [ ] The choice happens once, before collecting; a failed read through the chosen transport never falls back, per BR-24 *(AC-52.4)*
+- [ ] The run record names, per source, the chosen transport and the skipped ones with their reason *(AC-52.5)*
+- [ ] A source with no usable transport is not read, and the environment check names its missing variables, as before *(AC-52.6)*
+
 ## Business Rules
 
 - No private name, identifier, URL host or secret is committed to this public repository *(BR-1)*
@@ -793,7 +806,7 @@ THE run folder keeps every raw source result, sorted by role and source, and a r
 - A known gap is retried on the first run of each day, and a retry that reads the source removes it *(BR-21)*
 - A run with an explicit start time, or a local run without `--post`, reports only: it never advances the state or its cursors *(BR-22)*
 - Run state and run records live only in the private repository, on the `claude/state` branch *(BR-23)*
-- Each source has one transport per place, its own or else its provider's default, and a failed read never falls back to the other transport *(BR-24)*
+- Each source has an ordered list of transports per place, its own or else its provider's default; a run reads it through the first one the place can use, chosen once before collecting, and a failed read never falls back to another transport *(BR-24)*
 - Credentials live only in the environment variables of the place that runs the collector, never in config, templates, repositories, facts, run records or state *(BR-25)*
 - A local run posts its digest to the chat channel only when the owner passes `--post` *(BR-26)*
 - State moves only by fast-forward pushes to `claude/state`: a save builds on the latest tip, retries a rejected push once, and is never forced or merged *(BR-27)*
@@ -840,6 +853,7 @@ THE run folder keeps every raw source result, sorted by role and source, and a r
 - Direct conversation content leaves the chat source only as a one-sentence summary in the digest channel *(BR-68)*
 - Scripts decide who wrote last, whether the owner answered, ages, lateness and landing sections; the model decides only what a message asks, its kind among those the facts allow, its summary and the reading *(BR-69)*
 - Raw results hold source content and stay out of git: the local runs folder is ignored by the private repository, and nothing under `raw/` reaches the state branch *(BR-70)*
+- A credential is present only when its environment variable holds a value that is not blank *(BR-72)*
 - A raw record never holds a credential: request headers are never recorded, and credentials only travel in request headers *(BR-71)*
 
 ## Out of Scope

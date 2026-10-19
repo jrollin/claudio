@@ -3,7 +3,7 @@
 ---
 feature: routines-as-code
 spec_version: 1
-total_tasks: 96
+total_tasks: 97
 phases:
   - name: "Leak guard"
     tasks: [T-1, T-2, T-3]
@@ -43,6 +43,8 @@ phases:
     tasks: [T-78, T-79, T-80, T-81, T-82, T-83, T-84, T-85, T-86]
   - name: "Raw data and replay"
     tasks: [T-94, T-95, T-96]
+  - name: "Transport preference"
+    tasks: [T-97]
 depends_on: []
 ---
 
@@ -1046,6 +1048,23 @@ Owner-gated: needs the merged pull request, a release tag, the transport and its
 - **Verify**: `for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
 - **Blocked by**: T-94
 - **Rules**: BR-71
+- **Status**: Not Started
+
+## Phase 20: Transport preference
+
+### T-97: Prefer api, fall back to the connector when a credential is missing
+- `config_tree` accepts `transport.<place>` as `api`, `mcp` or an ordered list of both without repeats, on a provider and on a source, and resolves every source's transport per place to a list. A repeat, an empty list or another value fails the load with its key path.
+- `collect.py sources --out <run>/sources.json` writes, per source, the first usable transport and the skipped ones with their missing variables (TD-66). `check-env` prints a `fallback` line per skipped transport and `missing` lines only for a source with no usable transport.
+- `fetch`, `plan` and `parse` take `--sources <run>/sources.json` and refuse a command that does not match the chosen transport. The collection and the run record keep the chosen transport and `skipped`.
+- A blank credential value counts as missing in `check-env`, the choice and `HttpClient` (BR-72).
+- The runnable templates run `sources` with `--out <run>/sources.json`, pass `--sources` to every `fetch`, `plan` and `parse`, and collect each source through the transport `sources` printed. They keep the rule that a failed read never switches transport.
+- `example/config.json` shows a provider with `["api", "mcp"]`.
+- Tests: a list picks api when every variable holds a value, the next transport when one is unset, empty or blank, and none when no listed transport is usable; a single value behaves as before; a repeat or an empty list fails the load with its key path; `fetch` on a source whose choice is `mcp` exits 2; the collection and the run record hold `skipped`; the HTTP client refuses a blank credential; every runnable template passes `--sources`.
+- **Refs**: US-13, US-24, US-52, TD-19, TD-35, TD-66
+- **Files**: `plugins/claudio-routines/runtime/config_tree.py` (modify), `plugins/claudio-routines/runtime/test_config_tree.py` (modify), `plugins/claudio-routines/runtime/collect.py` (modify), `plugins/claudio-routines/runtime/test_collect.py` (modify), `plugins/claudio-routines/runtime/roles.py` (modify), `plugins/claudio-routines/runtime/providers/_http.py` (modify), `plugins/claudio-routines/runtime/providers/test_http.py` (modify), `plugins/claudio-routines/skills/routines/templates/prod-watch.md` (modify), `plugins/claudio-routines/skills/routines/templates/tribe-digest.md` (modify), `plugins/claudio-routines/skills/routines/templates/chat-recap.md` (modify), `plugins/claudio-routines/skills/routines/scripts/test_routines.py` (modify), `plugins/claudio-routines/example/config.json` (modify), `plugins/claudio-routines/README.md` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify)
+- **Verify**: `for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
+- **Blocked by**: T-94
+- **Rules**: BR-24, BR-25, BR-72
 - **Status**: Not Started
 
 ## Related Features

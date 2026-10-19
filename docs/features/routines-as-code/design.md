@@ -488,7 +488,7 @@ Config load checks every source before any provider call, and exits 2 naming the
 The digest post stays a model call to the chat channel's connector in both places.
 
 **Alternatives considered**:
-- Pick the transport by the credentials present: rejected, the transport would depend on the environment, not on git.
+- Pick the transport by the credentials present, with no order in git: rejected, the transport would depend on the environment alone. TD-66 keeps git as the source of the order and lets the environment only skip a transport it cannot use.
 - One transport per place for every source: rejected, a provider with no connector, or no key in that place, would block the whole place.
 
 **Rationale**: git decides how each source is read in each place, and a missing credential is a reported blind spot, not a silent switch.
@@ -1526,6 +1526,25 @@ A degraded run's message is one line that starts with `degraded:` and names the 
 - A recording library: rejected, the runtime is stdlib only.
 
 **Rationale**: a run on real data can be replayed offline to test a parser, evaluator or digest change, with the same layout for every collector.
+
+### TD-66: Transport preference
+
+**Choice**:
+- `transport.<place>` on a provider or a source is `api`, `mcp` or an ordered list of both without repeats (AC-52.1). `config_tree` resolves it to a list on every source; a single value becomes a one-item list.
+- A transport is usable when (AC-52.2, BR-72):
+  - `api`: every variable of `api.credentials` holds a non-blank value;
+  - `mcp`: always, since only the session can tell whether its connector is there; the environment check names the connector as before.
+- `collect.py sources --out <run>/sources.json` picks, per source, the first usable transport and writes `source`, `role`, `provider`, `transport` (the chosen one, or null) and `skipped` (each transport passed over, with its missing variables) (AC-52.3).
+- `check-env` makes the same choice: a `fallback <source> <from> <to> <variable>` line per skipped transport, exit 0. `missing` lines appear only for a source with no usable transport (AC-52.6).
+- `fetch`, `plan` and `parse` take `--sources <run>/sources.json` and use the chosen transport. A command that does not match it exits 2, as a wrong transport does today. Without `--sources` they choose the same way from the environment.
+- The collection and the run record keep the chosen transport and the `skipped` list (AC-52.5). A failed read never triggers a second choice (AC-52.4).
+- `HttpClient` and `check-env` treat a blank value as missing (BR-72).
+
+**Alternatives considered**:
+- Fall back after a failed api read too: rejected by the owner, a failed read stays a blind spot.
+- Let the model pick the transport: rejected, the choice is a fact the script decides, written to a file every later command reads.
+
+**Rationale**: api is the default wherever its credentials exist, the connector covers a place without them, and git still decides the order.
 
 ## Implementation Considerations
 
