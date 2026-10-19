@@ -865,7 +865,7 @@ Runs in a local session with the chat, issue tracker, document store and observa
 ## Phase 18: Chat recap engine
 
 ### T-78: Chat searches and reactions
-- The `chat` role gains `searches` (name, `filters`, optional `channel_types` and `keywords`, `since`: `window` or `lookback_days`), `reactions` and `search_page_cap` (default 10); `channels` becomes optional when `searches` is set, and a source needs one of them. The role check names the key path of an invalid option.
+- The `chat` role gains `owner`, `searches` (name, `filters`, optional `channel_types` and `keywords`, `since`: `window` or `lookback_days`), `reactions`, `search_page_cap` (default 10) and `call_cap` (default 50, at most 300); `channels` becomes optional when `searches` is set, and a source needs one of them. The role check names the key path of an invalid option.
 - The chat adapter plans (`mcp`) or fetches (`api`) one search call per page, sorted by timestamp oldest first, 20 results a page, no context; a search cut by the cap records `partial` with the pages read. A direct or group conversation hit adds one conversation read from the window start, a thread hit one thread read by its root; a unit is read once per run. With `reactions`, it reads the reactions of each message from someone else after the owner's last message, at most 3 per unit, and keeps only the reacting user ids.
 - Records keep, per message: channel id and name, user id and display name, ts, root ts, text cut at 300 characters, and the owner's reactions.
 - Tests: a search page parsed from a fixture of the connector's search response; the next page from its cursor; the page cap as `partial`; a direct conversation hit and a thread hit routed to their reads; one unit for two hits; reactions parsed to user ids; the `api` fetch of each call with a fake HTTP client; each role error with its key path.
@@ -878,13 +878,13 @@ Runs in a local session with the chat, issue tracker, document store and observa
 - `recap_state.py` holds the state schema of TD-62, its check and the initial state; `recap.py` parses the subcommands and runs `init` and `window`. The window starts at `run.at`; a baseline run, or a gap longer than `lookback_working_days`, starts `lookback_working_days` working days back and says so in the window file.
 - Tests: the schema check of each key with its key path; the initial state; a normal window; a baseline window; a gap window; working days across a weekend and a daylight saving change.
 - **Refs**: US-45, US-48, TD-58, TD-62
-- **Files**: `plugins/claudio-routines/runtime/recap.py` (new), `plugins/claudio-routines/runtime/recap_state.py` (new), `plugins/claudio-routines/runtime/test_recap_state.py` (new)
+- **Files**: `plugins/claudio-routines/runtime/recap.py` (new), `plugins/claudio-routines/runtime/recap_state.py` (new), `plugins/claudio-routines/runtime/recap_window.py` (new), `plugins/claudio-routines/runtime/test_recap_state.py` (new)
 - **Rules**: BR-67
 - **Status**: Not Started
 
 ### T-80: Recap features and facts
-- `recap.py features` builds the units and their facts and allowed kinds (TD-60) from the chat collection, the state and the routine file, and writes the features, base and rules files. `collect.py`, given a recap state, adds one conversation or thread read per stored `waiting` or `promise` unit from its `last_ts`.
-- Tests: unit keys for a direct conversation, a group conversation and a thread; excluded authors and channels dropped; each fact; the allowed kinds of each case of TD-60; an age across a weekend and a daylight saving change; a stored waiting unit read again outside the window; no message text in the base file.
+- `recap.py features` builds the units and their facts and allowed kinds (TD-60) from the chat collection, the state and the routine file, and writes the features, base and rules files. `collect.py`, given a recap state, adds one conversation or thread read per stored `waiting` or `promise` unit from its `last_ts`. A chat source whose search hit its page cap keeps the units read so far: `collect.py` writes the collection as read, with the cut as a blind spot (AC-45.6).
+- Tests: a capped search keeps its units and reports the cut; unit keys for a direct conversation, a group conversation and a thread; excluded authors and channels dropped; each fact; the allowed kinds of each case of TD-60; an age across a weekend and a daylight saving change; a stored waiting unit read again outside the window; no message text in the base file.
 - **Refs**: US-45, US-46, TD-60
 - **Files**: `plugins/claudio-routines/runtime/recap_features.py` (new), `plugins/claudio-routines/runtime/test_recap_features.py` (new), `plugins/claudio-routines/runtime/collect.py` (modify), `plugins/claudio-routines/runtime/test_collect.py` (modify), `plugins/claudio-routines/runtime/recap.py` (modify)
 - **Blocked by**: T-78, T-79

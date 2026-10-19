@@ -1381,7 +1381,7 @@ A degraded run's message is one line that starts with `degraded:` and names the 
   - `recap_judgment.py`: judgment schema and checks (TD-61);
   - `recap_lifecycle.py`: `apply`, the unit history, the summary and the run record (TD-62);
   - `recap_message.py`: the chat message and the degraded messages (TD-63).
-- The modules reuse `state.py` (zones, working days, text cleaner, atomic writes, spec checks) and `collect.py` for the sources.
+- The modules reuse `state.py` (zones, text cleaner, atomic writes, spec checks) and `collect.py` for the sources; the working-day calendar sits in `recap_window.py`.
 
 **Alternatives considered**:
 - A `tribe` variant: rejected, tribe items are warnings with cites and a page; recap units are conversations with an answered state and no page.
@@ -1395,7 +1395,8 @@ A degraded run's message is one line that starts with `degraded:` and names the 
 - Both transports read the searches, so each place picks its own (the owner decides per place):
   - `mcp`: the connector's search, conversation, thread and reactions tools, relayed by the model;
   - `api`: the chat Web API (`search.messages`, `conversations.history`, `conversations.replies`, `reactions.get`) with a user token, since a bot token cannot search or read the owner's direct conversations; the providers README lists its read-only scopes (`search:read`, `im:history`, `mpim:history`, `channels:history`, `groups:history`, `reactions:read`, `users:read`).
-- The chat adapter plans, or fetches, one search call per page: sorted by timestamp, oldest first, at most 20 results a page, no context messages, the next page from the response cursor, up to `search_page_cap` pages (default 10). A search cut by the cap records `partial` with the pages read (AC-45.6).
+- The chat adapter plans, or fetches, one search call per page: sorted by timestamp, oldest first, at most 20 results a page, no context messages, the next page from the response cursor, up to `search_page_cap` pages (default 10). A search cut by the cap keeps the units read so far: the source stays read, and the cut is a blind spot naming the search and the pages read (AC-45.6).
+- `call_cap` (default 50, at most 300) bounds every call of the source: search pages, conversation and thread reads, reactions and name lookups. A recap reads more than a tribe channel list, so its routine file raises it.
 - Each hit becomes a unit candidate. A direct or group conversation hit plans one conversation read from the window start; a hit in a thread, or a message with replies, plans one thread read by its root. A unit read once per run, whatever the number of hits.
 - `reactions: true` plans one reactions read for each message from someone else after the owner's last message in a unit, at most 3 per unit; the parsed record keeps the reacting user ids only.
 - Parsing keeps per message: channel id and name, user id and display name, ts, root ts, text cut at 300 characters, and the owner's reactions. The search response's permalink is not kept; the message builds links (TD-63).
@@ -1457,11 +1458,14 @@ A degraded run's message is one line that starts with `degraded:` and names the 
 
 **Choice**:
 - State: `{"schema": 1, "digest", "run": {"at", "previous_at", "window": {"from_ts", "to_ts"}}, "units": {"<key>": {"kind", "channel", "title", "first_seen", "last_ts", "status", "runs_waiting", "late", "due"}}, "blind_spots": [...]}`. No message text, no summary (BR-67).
-- `apply` maps each judged kind to a status: `waiting on you` to `waiting`, `promise` to `promise`, `you're waiting on` to `waiting_on_them`, `team ask` to `team_ask`, `already handled` to `handled`, `announcement` to `announcement`; a `noise` unit is not stored.
+- `apply` maps each judged kind to a status: `waiting on you` to `waiting`, `promise` to `promise`, `you're waiting on` to `waiting_on_others`, `team ask` to `team_ask`, `already handled` to `handled`, `announcement` to `announcement`; a `noise` unit is not stored.
 - `runs_waiting` counts the runs a unit stays `waiting` or `promise`; `late` is the age in working days once it exceeds `late_after_working_days` (default 3) for `waiting`, or once `due` has passed, or 1 business day after `first_seen` with no `due`, for `promise` (AC-48.2, AC-47.4).
 - A stored `waiting` or `promise` unit that turns `handled`, or whose facts show the owner answered, is resolved: listed once in the summary's `resolved`, then stored as `handled` (AC-48.3).
 - A unit whose `last_ts` is older than `drop_after_days` (default 14) leaves the state (AC-48.4).
-- The window: from `run.at` to now; a baseline run, or a gap longer than `lookback_working_days` (default 3), starts at the last `lookback_working_days` working days and records it for the summary line (AC-45.4).
+- The window: from `run.at` to now. A baseline run, or a gap of more than `lookback_working_days` (default 3) working days, starts at local midnight of the `lookback_working_days`-th working day before the local date of now: on a Thursday with 3, Monday 00:00; on a Saturday, Wednesday 00:00 (AC-45.4).
+- Working days are Monday to Friday in the config timezone, counted on local dates, so a daylight saving change counts the same days (AC-46.3). The calendar helpers sit in `recap_window.py`.
+- The window file: `{"from_ts", "to_ts", "limited": null | "baseline" | "gap", "explicit"}`; `limited` feeds the summary line.
+- Unit kinds: `dm` and `group_dm` under a `dm-` key, `thread`, `mention` and `group` under a `thread-` key.
 - The run record holds counts, unit keys per section and blind spots, as the other engines' records.
 
 **Rationale**: the same history rules as the live routine, kept by a tested script.
@@ -2013,6 +2017,7 @@ sequenceDiagram
 | `plugins/claudio-routines/runtime/fixtures/digest_golden.md` | new | Digest: golden compact chat message (TD-57) |
 | `plugins/claudio-routines/runtime/recap.py` | new | Recap engine CLI: init, seed, window, features, judge, apply, message (TD-58) |
 | `plugins/claudio-routines/runtime/recap_state.py` | new | Recap state schema, check and initial state (TD-62) |
+| `plugins/claudio-routines/runtime/recap_window.py` | new | Recap working-day calendar and window (TD-62) |
 | `plugins/claudio-routines/runtime/recap_features.py` | new | Recap units, facts, allowed kinds, features, base and rules files (TD-60) |
 | `plugins/claudio-routines/runtime/recap_judgment.py` | new | Recap judgment schema and checks (TD-61) |
 | `plugins/claudio-routines/runtime/recap_lifecycle.py` | new | Recap apply: statuses, lateness, resolution, drop, summary, record (TD-62) |

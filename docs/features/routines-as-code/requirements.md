@@ -709,7 +709,7 @@ THE scripts compute, per unit, the facts the classification depends on, so the m
 **Acceptance Criteria:**
 - [ ] Per unit: the author of the last message, whether the owner wrote or reacted after each message from someone else, the configured groups it mentions and the section each lands in, and its age in working days in the config timezone *(AC-46.1)*
 - [ ] The owner's messages and reactions count as his answers; a message from an excluded author counts as nobody's *(AC-46.2)*
-- [ ] Working days are the configured weekdays in the config timezone; a run across a daylight saving change counts the same days *(AC-46.3)*
+- [ ] Working days are Monday to Friday in the config timezone; a run across a daylight saving change counts the same days *(AC-46.3)*
 
 ### Classify and summarize the units {#US-47}
 
