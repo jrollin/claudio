@@ -11,7 +11,6 @@ from providers import _http, datadog
 FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "datadog"
 BASE = "https://api.example.test"
 APP = "https://app.example.test"
-EXPLORER = APP + "/event/explorer?query="
 API_VAR = "OBS_API_KEY"
 APP_VAR = "OBS_APP_KEY"
 API_VALUE = "-".join(["api", "sentinel"])

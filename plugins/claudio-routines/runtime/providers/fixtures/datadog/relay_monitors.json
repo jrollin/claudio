@@ -3,27 +3,5 @@
     {"entry": "monitor-queue", "ok": true, "monitor": {"id": 102, "name": "Queue depth", "overall_state": "Alert"}},
     {"entry": "monitor-checkout", "ok": true, "monitor": {"id": 101, "name": "Checkout latency", "overall_state": "OK"}}
   ],
-  "events": {
-    "ok": true,
-    "pages": [
-      {
-        "data": [
-          {"id": "e1", "attributes": {"timestamp": "2025-10-09T09:10:00.000Z", "attributes": {"monitor_id": 102, "timestamp": 1760001000000}}},
-          {"id": "e2", "attributes": {"timestamp": "2025-10-09T08:55:00.000Z", "attributes": {}}}
-        ],
-        "after": "page-2"
-      },
-      {
-        "data": [
-          {"id": "e3", "attributes": {"attributes": {"monitor_id": 101, "timestamp": 1760002000000}}},
-          {"id": "e4", "attributes": {"attributes": {}}},
-          {"id": "e5", "attributes": {"timestamp": "2025-10-09T09:10:00.000Z", "attributes": {"monitor_id": 101}}},
-          {"id": "e0", "attributes": {"timestamp": "2025-10-09T09:10:00.000Z", "attributes": {"monitor_id": 102}}}
-        ],
-        "after": null
-      }
-    ],
-    "partial": null
-  },
   "event_monitors": {"capped": false, "reads": []}
 }

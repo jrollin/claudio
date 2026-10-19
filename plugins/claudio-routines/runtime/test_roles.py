@@ -176,9 +176,8 @@ def monitors_records():
             {"id": OTHER_MONITOR_ID, "name": "Disk", "state": "No Data", "priority": None, "link": "https://obs.example.test/m/b"},
         ],
         "discovery": {"read": True, "reason": None},
-        "events": [
-            {"ts_ms": WINDOW_END * 1000 - 5000, "link": "https://obs.example.test/e/a", "monitor": None},
-            {"ts_ms": WINDOW_END * 1000, "link": "https://obs.example.test/e/b", "monitor": MONITOR_ID},
+        "transitions": [
+            {"monitor": MONITOR_ID, "count": 2, "first_ts_ms": WINDOW_END * 1000 - 5000, "last_ts_ms": WINDOW_END * 1000},
         ],
     }
 
@@ -348,7 +347,7 @@ def unread_collection(**overrides):
         "read": False,
         "reason": reason,
         "cursor": None,
-        "records": {"monitors": [], "events": [], "discovered": [], "discovery": None},
+        "records": {"monitors": [], "transitions": [], "discovered": [], "discovery": None},
         "entries": {
             "monitor-" + MONITOR_ID: {"status": "failed", "reason": reason},
             "monitor-" + OTHER_MONITOR_ID: {"status": "deferred", "reason": "known gap"},
@@ -1716,8 +1715,8 @@ class ValidateCollectionTest(CollectionCase):
         self.assert_collection_error(unread_collection(reason=""), "reason")
 
     def test_rejects_records_on_a_source_not_read(self):
-        records = {"monitors": [], "events": monitors_records()["events"], "discovered": [], "discovery": None}
-        self.assert_collection_error(unread_collection(records=records), "records.events")
+        records = {"monitors": [], "transitions": monitors_records()["transitions"], "discovered": [], "discovery": None}
+        self.assert_collection_error(unread_collection(records=records), "records.transitions")
 
     def test_rejects_a_null_cursor_on_a_source_read(self):
         self.assert_collection_error(monitors_collection(cursor=None), "cursor")
@@ -1830,20 +1829,30 @@ class ObservabilityRecordsTest(CollectionCase):
         doc["records"]["metrics"][0]["trend_reason"] = 5
         self.assert_collection_error(doc, "records.metrics[0].trend_reason")
 
-    def test_rejects_a_boolean_event_timestamp(self):
+    def test_rejects_a_boolean_transition_time(self):
         doc = monitors_collection()
-        doc["records"]["events"][1]["ts_ms"] = True
-        self.assert_collection_error(doc, "records.events[1].ts_ms")
+        doc["records"]["transitions"][0]["first_ts_ms"] = True
+        self.assert_collection_error(doc, "records.transitions[0].first_ts_ms")
 
-    def test_rejects_an_event_title(self):
+    def test_rejects_a_transition_title(self):
         doc = monitors_collection()
-        doc["records"]["events"][0]["title"] = "Deploy"
-        self.assert_collection_error(doc, "records.events[0].title")
+        doc["records"]["transitions"][0]["title"] = "Deploy"
+        self.assert_collection_error(doc, "records.transitions[0].title")
 
-    def test_rejects_an_event_without_monitor_field(self):
+    def test_rejects_a_transition_without_a_monitor(self):
         doc = monitors_collection()
-        del doc["records"]["events"][0]["monitor"]
-        self.assert_collection_error(doc, "records.events[0].monitor")
+        del doc["records"]["transitions"][0]["monitor"]
+        self.assert_collection_error(doc, "records.transitions[0].monitor")
+
+    def test_rejects_a_transition_count_that_is_not_an_integer(self):
+        doc = monitors_collection()
+        doc["records"]["transitions"][0]["count"] = "2"
+        self.assert_collection_error(doc, "records.transitions[0].count")
+
+    def test_rejects_raw_events_in_the_records(self):
+        doc = monitors_collection()
+        doc["records"]["events"] = []
+        self.assert_collection_error(doc, "records")
 
     def test_rejects_a_monitors_cursor_timestamp_that_is_not_an_integer(self):
         doc = monitors_collection()
@@ -1925,11 +1934,11 @@ class DiscoveryRecordsTest(CollectionCase):
         self.assert_collection_error(doc, "records.discovery")
 
     def test_rejects_a_source_not_read_without_discovered(self):
-        records = {"monitors": [], "events": [], "discovery": None}
+        records = {"monitors": [], "transitions": [], "discovery": None}
         self.assert_collection_error(unread_collection(records=records), "records.discovered")
 
     def test_rejects_a_source_not_read_without_discovery(self):
-        records = {"monitors": [], "events": [], "discovered": []}
+        records = {"monitors": [], "transitions": [], "discovered": []}
         self.assert_collection_error(unread_collection(records=records), "records.discovery")
 
     def test_accepts_an_empty_discovered_list_with_a_discovery_read(self):
@@ -2038,18 +2047,18 @@ class DiscoveryRecordsTest(CollectionCase):
         self.assert_collection_error(doc, "records.discovery.reason")
 
     def test_accepts_a_null_discovery_and_no_discovered_monitor_on_a_source_not_read(self):
-        records = {"monitors": [], "events": [], "discovered": [], "discovery": None}
+        records = {"monitors": [], "transitions": [], "discovered": [], "discovery": None}
         self.assertIsNone(roles.validate_collection(unread_collection(records=records)))
 
     def test_rejects_a_discovery_on_a_source_not_read(self):
-        records = {"monitors": [], "events": [], "discovered": [], "discovery": {"read": False, "reason": "skipped"}}
+        records = {"monitors": [], "transitions": [], "discovered": [], "discovery": {"read": False, "reason": "skipped"}}
         self.assert_collection_error(unread_collection(records=records), "records.discovery")
 
     def test_rejects_discovered_monitors_on_a_source_not_read(self):
-        records = {"monitors": [], "events": [], "discovered": monitors_records()["discovered"], "discovery": None}
+        records = {"monitors": [], "transitions": [], "discovered": monitors_records()["discovered"], "discovery": None}
         self.assert_collection_error(unread_collection(records=records), "records.discovered")
 
-    def test_rejects_an_unknown_records_key_beside_monitors_and_events(self):
+    def test_rejects_an_unknown_records_key_beside_monitors_and_transitions(self):
         doc = monitors_collection()
         doc["records"]["alerts"] = []
         self.assert_collection_error(doc, "records")

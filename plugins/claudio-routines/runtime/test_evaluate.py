@@ -43,7 +43,7 @@ def heading(text):
 
 def monitors_collection(name, events_ts_ms, cursor_monitors):
     cursor = {"events_ts_ms": events_ts_ms, "monitors": cursor_monitors}
-    records = {"monitors": [], "events": [], "discovered": [], "discovery": {"read": True, "reason": None}}
+    records = {"monitors": [], "transitions": [], "discovered": [], "discovery": {"read": True, "reason": None}}
     return collection(name, "observability", records, cursor, {})
 
 

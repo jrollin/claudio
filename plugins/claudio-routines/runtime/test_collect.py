@@ -158,12 +158,12 @@ def make_window(retry_known_gaps=True):
     }
 
 
-UNREAD_MONITORS = {"monitors": [], "events": [], "discovered": [], "discovery": None}
+UNREAD_MONITORS = {"monitors": [], "transitions": [], "discovered": [], "discovery": None}
 RESULTS = {
     "monitors": (
         {
             "monitors": [{"id": MONITOR_ID, "name": "API errors", "state": "Alert", "priority": None, "link": "https://app.example.test/m"}],
-            "events": [{"ts_ms": EVENT_TS_MS, "link": "https://app.example.test/e", "monitor": MONITOR_ID}],
+            "transitions": [{"monitor": MONITOR_ID, "count": 1, "first_ts_ms": EVENT_TS_MS, "last_ts_ms": EVENT_TS_MS}],
             "discovered": [],
             "discovery": {"read": True, "reason": None},
         },
@@ -318,7 +318,7 @@ class CollectTestCase(unittest.TestCase):
         self.obs.result = {"records": records, "cursor": cursor, "entries": entries}
 
     def invalid_result(self):
-        self.obs.result = {"records": {"monitors": [{"id": 7}], "events": []}, "cursor": RESULTS["monitors"][1], "entries": {}}
+        self.obs.result = {"records": {"monitors": [{"id": 7}], "transitions": []}, "cursor": RESULTS["monitors"][1], "entries": {}}
 
 
 class ParserTest(unittest.TestCase):

@@ -173,10 +173,10 @@ def monitor(state_name="Alert", monitor_id=MON, **extra):
     return dict({"id": monitor_id, "name": "API", "state": state_name, "priority": None, "link": "https://example.test/mon"}, **extra)
 
 
-def alerts(monitors=None, entries=None, events=None, transport="api", **records):
+def alerts(monitors=None, entries=None, transitions=None, transport="api", **records):
     document = {
         "monitors": [monitor()] if monitors is None else monitors,
-        "events": events or [],
+        "transitions": transitions or [],
         "discovered": [],
         "discovery": {"read": True, "reason": None},
     }
@@ -201,7 +201,7 @@ def unread_gauges(reason="HTTP 503 GET /query"):
 
 def unread_alerts():
     reason = "HTTP 503 GET /monitors"
-    records = {"monitors": [], "events": [], "discovered": [], "discovery": None}
+    records = {"monitors": [], "transitions": [], "discovered": [], "discovery": None}
     return collection("alerts", "observability", records, None, {KEY: failed(reason)}, read=False, reason=reason)
 
 

@@ -2,7 +2,6 @@
   "monitors": [
     {"entry": "monitor-queue", "ok": true, "monitor": {"id": 102, "name": "Queue depth", "overall_state": "Alert", "priority": 2}}
   ],
-  "events": {"ok": true, "pages": [{"data": [], "after": null}], "partial": null},
   "discovery": {
     "ok": true,
     "pages": [

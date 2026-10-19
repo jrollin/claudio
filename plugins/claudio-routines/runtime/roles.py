@@ -221,7 +221,7 @@ BUCKET = {"ts": INTEGER, "value": Nullable(NUMBER)}
 MONITORS_SCHEMA = (
     {
         "monitors": ListOf(MONITOR),
-        "events": ListOf({"ts_ms": INTEGER, "link": STRING, "monitor": Nullable(STRING)}),
+        "transitions": ListOf({"monitor": STRING, "count": INTEGER, "first_ts_ms": INTEGER, "last_ts_ms": INTEGER}),
         "discovered": ListOf(MONITOR),
         "discovery": Nullable({"read": BOOLEAN, "reason": Nullable(STRING), "event_monitors_capped": Omittable(BOOLEAN)}),
     },
@@ -243,7 +243,7 @@ METRICS_SCHEMA = (
     },
     {"metrics": MapOf(Nullable(NUMBER))},
 )
-OBSERVABILITY_SCHEMAS = ((frozenset(("monitors", "events")), MONITORS_SCHEMA), (frozenset(("metrics",)), METRICS_SCHEMA))
+OBSERVABILITY_SCHEMAS = ((frozenset(("monitors", "transitions")), MONITORS_SCHEMA), (frozenset(("metrics",)), METRICS_SCHEMA))
 ROLE_SCHEMAS = {
     "document_store": (
         {
@@ -557,7 +557,7 @@ def _role_schema(role, records):
         for required, schema in OBSERVABILITY_SCHEMAS:
             if required.issubset(records) and set(records).issubset(schema[0]):
                 return schema
-    raise ValueError("records: must hold monitors and events, or metrics")
+    raise ValueError("records: must hold monitors and transitions, or metrics")
 
 
 def _validate_discovery(discovery, read):

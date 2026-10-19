@@ -9,6 +9,8 @@ from evaluate_support import (
     unread_alerts, unread_gauges,
 )
 
+from providers.datadog_support import MONITORS, FRESH, event, events_page, run, status
+
 OTHER = str(10**6 + 78)
 OTHER_KEY = state.MONITOR_PREFIX + OTHER
 LABEL_0 = "2026-06-02T00:00:00+02:00"
@@ -16,8 +18,13 @@ LABEL_1 = "2026-06-02T01:00:00+02:00"
 DAY_0 = 1780272000
 
 
-def event(offset, monitor_id=MON):
-    return {"ts_ms": (FROM_TS + offset) * 1000, "link": "https://example.test/e", "monitor": monitor_id}
+def moment(offset):
+    return (FROM_TS + offset) * 1000
+
+
+def transition(first, last=None, count=1, monitor_id=MON):
+    last = first if last is None else last
+    return {"monitor": monitor_id, "count": count, "first_ts_ms": (FROM_TS + first) * 1000, "last_ts_ms": (FROM_TS + last) * 1000}
 
 
 def top_entry(top=3, **extra):
@@ -56,14 +63,56 @@ class MonitorValuesTest(EvaluateCase):
     def test_monitor_without_priority_has_a_null_one(self):
         self.assertIsNone(self.values()["priority"])
 
-    def test_transitions_come_from_the_alert_events_of_the_monitor_in_the_window(self):
-        events = [event(600), event(1800), event(900, OTHER), event(-7200), event(7200)]
+    def test_transitions_come_from_the_aggregate_of_the_monitor(self):
+        transitions = [transition(600, 1800, 2), transition(900, 900, 1, OTHER)]
 
-        values = self.values(docs=collections(alerts=alerts(events=events)))
+        values = self.values(docs=collections(alerts=alerts(transitions=transitions)))
 
         self.assertEqual(values["transitions"], 2)
         self.assertEqual((values["first_transition"], values["last_transition"]), ("2026-06-02T00:40:00+02:00", LABEL_1))
         self.assertEqual(values["transitions_per_hour"], 6.0)
+
+    def aggregated(self, events):
+        page = events_page(*(event(f"e{number}", timestamp=ts_ms, attributes={"monitor_id": monitor}) for number, (ts_ms, monitor) in enumerate(events)))
+        window = {"from_ts": FROM_TS, "to_ts": TO_TS}
+        named = len({monitor for ts_ms, monitor in events if FROM_TS * 1000 <= ts_ms <= TO_TS * 1000})
+        _, result = run(MONITORS, [], FRESH, page, *(status(404) for _ in range(named)), window=window)
+        return result["records"]["transitions"]
+
+    def reference(self, events, monitor_id):
+        low, high = FROM_TS * 1000, TO_TS * 1000
+        stamps = sorted(ts_ms for ts_ms, monitor in events if monitor == monitor_id and low <= ts_ms <= high)
+        hours = (stamps[-1] - stamps[0]) / (state.HOUR * 1000) if stamps else None
+        zone = ZoneInfo("Europe/Paris")
+        return {
+            "transitions": len(stamps),
+            "first_transition": features.local_iso(stamps[0] // 1000, zone) if stamps else None,
+            "last_transition": features.local_iso(stamps[-1] // 1000, zone) if stamps else None,
+            "transitions_per_hour": len(stamps) / hours if len(stamps) >= 2 and hours else None,
+        }
+
+    def assert_same_as_the_raw_events(self, events):
+        values = self.values(docs=collections(alerts=alerts(transitions=self.aggregated(events))))
+
+        expected = self.reference(events, MON)
+        self.assertEqual({field: values[field] for field in expected}, expected)
+
+    def test_values_from_the_aggregate_equal_those_of_the_raw_event_list(self):
+        events = [
+            (moment(600), MON), (moment(1800), MON), (moment(1800), MON), (moment(900), OTHER), (moment(-7200), MON), (moment(7200), MON),
+            (moment(0), MON), (moment(TO_TS - FROM_TS), MON), (moment(-1), MON), (moment(TO_TS - FROM_TS + 1), MON), (moment(4000) + 7, MON),
+        ]
+
+        self.assert_same_as_the_raw_events(events)
+
+    def test_values_from_the_aggregate_equal_those_of_a_single_raw_event(self):
+        self.assert_same_as_the_raw_events([((FROM_TS + 600) * 1000, MON), ((FROM_TS + 900) * 1000, OTHER)])
+
+    def test_values_from_the_aggregate_equal_those_of_raw_events_at_one_time(self):
+        self.assert_same_as_the_raw_events([((FROM_TS + 600) * 1000, MON), ((FROM_TS + 600) * 1000, MON)])
+
+    def test_values_from_the_aggregate_equal_those_of_raw_events_all_outside_the_window(self):
+        self.assert_same_as_the_raw_events([((FROM_TS - 60) * 1000, MON), ((TO_TS + 60) * 1000, MON), ((FROM_TS + 60) * 1000, OTHER)])
 
     def test_no_event_gives_a_null_rate_and_null_times(self):
         values = self.values()
@@ -74,12 +123,12 @@ class MonitorValuesTest(EvaluateCase):
         )
 
     def test_one_event_gives_a_null_rate(self):
-        values = self.values(docs=collections(alerts=alerts(events=[event(600)])))
+        values = self.values(docs=collections(alerts=alerts(transitions=[transition(600)])))
 
         self.assertEqual((values["transitions"], values["transitions_per_hour"]), (1, None))
 
     def test_events_at_the_same_time_give_a_null_rate(self):
-        values = self.values(docs=collections(alerts=alerts(events=[event(600), event(600)])))
+        values = self.values(docs=collections(alerts=alerts(transitions=[transition(600, 600, 2)])))
 
         self.assertEqual((values["transitions"], values["transitions_per_hour"]), (2, None))
 
@@ -141,10 +190,10 @@ class MonitorValuesTest(EvaluateCase):
 
         self.assertFalse(tracked["has_analysis"])
 
-    def test_events_exactly_at_the_window_bounds_count_and_those_just_outside_do_not(self):
-        events = [event(0), event(TO_TS - FROM_TS), event(-1), event(TO_TS - FROM_TS + 1)]
+    def test_transitions_at_the_window_bounds_keep_their_first_and_last_times(self):
+        transitions = [transition(0, TO_TS - FROM_TS, 2)]
 
-        values = self.values(docs=collections(alerts=alerts(events=events)))
+        values = self.values(docs=collections(alerts=alerts(transitions=transitions)))
 
         self.assertEqual(values["transitions"], 2)
         self.assertEqual((values["first_transition"], values["last_transition"]), ("2026-06-02T00:30:00+02:00", "2026-06-02T01:30:00+02:00"))
@@ -196,19 +245,19 @@ class DiscoveryTest(EvaluateCase):
         self.assertEqual((keys, base["blind_spots"]), (["cpu", KEY], []))
 
     def test_discovered_monitor_in_the_ok_state_named_by_events_of_the_window_gets_a_key_with_its_transitions(self):
-        docs = self.discovered(monitor("OK", OTHER), events=[event(60, OTHER), event(120, OTHER)])
+        docs = self.discovered(monitor("OK", OTHER), transitions=[transition(60, 120, 2, OTHER)])
 
         values = self.features(docs=docs)["keys"][OTHER_KEY]["values"]
 
         self.assertEqual((values["state"], values["transitions"]), ("OK", 2))
 
-    def test_discovered_monitor_in_the_ok_state_named_only_outside_the_window_gets_no_key(self):
-        docs = self.discovered(monitor("OK", OTHER), events=[event(-60, OTHER), event(60)])
+    def test_discovered_monitor_in_the_ok_state_without_a_transition_gets_no_key(self):
+        docs = self.discovered(monitor("OK", OTHER), transitions=[transition(60)])
 
         self.assertNotIn(OTHER_KEY, self.features(docs=docs)["keys"])
 
     def test_event_named_ok_monitor_adds_no_blind_spot(self):
-        docs = self.discovered(monitor("OK", OTHER), events=[event(60, OTHER)])
+        docs = self.discovered(monitor("OK", OTHER), transitions=[transition(60, 60, 1, OTHER)])
 
         self.assertEqual(self.base(docs=docs)["blind_spots"], [])
 

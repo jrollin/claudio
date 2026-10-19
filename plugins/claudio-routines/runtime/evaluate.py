@@ -13,7 +13,7 @@ import roles
 import state
 from config import accept_any, adapter_role, config_directory, load_zone, read_routine
 
-KIND_RECORDS = {"monitors": {"monitors", "events"}, "metrics": {"metrics"}}
+KIND_RECORDS = {"monitors": {"monitors", "transitions"}, "metrics": {"metrics"}}
 MUTES_HEADING = "Mutes"
 UNTIL_HEADERS = ("until", "silence until")
 ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")

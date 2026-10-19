@@ -240,21 +240,21 @@ class Reading:
             return Outcome(GAP, title_of(f"{STATE_NOT_RECOGNISED}: {found[0]['state']}"))
         return Outcome(OBSERVED, docs=[(key, self.monitor_doc(key, entry, name, found[0]))])
 
-    def window_events(self, name):
-        low, high = self.window["from_ts"] * 1000, self.window["to_ts"] * 1000
-        return [event for event in self.collections[name]["records"]["events"] if low <= event["ts_ms"] <= high]
+    def window_transitions(self, name):
+        return {item["monitor"]: item for item in self.collections[name]["records"]["transitions"]}
 
     def monitor_doc(self, key, entry, name, monitor):
-        events = sorted(event["ts_ms"] for event in self.window_events(name) if event["monitor"] == monitor["id"])
-        first, last = (events[0], events[-1]) if events else (None, None)
+        seen = self.window_transitions(name).get(monitor["id"])
+        count = 0 if seen is None else seen["count"]
+        first, last = (None, None) if seen is None else (seen["first_ts_ms"], seen["last_ts_ms"])
         hours = None if first is None else (last - first) / (state.HOUR * 1000)
         values = {
             "state": monitor["state"],
             "priority": monitor["priority"],
-            "transitions": len(events),
+            "transitions": count,
             "first_transition": None if first is None else local_iso(first // 1000, self.zone),
             "last_transition": None if last is None else local_iso(last // 1000, self.zone),
-            "transitions_per_hour": len(events) / hours if len(events) >= 2 and hours else None,
+            "transitions_per_hour": count / hours if count >= 2 and hours else None,
         }
         title = entry["title"] if entry else title_of(monitor["name"])
         link = entry["link"] if entry else label(monitor["link"])
@@ -432,7 +432,7 @@ class Reading:
             self.feature_discovered(name, found)
 
     def untracked_discovered(self, name, handled):
-        found, named = {}, {event["monitor"] for event in self.window_events(name)}
+        found, named = {}, set(self.window_transitions(name))
         for monitor in self.collections[name]["records"]["discovered"]:
             if monitor_key(monitor) not in handled and (monitor["state"] != OK_STATE or monitor["id"] in named):
                 found.setdefault(monitor_key(monitor), monitor)

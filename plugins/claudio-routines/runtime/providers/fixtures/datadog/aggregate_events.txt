@@ -1,0 +1,8 @@
+<METADATA>
+  <total_buckets>2</total_buckets>
+</METADATA>
+<TSV_DATA>
+@monitor_id	count	first_ts	last_ts
+101	2	1760001000000	1760002000000
+102	2	1760001000000	1760001000000
+</TSV_DATA>

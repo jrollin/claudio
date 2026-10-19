@@ -10,7 +10,7 @@ from state import clean_text, load_zone, local_date
 from . import _common
 from ._common import as_list, dig, json_object
 from ._http import PAGE_CAP
-from ._errors import PAGE_CAP_PARTIAL, PartialRead, SourceUnreadable
+from ._errors import GROUP_CAP_PARTIAL, PAGE_CAP_PARTIAL, PartialRead, SourceUnreadable
 
 ROLE = "observability"
 CREDENTIALS = ("api_key", "app_key")
@@ -20,6 +20,7 @@ EVENTS_PATH = "/api/v2/events"
 SCALAR_PATH = "/api/v2/query/scalar"
 TIMESERIES_PATH = "/api/v2/query/timeseries"
 EVENTS_PAGE_LIMIT = 100
+EVENTS_PAGE_CAP = 100
 SEARCH_PAGE_SIZE = 100
 HOUR_MS = 3600000
 DAY_MS = 24 * HOUR_MS
@@ -31,7 +32,15 @@ ISO_COMPACT_OFFSET = re.compile(r"([+-]\d{2})(\d{2})$")
 EPOCH = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
 MILLISECOND = datetime.timedelta(milliseconds=1)
 TOOL = "execute_code"
-INTENT = "Collect monitors, events and metrics for a scheduled routine run"
+INTENT = "Collect monitors and metrics for a scheduled routine run"
+AGGREGATE_TOOL = "aggregate_events"
+AGGREGATE_INTENT = "Count alert events per monitor for a scheduled routine run"
+AGGREGATE_HEADER = "@monitor_id\tcount\tfirst_ts\tlast_ts"
+AGGREGATE_TOKENS = 20000
+GROUP_CAP = 1000
+TOTAL_BUCKETS = re.compile(r"<total_buckets>\s*([0-9]+)\s*</total_buckets>")
+TABLE = re.compile(r"<TSV_DATA>(.*?)</TSV_DATA>", re.S)
+INTEGER_TEXT = re.compile(r"[0-9]+")
 SCRIPT_TIMEOUT = 120
 PARAMS_SLOT = "__PARAMS_LITERAL__"
 MONITOR_ID = re.compile(r"[0-9]+")
@@ -94,49 +103,6 @@ async function readMonitor(api, entry) {
   return { ok: true, monitor: { id: monitor.id, name: capped(monitor.name), overall_state: monitor.overallState, priority: monitor.priority ?? null } };
 }
 
-function timestamp(value) {
-  if (value instanceof Date) {
-    return Number.isNaN(value.getTime()) ? null : value.toISOString();
-  }
-  return value;
-}
-
-function eventItem(item) {
-  const outer = item.attributes || {};
-  const inner = outer.attributes || {};
-  return {
-    id: item.id,
-    attributes: {
-      timestamp: timestamp(outer.timestamp),
-      attributes: { monitor_id: inner.monitorId, timestamp: inner.timestamp },
-    },
-  };
-}
-
-async function readEvents(api) {
-  const request = {
-    filterFrom: String(params.events_from_ms),
-    filterTo: String(params.window.to_ms),
-    sort: "timestamp",
-    pageLimit: params.page_limit,
-  };
-  if (params.scope_filter) {
-    request.filterQuery = params.scope_filter;
-  }
-  const pages = [];
-  let cursor = null;
-  while (pages.length < params.page_cap) {
-    const body = await api.listEvents(cursor === null ? request : { ...request, pageCursor: cursor });
-    const after = (body.meta && body.meta.page && body.meta.page.after) || null;
-    pages.push({ data: (body.data || []).map(eventItem), after });
-    if (after === null) {
-      return { ok: true, pages, partial: null };
-    }
-    cursor = after;
-  }
-  return { ok: true, pages, partial: "page cap" };
-}
-
 function searchItem(item) {
   return { id: item.id, name: capped(item.name), status: item.status, priority: item.priority ?? null };
 }
@@ -159,29 +125,18 @@ async function readDiscovery(api) {
   }
 }
 
-function eventMonitorIds(events, discovery) {
+function eventMonitorIds(discovery) {
   const covered = new Set(params.entries.map((entry) => entry.monitor));
   for (const page of discovery ? discovery.pages : []) {
     for (const item of page.monitors || []) {
       covered.add(String(item.id));
     }
   }
-  const named = new Set();
-  for (const page of events.pages) {
-    for (const item of page.data) {
-      const inner = item.attributes.attributes;
-      const dated = item.attributes.timestamp != null || inner.timestamp != null;
-      const id = inner.monitor_id == null ? "" : String(inner.monitor_id);
-      if (dated && MONITOR_ID.test(id) && !covered.has(id)) {
-        named.add(id);
-      }
-    }
-  }
-  return Array.from(named).sort((a, b) => a.length - b.length || (a < b ? -1 : a > b ? 1 : 0));
+  return params.event_monitor_ids.filter((id) => !covered.has(id));
 }
 
-async function readEventMonitors(api, events, discovery) {
-  const ids = eventMonitorIds(events, discovery);
+async function readEventMonitors(api, discovery) {
+  const ids = eventMonitorIds(discovery);
   const reads = [];
   for (const id of ids.slice(0, params.event_monitor_cap)) {
     reads.push({ id, ...(await guarded(() => readMonitor(api, { monitor: id }))) });
@@ -221,13 +176,9 @@ async function collect() {
     for (const entry of params.entries) {
       monitors.push({ entry: entry.key, ...(await guarded(() => readMonitor(monitorsApi, entry))) });
     }
-    const events = await guarded(() => readEvents(new v2.EventsApi(cfg)));
-    if (events.ok === false) {
-      return { monitors, events };
-    }
     const discovery = params.discovery_query ? await readDiscovery(monitorsApi) : null;
-    const eventMonitors = await readEventMonitors(monitorsApi, events, discovery);
-    return { monitors, events, ...(discovery ? { discovery } : {}), event_monitors: eventMonitors };
+    const eventMonitors = await readEventMonitors(monitorsApi, discovery);
+    return { monitors, ...(discovery ? { discovery } : {}), event_monitors: eventMonitors };
   }
   const metricsApi = new v2.MetricsApi(cfg);
   const metrics = [];
@@ -270,42 +221,89 @@ def fetch(source, window, cursor, entries, http):
 
 
 def plan(source, window, cursor, entries, responses, connector):
-    cursor = cursor or {}
+    if source["kind"] == "monitors":
+        return _plan_monitors(source, window, entries, responses, connector)
     call_id = _call_id(source)
     if call_id in responses:
         return _common.ended()
-    if source["kind"] == "monitors":
-        _require_links_base(source)
-    text = roles.params_text(_script_params(source, window, cursor, entries))
+    return _step(_script_call(source, window, entries, [], call_id, connector))
+
+
+def _plan_monitors(source, window, entries, responses, connector):
+    _require_links_base(source)
+    aggregate_id, script_id = _call_id(source, 1), _call_id(source, 2)
+    if script_id in responses:
+        return _common.ended()
+    if aggregate_id not in responses:
+        return _step(_aggregate_call(source, window, aggregate_id, connector))
+    named = {item["monitor"] for item in _aggregate_response(responses, aggregate_id)["transitions"]}
+    ids = sorted(named - {entry["monitor"] for entry in entries}, key=_id_order)
+    return _step(_script_call(source, window, entries, ids, script_id, connector))
+
+
+def _step(call):
+    return {"done": False, "partial": None, "calls": [call]}
+
+
+def _aggregate_call(source, window, call_id, connector):
+    computes = [
+        {"field": "*", "aggregation": "COUNT", "output": "count", "sort": "desc"},
+        {"field": "timestamp", "aggregation": "MIN", "output": "first_ts"},
+        {"field": "timestamp", "aggregation": "MAX", "output": "last_ts"},
+    ]
+    arguments = {
+        "query": source.get("scope_filter") or "",
+        "from": _iso_utc(window["from_ts"]),
+        "to": _iso_utc(window["to_ts"]),
+        "group_by": {"fields": ["@monitor_id"], "limit": GROUP_CAP},
+        "computes": computes,
+        "max_tokens": AGGREGATE_TOKENS,
+        "telemetry": {"intent": AGGREGATE_INTENT},
+    }
+    return {"id": call_id, "connector": connector, "tool": AGGREGATE_TOOL, "arguments": arguments, "digest": None}
+
+
+def _iso_utc(ts):
+    return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _script_call(source, window, entries, event_ids, call_id, connector):
+    text = roles.params_text(_script_params(source, window, entries, event_ids))
     code = SCRIPT_TEMPLATE.replace(PARAMS_SLOT, json.dumps(text), 1)
     arguments = {"code": code, "telemetry": {"intent": INTENT}, "timeout": SCRIPT_TIMEOUT}
-    call = {"id": call_id, "connector": connector, "tool": TOOL, "arguments": arguments, "digest": roles.fnv1a32(text)}
-    return {"done": False, "partial": None, "calls": [call]}
+    return {"id": call_id, "connector": connector, "tool": TOOL, "arguments": arguments, "digest": roles.fnv1a32(text)}
 
 
 def parse(source, window, cursor, entries, responses, digests):
     cursor = cursor or {}
+    if source["kind"] == "monitors":
+        return _parse_monitors(source, cursor, entries, responses, digests)
     call_id = _call_id(source)
     data = _script_payload(call_id, responses, digests)
-    if source["kind"] == "monitors":
-        app = _require_links_base(source)
-        items = _payload_items(data, "monitors", call_id)
-        read, statuses = _read_entries(entries, lambda entry: _relay_monitor(entry, items(entry), app))
-        result = _monitors_result(cursor, read, statuses, _relay_events(data, app, call_id))
-        discovery = _relay_discovery(source, data, app, call_id)
-        ids, _ = _event_monitor_ids(entries, result["records"]["events"], discovery["discovered"])
-        monitors, capped, failure = _relay_event_monitors(data, app, call_id, ids)
-        return _with_discovery(result, _with_event_monitors(discovery, monitors, capped, failure))
     items = _payload_items(data, "metrics", call_id)
     read, statuses = _read_entries(entries, lambda entry: _relay_metric(entry, items(entry), window, call_id))
     return _metrics_result(cursor, read, statuses)
 
 
-def _call_id(source):
-    return f"{source['name']}-1"
+def _parse_monitors(source, cursor, entries, responses, digests):
+    app = _require_links_base(source)
+    events = _aggregate_response(responses, _call_id(source, 1))
+    call_id = _call_id(source, 2)
+    data = _script_payload(call_id, responses, digests)
+    items = _payload_items(data, "monitors", call_id)
+    read, statuses = _read_entries(entries, lambda entry: _relay_monitor(entry, items(entry), app))
+    result = _monitors_result(cursor, read, statuses, events)
+    discovery = _relay_discovery(source, data, app, call_id)
+    ids, _ = _event_monitor_ids(entries, result["records"]["transitions"], discovery["discovered"])
+    monitors, capped, failure = _relay_event_monitors(data, app, call_id, ids)
+    return _with_discovery(result, _with_event_monitors(discovery, monitors, capped, failure))
 
 
-def _script_params(source, window, cursor, entries):
+def _call_id(source, number=1):
+    return f"{source['name']}-{number}"
+
+
+def _script_params(source, window, entries, event_ids):
     if source["kind"] == "monitors":
         selected = [{"key": entry["key"], "monitor": entry["monitor"]} for entry in entries]
     else:
@@ -314,10 +312,8 @@ def _script_params(source, window, cursor, entries):
         "kind": source["kind"],
         "entries": selected,
         "window": {"from_ms": window["from_ts"] * 1000, "to_ms": window["to_ts"] * 1000},
-        "events_from_ms": _events_from(window, cursor),
-        "scope_filter": source.get("scope_filter") or "",
+        "event_monitor_ids": event_ids,
         "page_cap": PAGE_CAP,
-        "page_limit": EVENTS_PAGE_LIMIT,
         "interval_ms": HOUR_MS,
         "daily_interval_ms": DAY_MS,
         "discovery_query": source.get("discovery_query") or "",
@@ -383,14 +379,44 @@ def _relay_monitor(entry, item, app):
     return _monitor_record(entry, dig(_monitor_call(_relayed, item, "GET", path), "monitor"), path, app)
 
 
-def _relay_events(data, app, call_id):
-    events = dig(data, "events")
-    if not isinstance(events, dict):
-        raise SourceUnreadable(f"{TOOL} {call_id}: payload without events")
-    body = _relayed(events, "GET", EVENTS_PATH)
-    if dig(body, "partial") is not None:
-        raise PartialRead(PAGE_CAP_PARTIAL)
-    return [event for page in as_list(dig(body, "pages")) for event in _page_events(page, app)]
+def _aggregate_response(responses, call_id):
+    if call_id not in responses:
+        raise SourceUnreadable(f"{AGGREGATE_TOOL} {call_id}: no saved response")
+    return _aggregate_table(responses[call_id], call_id)
+
+
+def _aggregate_table(text, call_id):
+    where = f"{AGGREGATE_TOOL} {call_id}"
+    total, table = TOTAL_BUCKETS.search(text), TABLE.search(text)
+    if total is None:
+        raise SourceUnreadable(f"{where}: response without a bucket count")
+    if table is None:
+        raise SourceUnreadable(f"{where}: response without a table")
+    buckets = int(total.group(1))
+    if buckets > GROUP_CAP:
+        raise PartialRead(GROUP_CAP_PARTIAL)
+    lines = [line for line in table.group(1).splitlines() if line.strip()]
+    if not lines or lines[0] != AGGREGATE_HEADER:
+        raise SourceUnreadable(f"{where}: table header differs from {AGGREGATE_HEADER!r}")
+    rows = [_aggregate_row(line, number, where) for number, line in enumerate(lines[1:], 1)]
+    if len(rows) != buckets:
+        raise SourceUnreadable(f"{where}: table holds {len(rows)} rows for {buckets} buckets")
+    seen = {}
+    for monitor, count, first, last in rows:
+        if monitor in seen:
+            raise SourceUnreadable(f"{where}: monitor {clean_text(monitor, STATE_CAP)} listed twice")
+        seen[monitor] = {"monitor": monitor, "count": count, "first_ts_ms": first, "last_ts_ms": last}
+    transitions = [item for monitor, item in seen.items() if MONITOR_ID.fullmatch(monitor)]
+    return _events_read(transitions, max((last for _, _, _, last in rows), default=None))
+
+
+def _aggregate_row(line, number, where):
+    cells = line.split("\t")
+    if len(cells) == 4 and all(INTEGER_TEXT.fullmatch(cell) for cell in cells[1:]):
+        count, first, last = (int(cell) for cell in cells[1:])
+        if count >= 1 and first <= last:
+            return cells[0], count, first, last
+    raise SourceUnreadable(f"{where}: unreadable table row {number}")
 
 
 def _relay_discovery(source, data, app, call_id):
@@ -453,9 +479,9 @@ def _require_links_base(source):
 def _fetch_monitors(source, window, cursor, entries, http):
     app = _require_links_base(source)
     read, statuses = _read_entries(entries, lambda entry: _read_monitor(entry, http, app))
-    result = _monitors_result(cursor, read, statuses, _read_events(source, window, cursor, http, app))
+    result = _monitors_result(cursor, read, statuses, _read_events(source, window, cursor, http))
     discovery = _api_discovery(source, http, app)
-    ids, capped = _event_monitor_ids(entries, result["records"]["events"], discovery["discovered"])
+    ids, capped = _event_monitor_ids(entries, result["records"]["transitions"], discovery["discovered"])
     monitors, failure = _read_event_monitors(ids, lambda monitor_id: _read_event_monitor(monitor_id, http, app))
     return _with_discovery(result, _with_event_monitors(discovery, monitors, capped, failure))
 
@@ -470,10 +496,13 @@ def _with_event_monitors(discovery, monitors, capped, failure):
     return {"discovered": discovered, "discovery": {**status, **({"event_monitors_capped": True} if capped else {})}}
 
 
-def _event_monitor_ids(entries, events, discovered):
+def _id_order(monitor_id):
+    return len(monitor_id), monitor_id
+
+
+def _event_monitor_ids(entries, transitions, discovered):
     covered = {entry["monitor"] for entry in entries} | {monitor["id"] for monitor in discovered}
-    named = {event["monitor"] for event in events if event["monitor"] is not None} - covered
-    ordered = sorted((monitor_id for monitor_id in named if MONITOR_ID.fullmatch(monitor_id)), key=lambda monitor_id: (len(monitor_id), monitor_id))
+    ordered = sorted({item["monitor"] for item in transitions} - covered, key=_id_order)
     return ordered[:EVENT_MONITOR_CAP], len(ordered) > EVENT_MONITOR_CAP
 
 
@@ -500,14 +529,12 @@ def _read_event_monitors(items, read):
 
 def _monitors_result(cursor, read, statuses, events):
     monitors = {record["id"]: record for record in read.values()}
-    events = sorted(events, key=lambda event: (event["ts_ms"], event["link"]))
+    stored = cursor.get("events_ts_ms")
+    newest = max((point for point in (stored, events["newest_ts_ms"]) if point is not None), default=None)
     states = {**(cursor.get("monitors") or {}), **{key: record["state"] for key, record in monitors.items()}}
     return {
-        "records": {"monitors": [monitors[key] for key in sorted(monitors)], "events": events},
-        "cursor": {
-            "events_ts_ms": max((event["ts_ms"] for event in events), default=cursor.get("events_ts_ms")),
-            "monitors": states,
-        },
+        "records": {"monitors": [monitors[key] for key in sorted(monitors)], "transitions": events["transitions"]},
+        "cursor": {"events_ts_ms": newest, "monitors": states},
         "entries": statuses,
     }
 
@@ -645,7 +672,7 @@ def _events_from(window, cursor):
     return max(stored + 1, start) if stored is not None else start
 
 
-def _read_events(source, window, cursor, http, app):
+def _read_events(source, window, cursor, http):
     scope = source.get("scope_filter")
     params = {
         **({"filter[query]": scope} if scope else {}),
@@ -655,33 +682,42 @@ def _read_events(source, window, cursor, http, app):
         "page[limit]": str(EVENTS_PAGE_LIMIT),
     }
     events, page = [], params
-    for _ in range(PAGE_CAP):
+    for _ in range(EVENTS_PAGE_CAP):
         body = http.get(EVENTS_PATH, page)
-        events.extend(_page_events(body, app))
+        events.extend(_page_events(body))
         after = dig(body, "meta", "page", "after")
         if not after:
-            return events
+            return _aggregate_events(events, window)
         page = {**params, "page[cursor]": after}
     raise PartialRead(PAGE_CAP_PARTIAL)
 
 
-def _page_events(body, app):
-    return [event for event in (_event(item, app) for item in as_list(dig(body, "data"))) if event is not None]
+def _page_events(body):
+    return [event for event in (_event(item) for item in as_list(dig(body, "data"))) if event is not None]
 
 
-def _event(item, app):
+def _event(item):
     ts_ms = _timestamp_ms(dig(item, "attributes", "timestamp"))
     if ts_ms is None:
         ts_ms = _timestamp_ms(dig(item, "attributes", "attributes", "timestamp"))
     if ts_ms is None:
         return None
     monitor = dig(item, "attributes", "attributes", "monitor_id")
-    event_id = urllib.parse.quote(str(dig(item, "id") or ""), safe="")
-    return {
-        "ts_ms": ts_ms,
-        "link": f"{app}/event/explorer?query={event_id}",
-        "monitor": None if monitor is None else str(monitor),
-    }
+    return ts_ms, None if monitor is None else str(monitor)
+
+
+def _aggregate_events(events, window):
+    low, high = window["from_ts"] * 1000, window["to_ts"] * 1000
+    stamps = {}
+    for ts_ms, monitor in events:
+        if monitor is not None and MONITOR_ID.fullmatch(monitor) and low <= ts_ms <= high:
+            stamps.setdefault(monitor, []).append(ts_ms)
+    transitions = [{"monitor": monitor, "count": len(found), "first_ts_ms": min(found), "last_ts_ms": max(found)} for monitor, found in stamps.items()]
+    return _events_read(transitions, max((ts_ms for ts_ms, _ in events), default=None))
+
+
+def _events_read(transitions, newest):
+    return {"transitions": sorted(transitions, key=lambda item: _id_order(item["monitor"])), "newest_ts_ms": newest}
 
 
 def _timestamp_ms(value):
