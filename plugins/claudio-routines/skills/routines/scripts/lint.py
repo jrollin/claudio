@@ -18,7 +18,8 @@ PUBLIC_RULES = (
         r"|\b(?i:above|below|over|under)\s+[0-9]"
     )),
 )
-RUNTIME_SCRIPTS = ("state.py", "collect.py", "evaluate.py", "digest.py")
+REQUIRED_DENY = ("PushNotification", "Bash(sleep *)", "Monitor")
+RUNTIME_SCRIPTS = ("state.py", "collect.py", "evaluate.py", "digest.py", "tribe.py")
 SCRIPT_NAMES = "|".join(re.escape(name.removesuffix(".py")) for name in RUNTIME_SCRIPTS)
 SCRIPT_CALL = re.compile(rf"(?<![\w.-])({SCRIPT_NAMES})\.py(?!\w)")
 COMMAND = re.compile(r"[ \t]+(-*[A-Za-z0-9][A-Za-z0-9_-]*)")
@@ -159,3 +160,28 @@ def repeated_values(values_by_routine):
         for (key, _), slugs in holders.items()
         for first, second in itertools.combinations(slugs, 2)
     )
+
+
+def settings_object(data):
+    try:
+        document = json.loads(data.decode("utf-8"))
+    except ValueError:
+        return None
+    return document if isinstance(document, dict) else None
+
+
+def denied_entries(settings):
+    permissions = settings.get("permissions")
+    deny = permissions.get("deny") if isinstance(permissions, dict) else None
+    entries = deny if isinstance(deny, list) else []
+    return {entry for entry in entries if isinstance(entry, str)}
+
+
+def settings_findings(path, data):
+    if data is None:
+        return {(path, 1, "settings-missing")}
+    settings = settings_object(data)
+    if settings is None:
+        return {(path, 1, "settings-invalid")}
+    denied = denied_entries(settings)
+    return {(path, 1, f"deny-missing:{entry}") for entry in REQUIRED_DENY if entry not in denied}

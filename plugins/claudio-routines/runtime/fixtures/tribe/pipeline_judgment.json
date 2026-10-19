@@ -1,0 +1,65 @@
+{
+  "checks": {
+    "ask-export": {
+      "group": "This week",
+      "text": "Ask for the export",
+      "topic": "Capacity"
+    }
+  },
+  "corrections": [],
+  "coverage_notes": [
+    {
+      "source": "Mobile app",
+      "text": "Not read, no connector is configured for it"
+    }
+  ],
+  "decisions": [
+    {
+      "deadline": "2026-10-23",
+      "decision": "Add a worker",
+      "options": "add a worker or wait",
+      "topic": "Capacity"
+    }
+  ],
+  "details": {},
+  "highlights": [],
+  "warnings": {
+    "queue-depth": {
+      "confidence": "measured",
+      "evidence": [
+        {
+          "cites": [
+            {
+              "feature": "trend:queue-depth",
+              "name": "growth_monthly",
+              "value": 300
+            }
+          ],
+          "claim": "The queue keeps growing"
+        },
+        {
+          "cites": [
+            {
+              "link": "https://example.test/c/1",
+              "source": "channels"
+            }
+          ],
+          "claim": "Users report slowness"
+        }
+      ],
+      "impact": "reports arrive late",
+      "metric": "queue-depth",
+      "mitigation": [
+        "add a worker"
+      ],
+      "risk": "jobs start late",
+      "runway": "about two weeks",
+      "severity": "Medium",
+      "status": "open",
+      "title": "Queue depth rises",
+      "topic": "Capacity",
+      "verdict": "open",
+      "when": "watch"
+    }
+  }
+}

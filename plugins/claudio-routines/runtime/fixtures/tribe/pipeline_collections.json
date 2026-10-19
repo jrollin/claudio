@@ -1,0 +1,337 @@
+{
+  "channels": {
+    "cursor": {
+      "ts": {
+        "@CHANNEL_A@": "1791990731.000100"
+      }
+    },
+    "entries": {},
+    "place": "cloud",
+    "provider": "chat",
+    "read": true,
+    "reason": null,
+    "records": {
+      "messages": [
+        {
+          "author": "usr_aaa01",
+          "channel": "@CHANNEL_A@",
+          "link": "https://example.test/c/1",
+          "text": "Queue is slow <@usr_aaa01>",
+          "thread_ts": null,
+          "ts": "1791990730.002679"
+        },
+        {
+          "author": "usr_bbb02",
+          "channel": "@CHANNEL_A@",
+          "link": "https://example.test/c/2",
+          "text": "Same here",
+          "thread_ts": "1791990730.002679",
+          "ts": "1791990731.000100"
+        }
+      ]
+    },
+    "role": "chat",
+    "schema": 1,
+    "source": "channels",
+    "transport": "api",
+    "window": {
+      "from_ts": 1792050300,
+      "to_ts": 1792136700
+    }
+  },
+  "issues": {
+    "cursor": {
+      "updated": "2026-10-15T09:00:00Z"
+    },
+    "entries": {},
+    "place": "cloud",
+    "provider": "issue_tracker",
+    "read": true,
+    "reason": null,
+    "records": {
+      "issues": [
+        {
+          "created": "2026-10-01T08:00:00Z",
+          "in_open_sprint": true,
+          "key": "ABC-1",
+          "link": "https://example.test/i/ABC-1",
+          "priority": "High",
+          "status": "In Progress",
+          "title": "Upgrade the queue",
+          "type": "Task",
+          "updated": "2026-10-15T09:00:00Z"
+        }
+      ]
+    },
+    "role": "issue_tracker",
+    "schema": 1,
+    "source": "issues",
+    "transport": "api",
+    "window": {
+      "from_ts": 1792050300,
+      "to_ts": 1792136700
+    }
+  },
+  "metrics": {
+    "cursor": {
+      "metrics": {
+        "queue-depth": 12
+      }
+    },
+    "entries": {
+      "queue-depth": {
+        "reason": null,
+        "status": "ok"
+      }
+    },
+    "place": "cloud",
+    "provider": "observability",
+    "read": true,
+    "reason": null,
+    "records": {
+      "metrics": [
+        {
+          "groups": [],
+          "hourly": [],
+          "key": "queue-depth",
+          "trend": [
+            {
+              "day": "2026-09-17",
+              "value": 10
+            },
+            {
+              "day": "2026-09-18",
+              "value": 10
+            },
+            {
+              "day": "2026-09-19",
+              "value": 10
+            },
+            {
+              "day": "2026-09-20",
+              "value": 10
+            },
+            {
+              "day": "2026-09-21",
+              "value": 10
+            },
+            {
+              "day": "2026-09-22",
+              "value": 10
+            },
+            {
+              "day": "2026-09-23",
+              "value": 10
+            },
+            {
+              "day": "2026-09-24",
+              "value": 10
+            },
+            {
+              "day": "2026-09-25",
+              "value": 10
+            },
+            {
+              "day": "2026-09-26",
+              "value": 10
+            },
+            {
+              "day": "2026-09-27",
+              "value": 10
+            },
+            {
+              "day": "2026-09-28",
+              "value": 10
+            },
+            {
+              "day": "2026-09-29",
+              "value": 10
+            },
+            {
+              "day": "2026-09-30",
+              "value": 10
+            },
+            {
+              "day": "2026-10-01",
+              "value": 10
+            },
+            {
+              "day": "2026-10-02",
+              "value": 20
+            },
+            {
+              "day": "2026-10-03",
+              "value": 20
+            },
+            {
+              "day": "2026-10-04",
+              "value": 20
+            },
+            {
+              "day": "2026-10-05",
+              "value": 20
+            },
+            {
+              "day": "2026-10-06",
+              "value": 20
+            },
+            {
+              "day": "2026-10-07",
+              "value": 20
+            },
+            {
+              "day": "2026-10-08",
+              "value": 20
+            },
+            {
+              "day": "2026-10-09",
+              "value": 20
+            },
+            {
+              "day": "2026-10-10",
+              "value": 20
+            },
+            {
+              "day": "2026-10-11",
+              "value": 20
+            },
+            {
+              "day": "2026-10-12",
+              "value": 20
+            },
+            {
+              "day": "2026-10-13",
+              "value": 20
+            },
+            {
+              "day": "2026-10-14",
+              "value": 20
+            },
+            {
+              "day": "2026-10-15",
+              "value": 20
+            },
+            {
+              "day": "2026-10-16",
+              "value": 20
+            }
+          ],
+          "value": 12
+        }
+      ]
+    },
+    "role": "observability",
+    "schema": 1,
+    "source": "metrics",
+    "transport": "api",
+    "window": {
+      "from_ts": 1792050300,
+      "to_ts": 1792136700
+    }
+  },
+  "monitors": {
+    "cursor": {
+      "events_ts_ms": 1792134900000,
+      "monitors": {
+        "1001": "Alert"
+      }
+    },
+    "entries": {},
+    "place": "cloud",
+    "provider": "observability",
+    "read": true,
+    "reason": null,
+    "records": {
+      "discovered": [
+        {
+          "id": "1001",
+          "link": "https://example.test/mon/1001",
+          "name": "Queue alert",
+          "priority": 2,
+          "state": "Alert"
+        }
+      ],
+      "discovery": {
+        "read": true,
+        "reason": null
+      },
+      "events": [
+        {
+          "link": "https://example.test/e/1",
+          "monitor": "1001",
+          "ts_ms": 1792134900000
+        }
+      ],
+      "monitors": []
+    },
+    "role": "observability",
+    "schema": 1,
+    "source": "monitors",
+    "transport": "api",
+    "window": {
+      "from_ts": 1792050300,
+      "to_ts": 1792136700
+    }
+  },
+  "pages": {
+    "cursor": {
+      "pages": {
+        "@PAGE_TWO@": "2026-10-15T07:51:34.487Z"
+      }
+    },
+    "entries": {},
+    "place": "cloud",
+    "provider": "document_store",
+    "read": true,
+    "reason": null,
+    "records": {
+      "pages": [
+        {
+          "blocks": [
+            {
+              "checked": null,
+              "rows": null,
+              "text": "Queue",
+              "type": "heading"
+            },
+            {
+              "checked": null,
+              "rows": null,
+              "text": "Drain first",
+              "type": "paragraph"
+            },
+            {
+              "checked": null,
+              "rows": [
+                [
+                  "a",
+                  "b"
+                ]
+              ],
+              "text": "",
+              "type": "table"
+            },
+            {
+              "checked": null,
+              "rows": null,
+              "text": "",
+              "type": "other"
+            }
+          ],
+          "id": "@PAGE_TWO@",
+          "last_edited": "2026-10-15T07:51:34.487Z",
+          "link": "https://example.test/p/2",
+          "title": "Runbook"
+        }
+      ]
+    },
+    "role": "document_store",
+    "schema": 1,
+    "source": "pages",
+    "transport": "api",
+    "window": {
+      "from_ts": 1792050300,
+      "to_ts": 1792136700
+    }
+  }
+}

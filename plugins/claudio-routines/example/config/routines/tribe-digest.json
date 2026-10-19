@@ -1,6 +1,7 @@
 {
   "id": "<tribe-digest-routine-id>",
   "template": "tribe-digest",
+  "engine": "tribe",
   "cron": "CRON_TZ=Europe/Paris 0 8 * * 1,3,5",
   "first_read_days": 7,
   "sources": {
@@ -33,6 +34,10 @@
       "provider": "observability",
       "kind": "metrics",
       "scope_filter": ""
+    },
+    "previous-digest": {
+      "provider": "document-store",
+      "page_from_state": "previous_page"
     }
   },
   "query_pack": [
@@ -49,9 +54,65 @@
       "trend_days": 30
     }
   ],
+  "page": {
+    "how_built": [
+      "- Format, key and rules: the digest template of the routine.",
+      "- Sources: the routine's source list, read through the collectors."
+    ],
+    "key_callout": [
+      "How to read the warnings",
+      "- Severity is how bad it is if it happens: High, Medium or Low.",
+      "- When is how soon it binds: now, within months or watch.",
+      "- Status sits under each warning name."
+    ],
+    "state_path": "state/<tribe-slug>.json on the claude/state branch",
+    "link": "https://example.test/pages/{{id}}",
+    "title": "Tribe digest : {{date}}"
+  },
+  "publish": {
+    "provider": "document-store",
+    "parent": "example-parent-page",
+    "create": {
+      "tool": "create-page",
+      "arguments": {
+        "parent": "{{parent}}",
+        "title": "{{title}}",
+        "content": "{{content}}",
+        "background": true
+      }
+    },
+    "poll": {
+      "tool": "get-task",
+      "arguments": {
+        "task": "{{task}}"
+      }
+    },
+    "heading": {
+      "tool": "append-heading",
+      "arguments": {
+        "parent": "{{parent}}",
+        "content": "## {{week}}, week of {{week_start}}"
+      }
+    },
+    "results": {
+      "task": "task.id",
+      "status": "task.status",
+      "page": "task.page.id",
+      "heading": "block.id",
+      "done": [
+        "completed"
+      ],
+      "failed": [
+        "failed",
+        "cancelled"
+      ]
+    },
+    "week_start_format": "%d %b %Y"
+  },
   "values": {
     "digest": {
-      "name": "<tribe-name>"
+      "name": "<tribe-name>",
+      "slug": "tribe-digest"
     }
   }
 }

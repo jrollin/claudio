@@ -3,6 +3,7 @@ import unittest
 
 import roles
 import state
+from support import publication_values
 
 ROUTINE = "prod-watch"
 ADAPTER_ROLES = {
@@ -211,8 +212,9 @@ def pages_records():
                 "last_edited": UTC_EDIT,
                 "link": "https://docs.example.test/" + page_id().replace("-", ""),
                 "blocks": [
-                    {"type": "heading", "text": "Mutes", "rows": None},
-                    {"type": "table", "text": "", "rows": [["key", "until"], ["error-rate", "2026-11-01"]]},
+                    {"type": "heading", "text": "Mutes", "rows": None, "checked": None},
+                    {"type": "table", "text": "", "rows": [["key", "until"], ["error-rate", "2026-11-01"]], "checked": None},
+                    {"type": "list", "text": "Ship the fix", "rows": None, "checked": True},
                 ],
             }
         ]
@@ -748,6 +750,46 @@ class DocumentPagesOptionTest(ConfigCase):
         self.assert_config_error(self.pages_config([7]), self.SOURCE_PATH + ".pages[0]")
 
 
+class PageFromStateOptionTest(ConfigCase):
+    SOURCE_PATH = "routines.prod-watch.sources.sources-page"
+
+    def state_page_config(self, engine="tribe", value="previous_page"):
+        config = make_config()
+        config["routines"][ROUTINE]["engine"] = engine
+        config["routines"][ROUTINE].update(publication_values())
+        source = routine_sources(config)["sources-page"]
+        del source["page_id"]
+        source["page_from_state"] = value
+        return config
+
+    def test_accepts_the_previous_page_for_a_tribe_routine(self):
+        self.assertIsNone(roles.validate_config(self.state_page_config(), ROUTINE, "local", role_of))
+
+    def test_rejects_a_value_other_than_previous_page(self):
+        self.assert_config_error(self.state_page_config(value="next_page"), self.SOURCE_PATH + ".page_from_state")
+
+    def test_rejects_a_value_that_is_not_a_string(self):
+        self.assert_config_error(self.state_page_config(value=True), self.SOURCE_PATH + ".page_from_state")
+
+    def test_rejects_the_option_next_to_page_id(self):
+        config = self.state_page_config()
+        routine_sources(config)["sources-page"]["page_id"] = page_id()
+        self.assert_config_error(config, self.SOURCE_PATH)
+
+    def test_rejects_the_option_next_to_pages(self):
+        config = self.state_page_config()
+        routine_sources(config)["sources-page"]["pages"] = [page_id()]
+        self.assert_config_error(config, self.SOURCE_PATH)
+
+    def test_rejects_the_option_for_a_watch_routine(self):
+        self.assert_config_error(self.state_page_config(engine="watch"), self.SOURCE_PATH + ".page_from_state")
+
+    def test_rejects_the_option_for_a_routine_without_an_engine(self):
+        config = self.state_page_config()
+        del config["routines"][ROUTINE]["engine"]
+        self.assert_config_error(config, self.SOURCE_PATH + ".page_from_state")
+
+
 class FirstReadDaysTest(ConfigCase):
     KEY_PATH = "routines.prod-watch.first_read_days"
 
@@ -782,6 +824,202 @@ class FirstReadDaysTest(ConfigCase):
 
     def test_rejects_null(self):
         self.assert_config_error(self.with_days(None), self.KEY_PATH)
+
+
+class EngineTest(ConfigCase):
+    KEY_PATH = "routines.prod-watch.engine"
+
+    def with_engine(self, engine):
+        config = make_config()
+        config["routines"][ROUTINE]["engine"] = engine
+        config["routines"][ROUTINE].update(publication_values())
+        return config
+
+    def test_accepts_a_routine_without_an_engine(self):
+        self.assertIsNone(roles.validate_config(make_config(), ROUTINE, "local", role_of))
+
+    def test_accepts_the_watch_engine(self):
+        self.assertIsNone(roles.validate_config(self.with_engine("watch"), ROUTINE, "local", role_of))
+
+    def test_accepts_the_tribe_engine(self):
+        self.assertIsNone(roles.validate_config(self.with_engine("tribe"), ROUTINE, "local", role_of))
+
+    def test_rejects_an_unknown_engine(self):
+        self.assert_config_error(self.with_engine("legacy"), self.KEY_PATH)
+
+    def test_rejects_a_capitalised_engine(self):
+        self.assert_config_error(self.with_engine("Tribe"), self.KEY_PATH)
+
+    def test_rejects_a_boolean(self):
+        self.assert_config_error(self.with_engine(True), self.KEY_PATH)
+
+    def test_rejects_null(self):
+        self.assert_config_error(self.with_engine(None), self.KEY_PATH)
+
+
+class PublicationConfigTest(ConfigCase):
+    ROUTINE_PATH = "routines.prod-watch"
+
+    def tribe_config(self, engine="tribe"):
+        config = make_config()
+        routine = config["routines"][ROUTINE]
+        routine["engine"] = engine
+        routine.update(publication_values())
+        return config
+
+    def rejected(self, path, change, key="publish"):
+        config = self.tribe_config()
+        routine = config["routines"][ROUTINE]
+        change(routine[key])
+        self.assert_config_error(config, f"{self.ROUTINE_PATH}.{path}")
+
+    def replaced(self, key, value):
+        config = self.tribe_config()
+        config["routines"][ROUTINE][key] = value
+        self.assert_config_error(config, f"{self.ROUTINE_PATH}.{key}")
+
+    def test_accepts_the_page_and_publish_keys_of_a_tribe_routine(self):
+        self.assertIsNone(roles.validate_config(self.tribe_config(), ROUTINE, "local", role_of))
+
+    def test_rejects_a_tribe_routine_without_page_values(self):
+        config = self.tribe_config()
+        del config["routines"][ROUTINE]["page"]
+        self.assert_config_error(config, f"{self.ROUTINE_PATH}.page")
+
+    def test_rejects_a_tribe_routine_without_publish_values(self):
+        config = self.tribe_config()
+        del config["routines"][ROUTINE]["publish"]
+        self.assert_config_error(config, f"{self.ROUTINE_PATH}.publish")
+
+    def test_rejects_a_publish_provider_that_is_not_configured(self):
+        self.rejected("publish.provider", lambda publish: publish.update(provider="absent"))
+
+    def test_ignores_the_keys_of_a_routine_with_the_watch_engine(self):
+        config = self.tribe_config("watch")
+        config["routines"][ROUTINE]["page"] = 5
+        config["routines"][ROUTINE]["publish"] = []
+        self.assertIsNone(roles.validate_config(config, ROUTINE, "local", role_of))
+
+    def test_accepts_the_task_placeholder_in_the_poll_arguments(self):
+        config = self.tribe_config()
+        self.assertEqual(config["routines"][ROUTINE]["publish"]["poll"]["arguments"]["task"], "{{task}}")
+        self.assertIsNone(roles.validate_config(config, ROUTINE, "local", role_of))
+
+    def test_rejects_page_that_is_not_a_mapping(self):
+        self.replaced("page", [])
+
+    def test_rejects_how_built_that_is_a_string(self):
+        self.rejected("page.how_built", lambda page: page.update({"how_built": "text"}), key="page")
+
+    def test_rejects_a_key_callout_line_that_is_not_a_string(self):
+        self.rejected("page.key_callout[1]", lambda page: page.update({"key_callout": ["a", 2]}), key="page")
+
+    def test_rejects_an_empty_state_path(self):
+        self.rejected("page.state_path", lambda page: page.update({"state_path": ""}), key="page")
+
+    def test_rejects_a_page_without_a_link(self):
+        self.rejected("page.link", lambda page: page.pop("link"), key="page")
+
+    def test_rejects_a_link_without_the_id_placeholder(self):
+        self.rejected("page.link", lambda page: page.update({"link": "https://example.test/p"}), key="page")
+
+    def test_rejects_a_link_with_an_unknown_placeholder(self):
+        self.rejected("page.link", lambda page: page.update({"link": "https://example.test/{{id}}/{{space}}"}), key="page")
+
+    def test_rejects_a_link_that_is_not_a_string(self):
+        self.rejected("page.link", lambda page: page.update({"link": 7}), key="page")
+
+    def test_rejects_a_page_without_a_title(self):
+        self.rejected("page.title", lambda page: page.pop("title"), key="page")
+
+    def test_rejects_a_title_with_a_control_character(self):
+        self.rejected("page.title", lambda page: page.update({"title": "Digest\x07 {{date}}"}), key="page")
+
+    def test_rejects_an_empty_title(self):
+        self.rejected("page.title", lambda page: page.update({"title": ""}), key="page")
+
+    def test_rejects_a_title_with_a_placeholder_other_than_the_date(self):
+        self.rejected("page.title", lambda page: page.update({"title": "Digest {{week}}"}), key="page")
+
+    def test_rejects_a_title_placeholder_with_spaces(self):
+        self.rejected("page.title", lambda page: page.update({"title": "Digest {{ date }}"}), key="page")
+
+    def test_rejects_the_date_placeholder_in_the_link(self):
+        self.rejected("page.link", lambda page: page.update({"link": "https://example.test/{{id}}/{{date}}"}), key="page")
+
+    def test_accepts_the_date_and_week_start_placeholders_in_every_call(self):
+        config = self.tribe_config()
+        publish = config["routines"][ROUTINE]["publish"]
+        for call in ("create", "poll", "heading"):
+            publish[call]["arguments"]["extra"] = "{{date}} {{week_start}} {{week}} {{title}}"
+        self.assertIsNone(roles.validate_config(config, ROUTINE, "local", role_of))
+
+    def test_accepts_a_week_start_format(self):
+        config = self.tribe_config()
+        config["routines"][ROUTINE]["publish"]["week_start_format"] = "%d %b %Y"
+        self.assertIsNone(roles.validate_config(config, ROUTINE, "local", role_of))
+
+    def test_rejects_a_week_start_format_that_is_not_a_string(self):
+        self.rejected("publish.week_start_format", lambda publish: publish.update({"week_start_format": 3}))
+
+    def test_rejects_an_empty_week_start_format(self):
+        self.rejected("publish.week_start_format", lambda publish: publish.update({"week_start_format": ""}))
+
+    def test_accepts_a_digit_segment_in_a_result_path(self):
+        config = self.tribe_config()
+        config["routines"][ROUTINE]["publish"]["results"]["page"] = "result.pages.0.id"
+        self.assertIsNone(roles.validate_config(config, ROUTINE, "local", role_of))
+
+    def test_rejects_publish_that_is_not_a_mapping(self):
+        self.replaced("publish", "create")
+
+    def test_rejects_a_missing_provider(self):
+        self.rejected("publish.provider", lambda publish: publish.pop("provider"))
+
+    def test_rejects_a_parent_that_is_not_a_page_id(self):
+        self.rejected("publish.parent", lambda publish: publish.update({"parent": "a/b"}))
+
+    def test_rejects_a_missing_call(self):
+        self.rejected("publish.poll", lambda publish: publish.pop("poll"))
+
+    def test_rejects_a_tool_that_is_not_a_string(self):
+        self.rejected("publish.create.tool", lambda publish: publish["create"].update({"tool": 3}))
+
+    def test_rejects_arguments_that_are_not_a_mapping(self):
+        self.rejected("publish.heading.arguments", lambda publish: publish["heading"].update({"arguments": ["x"]}))
+
+    def test_rejects_results_that_are_not_a_mapping(self):
+        self.rejected("publish.results", lambda publish: publish.update({"results": "task.id"}))
+
+    def test_rejects_a_result_path_with_an_empty_segment(self):
+        self.rejected("publish.results.task", lambda publish: publish["results"].update({"task": "task..id"}))
+
+    def test_rejects_a_result_path_that_is_not_a_string(self):
+        self.rejected("publish.results.page", lambda publish: publish["results"].update({"page": ["task", "id"]}))
+
+    def test_rejects_an_empty_done_list(self):
+        self.rejected("publish.results.done", lambda publish: publish["results"].update({"done": []}))
+
+    def test_rejects_a_failed_list_with_a_non_string(self):
+        self.rejected("publish.results.failed[1]", lambda publish: publish["results"].update({"failed": ["failed", 4]}))
+
+    def test_rejects_a_missing_failed_list(self):
+        self.rejected("publish.results.failed", lambda publish: publish["results"].pop("failed"))
+
+    def test_rejects_an_unknown_placeholder_naming_the_argument(self):
+        self.rejected("publish.create.arguments.title", lambda publish: publish["create"]["arguments"].update({"title": "{{name}}"}))
+
+    def test_rejects_a_placeholder_with_spaces(self):
+        self.rejected("publish.heading.arguments.text", lambda publish: publish["heading"]["arguments"].update({"text": "## {{ week }}"}))
+
+    def test_rejects_a_placeholder_inside_a_nested_list(self):
+        self.rejected("publish.create.arguments.rows[0].c", lambda publish: publish["create"]["arguments"].update({"rows": [{"c": "{{nope}}"}]}))
+
+    def test_rejects_the_task_placeholder_outside_the_poll(self):
+        self.rejected("publish.create.arguments.title", lambda publish: publish["create"]["arguments"].update({"title": "{{task}}"}))
+
+    def test_rejects_the_link_placeholder_in_a_call(self):
+        self.rejected("publish.heading.arguments.text", lambda publish: publish["heading"]["arguments"].update({"text": "{{id}}"}))
 
 
 class PackCase(unittest.TestCase):
@@ -1801,6 +2039,26 @@ class DocumentStoreRecordsTest(CollectionCase):
         doc = self.pages_collection()
         doc["records"]["pages"][0]["blocks"][0]["rows"] = [["Mutes"]]
         self.assert_collection_error(doc, "records.pages[0].blocks[0].rows")
+
+    def test_accepts_a_to_do_block_with_either_checked_state(self):
+        doc = self.pages_collection()
+        doc["records"]["pages"][0]["blocks"][2]["checked"] = False
+        self.assertIsNone(roles.validate_collection(doc))
+
+    def test_accepts_a_block_without_checked(self):
+        doc = self.pages_collection()
+        del doc["records"]["pages"][0]["blocks"][2]["checked"]
+        self.assertIsNone(roles.validate_collection(doc))
+
+    def test_rejects_a_checked_that_is_not_a_boolean(self):
+        doc = self.pages_collection()
+        doc["records"]["pages"][0]["blocks"][2]["checked"] = "yes"
+        self.assert_collection_error(doc, "records.pages[0].blocks[2].checked")
+
+    def test_rejects_checked_on_a_block_that_is_not_a_list(self):
+        doc = self.pages_collection()
+        doc["records"]["pages"][0]["blocks"][0]["checked"] = True
+        self.assert_collection_error(doc, "records.pages[0].blocks[0].checked")
 
     def test_rejects_a_table_cell_that_is_not_a_string(self):
         doc = self.pages_collection()

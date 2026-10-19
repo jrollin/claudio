@@ -272,7 +272,7 @@ class BlocksTest(unittest.TestCase):
     def test_block_with_a_non_string_type_is_other(self):
         _, result = run(ok("page.json"), ok("blocks_odd_type.json"))
 
-        self.assertEqual(result["records"]["pages"][0]["blocks"], [{"type": "other", "text": "", "rows": None}])
+        self.assertEqual(result["records"]["pages"][0]["blocks"], [{"type": "other", "text": "", "rows": None, "checked": None}])
 
     def test_only_tables_carry_rows(self):
         _, result = read_full_page()
@@ -426,19 +426,23 @@ def relay_failure(test, text, error=_http.SourceUnreadable):
     return caught.exception
 
 
+def children(*items):
+    return FakeResponse(json.dumps({"results": list(items), "has_more": False, "next_cursor": None}).encode("utf-8"))
+
+
 def paragraph(text):
-    return {"type": "paragraph", "text": text, "rows": None}
+    return {"type": "paragraph", "text": text, "rows": None, "checked": None}
 
 
 def table(*rows):
-    return {"type": "table", "text": "", "rows": [list(row) for row in rows]}
+    return {"type": "table", "text": "", "rows": [list(row) for row in rows], "checked": None}
 
 
-def block(kind, text):
-    return {"type": kind, "text": text, "rows": None}
+def block(kind, text, checked=None):
+    return {"type": kind, "text": text, "rows": None, "checked": checked}
 
 
-OTHER = {"type": "other", "text": "", "rows": None}
+OTHER = {"type": "other", "text": "", "rows": None, "checked": None}
 LONG = 60_000
 MUTES = [{"key": "checkout-p95", "until": "2026-10-30"}]
 
@@ -472,13 +476,13 @@ class TransportEqualityTest(unittest.TestCase):
         self.assertEqual(
             relay(saved("fetch_page.json"))["records"]["pages"][0]["blocks"],
             [
-                {"type": "heading", "text": "Watch list", "rows": None},
+                {"type": "heading", "text": "Watch list", "rows": None, "checked": None},
                 paragraph("Read every run, see the runbook for queue.depth."),
-                {"type": "list", "text": "Checkout", "rows": None},
-                {"type": "list", "text": "Read the monitors", "rows": None},
-                {"type": "list", "text": "Review the mutes", "rows": None},
-                {"type": "code", "text": "avg:queue.depth{*}\nby {service}", "rows": None},
-                {"type": "heading", "text": "Mutes", "rows": None},
+                {"type": "list", "text": "Checkout", "rows": None, "checked": None},
+                {"type": "list", "text": "Read the monitors", "rows": None, "checked": None},
+                {"type": "list", "text": "Review the mutes", "rows": None, "checked": False},
+                {"type": "code", "text": "avg:queue.depth{*}\nby {service}", "rows": None, "checked": None},
+                {"type": "heading", "text": "Mutes", "rows": None, "checked": None},
                 table(
                     ("key", "until"),
                     ("checkout-p95", "2026-10-30"),
@@ -513,6 +517,52 @@ class TransportEqualityTest(unittest.TestCase):
                 block("list", "Blue item"),
             ],
         )
+
+
+class CheckedToDoTest(unittest.TestCase):
+    TO_DO_BLOCKS = [("Ship the fix", True), ("Review the mutes", False), ("Plain bullet", None), ("Numbered item", None), ("A paragraph", None)]
+
+    def over_api(self, *items):
+        _, result = run(ok("page.json"), children(*items))
+        return result["records"]["pages"][0]["blocks"]
+
+    def test_both_transports_give_the_same_checked_to_dos(self):
+        _, over_api = run(ok("relay_page.json"), ok("todo_blocks.json"))
+
+        self.assertEqual(state.dump(relay(with_content(saved("todo_content.md")))["records"]), state.dump(over_api["records"]))
+
+    def test_api_blocks_carry_true_false_or_null(self):
+        _, over_api = run(ok("relay_page.json"), ok("todo_blocks.json"))
+
+        self.assertEqual([(item["text"], item["checked"]) for item in over_api["records"]["pages"][0]["blocks"]], self.TO_DO_BLOCKS)
+
+    def test_connector_blocks_carry_true_false_or_null(self):
+        blocks = relay_blocks(saved("todo_content.md"))
+
+        self.assertEqual([(item["text"], item["checked"]) for item in blocks], self.TO_DO_BLOCKS)
+
+    def test_api_to_do_without_a_checked_flag_is_not_checked(self):
+        self.assertEqual(self.over_api({"type": "to_do", "to_do": {"rich_text": [{"plain_text": "Open"}]}}), [block("list", "Open", False)])
+
+    def test_api_to_do_with_a_flag_that_is_not_a_boolean_is_not_checked(self):
+        item = {"type": "to_do", "to_do": {"rich_text": [{"plain_text": "Open"}], "checked": "true"}}
+
+        self.assertEqual(self.over_api(item), [block("list", "Open", False)])
+
+    def test_connector_upper_case_mark_is_checked(self):
+        self.assertEqual(relay_blocks("- [X] Done"), [block("list", "Done", True)])
+
+    def test_connector_star_marker_to_do_is_read(self):
+        self.assertEqual(relay_blocks("* [x] Done\n* [ ] Open"), [block("list", "Done", True), block("list", "Open", False)])
+
+    def test_connector_to_do_loses_its_trailing_attributes(self):
+        self.assertEqual(relay_blocks('- [x] Done {color="blue"}'), [block("list", "Done", True)])
+
+    def test_connector_bullet_that_looks_like_a_mark_without_a_space_is_a_plain_item(self):
+        self.assertEqual(relay_blocks("- [x]Done"), [block("list", "[x]Done", None)])
+
+    def test_connector_empty_to_do_is_read(self):
+        self.assertEqual(relay_blocks("- [ ] "), [block("list", "", False)])
 
 
 class RelayMutesTest(unittest.TestCase):

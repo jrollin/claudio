@@ -20,6 +20,10 @@ LOOKBACK_CAP = 31
 TREND_MIN = 7
 TREND_CAP = 31
 FIRST_READ_CAP = 31
+ENGINES = ("watch", "tribe")
+DEFAULT_ENGINE = ENGINES[0]
+TRIBE_ENGINE = ENGINES[1]
+PAGE_FROM_STATE = ("previous_page",)
 TREND_AGGREGATORS = ("max", "min", "sum", "avg", "last")
 COLLECTION_SCHEMA = 1
 FNV_OFFSET = 2166136261
@@ -29,6 +33,12 @@ ENV_VAR = re.compile(r"[A-Z][A-Z0-9_]*")
 REPO_SEGMENT = r"[A-Za-z0-9_.-]*[A-Za-z0-9_-][A-Za-z0-9_.-]*"
 REPO = re.compile(REPO_SEGMENT + "/" + REPO_SEGMENT)
 PAGE_ID = re.compile(r"[A-Za-z0-9-]+")
+KEY_PATH_TEXT = re.compile(r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*")
+PLACEHOLDER = re.compile(r"\{\{([^{}]*)\}\}")
+CALL_VALUES = ("parent", "title", "content", "week", "week_start", "date")
+PUBLISH_VALUES = {"create": CALL_VALUES, "poll": (*CALL_VALUES, "task"), "heading": CALL_VALUES}
+LINK_VALUES = ("id",)
+TITLE_VALUES = ("date",)
 DIGITS = re.compile(r"[0-9]+")
 DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 UTC_Z = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z")
@@ -106,7 +116,11 @@ API = {
 }
 ROLE_OPTIONS = {
     "observability": {"kind": Choice(KINDS), "scope_filter": STRING, "discovery_query": Omittable(STRING)},
-    "document_store": {"page_id": Omittable(PAGE_ID_TEXT), "pages": Omittable(ListOf(PAGE_ID_TEXT, non_empty=True))},
+    "document_store": {
+        "page_id": Omittable(PAGE_ID_TEXT),
+        "pages": Omittable(ListOf(PAGE_ID_TEXT, non_empty=True)),
+        "page_from_state": Omittable(Choice(PAGE_FROM_STATE)),
+    },
     "chat": {"channels": ListOf(TEXT, non_empty=True)},
     "code_host": {
         "repos": ListOf(Rule(_matches(REPO), "must be an owner/name repository"), non_empty=True),
@@ -122,6 +136,7 @@ ROLE_OPTIONS = {
 FIRST_READ_DAYS = Omittable(
     Rule(lambda value: is_integer(value) and 1 <= value <= FIRST_READ_CAP, f"must be an integer from 1 to {FIRST_READ_CAP}")
 )
+ENGINE = Omittable(Choice(ENGINES))
 RULE = Rule(
     lambda value: isinstance(value, str) and value.strip() != "" and len(value) <= RULE_CAP,
     f"must be non-blank text of at most {RULE_CAP} characters",
@@ -130,6 +145,28 @@ LABEL = Rule(
     lambda value: is_label(value) and value != "",
     f"must be a non-empty string of at most {LABEL_CAP} characters without control characters",
 )
+KEY_PATH = Rule(_matches(KEY_PATH_TEXT), "must be a dotted path of object keys")
+PAGE_LINK = Rule(
+    lambda value: isinstance(value, str) and "{{id}}" in value, "must be a string holding the placeholder {{id}}"
+)
+PAGE_VALUES = {"how_built": ListOf(STRING), "key_callout": ListOf(STRING), "state_path": TEXT, "link": PAGE_LINK, "title": LABEL}
+PUBLISH_CALL = {"tool": TEXT, "arguments": MapOf(ANY)}
+PUBLISH = {
+    "provider": TEXT,
+    "week_start_format": Omittable(TEXT),
+    "parent": PAGE_ID_TEXT,
+    "create": PUBLISH_CALL,
+    "poll": PUBLISH_CALL,
+    "heading": PUBLISH_CALL,
+    "results": {
+        "task": KEY_PATH,
+        "status": KEY_PATH,
+        "page": KEY_PATH,
+        "heading": KEY_PATH,
+        "done": ListOf(TEXT, non_empty=True),
+        "failed": ListOf(TEXT, non_empty=True),
+    },
+}
 MONITOR_ID = Rule(_matches(re.compile(r"[0-9]+")), "must be a monitor id of digits only")
 ENTRY = {
     "key": TEXT,
@@ -214,7 +251,14 @@ ROLE_SCHEMAS = {
                     "title": STRING,
                     "last_edited": UTC_TIME,
                     "link": STRING,
-                    "blocks": ListOf({"type": Choice(BLOCK_TYPES), "text": STRING, "rows": Nullable(ListOf(ListOf(STRING)))}),
+                    "blocks": ListOf(
+                        {
+                            "type": Choice(BLOCK_TYPES),
+                            "text": STRING,
+                            "rows": Nullable(ListOf(ListOf(STRING))),
+                            "checked": Omittable(Nullable(BOOLEAN)),
+                        }
+                    ),
                 }
             )
         },
@@ -325,6 +369,29 @@ def _conform_fields(value, spec, path, error, exact):
         raise error(f"{join(path, unexpected[0])}: unexpected key")
 
 
+def check_placeholders(value, names, path):
+    if isinstance(value, str):
+        for name in PLACEHOLDER.findall(value):
+            if name not in names:
+                raise ConfigError(f"{path}: unknown placeholder {{{{{name}}}}}, expected one of " + ", ".join(names))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            check_placeholders(item, names, f"{path}[{index}]")
+    elif isinstance(value, dict):
+        for key in sorted(value):
+            check_placeholders(value[key], names, join(path, key))
+
+
+def _validate_publication(chosen, routine_path, providers):
+    _conform(chosen, {"page": PAGE_VALUES, "publish": PUBLISH}, routine_path, ConfigError, exact=False)
+    check_placeholders(chosen["page"]["link"], LINK_VALUES, f"{routine_path}.page.link")
+    check_placeholders(chosen["page"]["title"], TITLE_VALUES, f"{routine_path}.page.title")
+    for call, names in PUBLISH_VALUES.items():
+        check_placeholders(chosen["publish"][call]["arguments"], names, f"{routine_path}.publish.{call}.arguments")
+    if chosen["publish"]["provider"] not in providers:
+        raise ConfigError(f"{routine_path}.publish.provider: names no entry of providers")
+
+
 def _config_field(mapping, path, key, spec):
     _conform_fields(mapping, {key: spec}, path, ConfigError, exact=False)
     return mapping[key]
@@ -341,16 +408,18 @@ def validate_config(config, routine, place, role_of=None):
     routines = _config_field(config, "", "routines", {})
     routine_path = f"routines.{routine}"
     chosen = _config_field(routines, "routines", routine, {})
-    _conform(chosen, {"first_read_days": FIRST_READ_DAYS}, routine_path, ConfigError, exact=False)
+    _conform(chosen, {"first_read_days": FIRST_READ_DAYS, "engine": ENGINE}, routine_path, ConfigError, exact=False)
     sources = _config_field(chosen, routine_path, "sources", MapOf({}, non_empty=True))
     for name in sorted(sources):
         if SOURCE_NAME.fullmatch(name) is None:
             raise ConfigError(f"{routine_path}.sources.{name}: the source name must match ^[a-z][a-z0-9-]*$")
     for name in sorted(sources):
-        _validate_source(sources[name], f"{routine_path}.sources.{name}", providers, place, role_of)
+        _validate_source(sources[name], f"{routine_path}.sources.{name}", providers, place, role_of, chosen.get("engine", DEFAULT_ENGINE))
+    if chosen.get("engine") == TRIBE_ENGINE:
+        _validate_publication(chosen, routine_path, providers)
 
 
-def _validate_source(source, path, providers, place, role_of):
+def _validate_source(source, path, providers, place, role_of, engine):
     _conform(source, SOURCE, path, ConfigError, exact=False)
     name = source["provider"]
     if name not in providers:
@@ -372,8 +441,15 @@ def _validate_source(source, path, providers, place, role_of):
     _conform(source, ROLE_OPTIONS[role], path, ConfigError, exact=False)
     if role == "observability" and source["kind"] != "monitors" and "discovery_query" in source:
         raise ConfigError(f"{path}.discovery_query: only a monitors source takes a discovery query")
-    if role == "document_store" and ("page_id" in source) == ("pages" in source):
-        raise ConfigError(f"{path}: a document store source sets exactly one of page_id and pages")
+    if role == "document_store":
+        _validate_page_options(source, path, engine)
+
+
+def _validate_page_options(source, path, engine):
+    if sum(option in source for option in ("page_id", "pages", "page_from_state")) != 1:
+        raise ConfigError(f"{path}: a document store source sets exactly one of page_id, pages and page_from_state")
+    if "page_from_state" in source and engine != TRIBE_ENGINE:
+        raise ConfigError(f"{path}.page_from_state: only a routine with the {TRIBE_ENGINE} engine keeps a previous page")
 
 
 def validate_pack(pack, sources, routine=None, *, rules):
@@ -498,10 +574,11 @@ def _validate_discovery(discovery, read):
 def _validate_blocks(pages):
     for page_index, page in enumerate(pages):
         for block_index, block in enumerate(page["blocks"]):
+            where = f"records.pages[{page_index}].blocks[{block_index}]"
             if (block["type"] == "table") != (block["rows"] is not None):
-                raise ValueError(
-                    f"records.pages[{page_index}].blocks[{block_index}].rows: must be a list for a table block, null otherwise"
-                )
+                raise ValueError(f"{where}.rows: must be a list for a table block, null otherwise")
+            if block.get("checked") is not None and block["type"] != "list":
+                raise ValueError(f"{where}.checked: must be null unless the block is a list")
 
 
 def _validate_unread_records(records):

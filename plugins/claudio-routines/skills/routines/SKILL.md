@@ -1,6 +1,6 @@
 ---
 name: routines
-description: Manage claude.ai routines (scheduled cloud agents) as code. Export the live routines into a private repository, render their prompts from templates, show drift between git and live, lint templates, push a rendered prompt after an explicit approval, and run a routine locally in this session. Use for "/routines", "export my routines", "is my routine in sync", "diff routines", "sync the routine", "push the routine prompt", "render the routine", "lint routine templates", "print the environment setup script", "run prod watch locally", "run the routine here". NOT for creating or deleting routines, and NOT for reading a routine's run logs.
+description: Manage claude.ai routines (scheduled cloud agents) as code. Export the live routines into a private repository, render their prompts from templates, show drift between git and live, lint templates, push a rendered prompt after an explicit approval, seed a tribe routine's state from its previous digest pages, and run a routine locally in this session. Use for "/routines", "export my routines", "is my routine in sync", "diff routines", "sync the routine", "push the routine prompt", "seed the tribe state", "render the routine", "lint routine templates", "print the environment setup script", "run prod watch locally", "run the routine here". NOT for creating or deleting routines, and NOT for reading a routine's run logs.
 ---
 
 # Routines
@@ -15,6 +15,7 @@ Git is the source of truth for routine prompts. The real templates and values li
 /claudio-routines:routines sync <slug>
 /claudio-routines:routines setup-script [--place cloud|local]
 /claudio-routines:routines run <slug> [--since T] [--post]
+/claudio-routines:routines seed <slug>
 ```
 
 `R` below is `python3 ${CLAUDE_PLUGIN_ROOT}/skills/routines/scripts/routines.py`.
@@ -54,10 +55,14 @@ Run `R render <slug> [--place cloud|local] [--post]`.
 ## Lint
 
 - Public skeletons: `R lint --public`.
-  - It checks every `state.py`, `collect.py`, `evaluate.py` and `digest.py` command and flag against this checkout's runtime.
+  - It checks every `state.py`, `collect.py`, `evaluate.py`, `digest.py` and `tribe.py` command and flag against this checkout's runtime.
   - It fails a provider name (`provider-name`: a module name under `runtime/providers/`) in the skeletons, the plugin README and this file.
-- Private templates: `R lint --private <path> [--claudio <checkout>]`. It checks every `state.py`, `collect.py`, `evaluate.py` and `digest.py` command and flag against the runtime at the pinned tag, so the tag must exist in a local claudio checkout. Pass `--claudio` when the plugin runs from the plugin cache.
+- Private templates: `R lint --private <path> [--claudio <checkout>]`. It checks every `state.py`, `collect.py`, `evaluate.py`, `digest.py` and `tribe.py` command and flag against the runtime at the pinned tag, so the tag must exist in a local claudio checkout. Pass `--claudio` when the plugin runs from the plugin cache.
 - Each finding prints `path:line:rule`.
+- `lint --private` also checks `.claude/settings.json` of the private repository, the file the cloud session reads. It reports at line 1 of that file:
+  - `settings-missing`: the file does not exist.
+  - `settings-invalid`: the file is not a JSON object.
+  - `deny-missing:<entry>`: `permissions.deny` lacks `<entry>`, one finding for each of `PushNotification`, `Bash(sleep *)` and `Monitor`.
 - `marker`: the first line is an HTML comment holding `not runnable` but is not exactly `<!-- not runnable -->`, so the template would stay runnable. Both lints report it at line 1.
 - `lint --private` also prints warnings on stderr, naming keys and never values. They leave the exit code unchanged:
   - `literal-value`: a template holds the value of a routine key as literal text. Use the placeholder.
@@ -107,6 +112,41 @@ Runs one routine in this session for the local place, with the same template, st
 5. Follow the rendered prompt in this session, step by step. With `--since T`, give it `T` as the run's start time, in UTC (`YYYY-MM-DDTHH:MM:SSZ`).
 
 Never post to the chat channel without `--post`: the rendered prompt then prints the digest in this session.
+
+## Seed
+
+Seeds the state of a routine whose engine is `tribe` from its previous digest pages, so the first runtime run continues their keys. The seeded state stays in a scratch directory until the owner approves it. Never push the state without the owner's explicit approval of the summary shown in this session.
+
+`<private>` below is the private repository path of the Preconditions.
+
+1. Run `R check-private`. On exit 2, stop and show its message.
+2. Ask the owner for the previous digest pages of the routine, newest first, as page ids or links. Make a directory `<dir>` with `mktemp -d`, outside any repository, and fetch each page with the document store connector.
+   - When the result says it was saved to a file, copy that file to `<dir>/page-<n>.json`. Otherwise write the full result, first line included, to that path. `<n>` counts from 1, newest first.
+3. Run `R seed <slug> --page <dir>/page-1.json [--page <dir>/page-2.json ...] --out <dir>/state.json`, the pages newest first. It runs the seed command of the runtime checked out at `runtime.sha` in `places.local.runtime_dir`, so the state matches the version that reads it.
+   - The runtime directory is missing, at another commit or not clean: tell the owner to run `R setup-script --place local` and run its output, then stop.
+   - Exit 2 or 3 stops the seed with its message and nothing written: the routine's engine is not `tribe`, the config is invalid, no page holds a valid run state (each page read is named), or a run state holds a field outside the allowed values, a warning `status` excepted (its key path is named).
+   - A page without a valid run state is named on stderr with its reason and skipped; the next page seeds the state.
+   - A warning `status` other than `open`, `in progress`, `mitigated`, `decided` or `dropped` is read as the one it starts with, else as `open`. Each reading is printed on stderr: show those lines with the summary of step 5.
+4. Run `git -C <private> fetch origin +claude/state:refs/remotes/origin/claude/state`, then `git -C <private> cat-file -e origin/claude/state:state/<slug>.json`.
+   - The fetch fails or finds no `claude/state` branch: stop the seed with nothing pushed, and tell the owner the branch does not exist.
+   - `cat-file` exits 0: the push replaces the stored state of the routine. Say so.
+5. Show the summary printed by step 3 and where the state goes, `state/<slug>.json` on `claude/state`. Ask the owner to approve the push for this routine. Wait for an explicit approval. Anything else ends the seed with nothing pushed.
+6. After the approval, save the state with a fast-forward push through a work tree under `<dir>`, `git -C <dir>/store push origin HEAD:refs/heads/claude/state`, as one command:
+
+   ```bash
+   git -C <private> worktree add --detach <dir>/store origin/claude/state && \
+     mkdir -p <dir>/store/state && \
+     cp <dir>/state.json <dir>/store/state/<slug>.json && \
+     git -C <dir>/store add state && \
+     git -C <dir>/store commit -q -m "seed <slug>" && \
+     git -C <dir>/store push origin HEAD:refs/heads/claude/state
+   ```
+
+   - A rejected push means the branch moved: report that the state is not saved and run Seed again. Never force the push.
+   - Whatever the command exited with, run `git -C <private> worktree remove --force <dir>/store`.
+7. Run the fetch of step 4 again, then `git -C <private> show origin/claude/state:state/<slug>.json | cmp - <dir>/state.json`.
+   - Exit 0: report the routine seeded.
+   - Exit 1: report the state not saved.
 
 ## After any command
 

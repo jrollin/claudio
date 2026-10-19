@@ -1,0 +1,18 @@
+{
+  "how_built": [
+    "- Format, key and rules: the digest template of the routine.",
+    "- Sources: the routine's source list, read through the collectors."
+  ],
+  "key_callout": [
+    "How to read the warnings",
+    "- Severity is how bad it is if it happens: High, Medium or Low.",
+    "- When is how soon it binds:",
+    "\t- 🔴 now: at or above a limit today.",
+    "\t- 🟠 within months: reaches a limit at the current trend.",
+    "\t- 🟡 watch: moving the wrong way, no limit in sight yet.",
+    "- Status sits under each warning name."
+  ],
+  "state_path": "state/sample.json on the claude/state branch",
+  "link": "https://example.test/pages/{{id}}",
+  "title": "Sample digest : {{date}}"
+}

@@ -824,6 +824,291 @@ class TransportEqualityTest(unittest.TestCase):
         self.assertEqual(state.dump(relay(responses, source=one_channel())), state.dump(over_api))
 
 
+CITED_ROOT = "1759990000.000100"
+GONE_ROOT = "1759980000.000100"
+OLD_REPLY = "1759995000.000500"
+FIRST_REPLY = "1760003000.000300"
+SECOND_REPLY = "1760004000.000400"
+CITED_MESSAGES = [
+    message("CHAN1", FIRST_REPLY, "U2", "Agreed", CITED_ROOT),
+    message("CHAN1", SECOND_REPLY, "U1", "Shipped", CITED_ROOT),
+]
+CITED_CURSOR = {"ts": {"CHAN1": WINDOW_END_CURSOR, "CHAN9": "1759000000.000900"}}
+CITED_REPLIES = (
+    ("U2", OLD_REPLY, "Earlier"),
+    ("U2", FIRST_REPLY, "Agreed"),
+    ("U1", SECOND_REPLY, "Shipped"),
+    ("U1", LATER_THAN_WINDOW_END, "Next week"),
+)
+
+
+def cited_source(*roots, channel="CHAN1", source=None):
+    return {**(source or one_channel()), "threads": [{"channel": channel, "root_ts": root} for root in roots]}
+
+
+def cited_api_thread(root=CITED_ROOT, replies=CITED_REPLIES, more=None):
+    items = [reply_item(ts, text, user, root) for user, ts, text in replies]
+    return history(root_item(root, len(items)), *items, more=more)
+
+
+def cited_relay_thread(root=CITED_ROOT, replies=CITED_REPLIES, pagination=NO_MORE):
+    blocks = [thread_reply(user, ts, text, index=number, total=len(replies)) for number, (user, ts, text) in enumerate(replies, 1)]
+    return thread_page(*blocks, root=root, total=len(replies), pagination=pagination)
+
+
+def api_cited(*outcomes, source=None):
+    return run(history(), *outcomes, source=source or cited_source(CITED_ROOT))
+
+
+def relay_cited(*pages, source=None):
+    responses = {f"team-chat-{number}": page for number, page in enumerate([relay_page("CHAN1"), *pages], 1)}
+    return relay(responses, source=source or cited_source(CITED_ROOT))
+
+
+class CitedThreadFetchTest(unittest.TestCase):
+    def test_reads_only_the_replies_newer_than_the_previous_window_end(self):
+        _, result = api_cited(cited_api_thread())
+
+        self.assertEqual(result["records"]["messages"], CITED_MESSAGES)
+
+    def test_asks_for_the_replies_after_the_previous_window_end_exclusively(self):
+        opener, _ = api_cited(cited_api_thread())
+
+        self.assertEqual(
+            query(requests_to(opener, REPLIES_PATH)[0]),
+            {"channel": ["CHAN1"], "ts": [CITED_ROOT], "oldest": ["1760000000"], "latest": ["1760010800"], "limit": ["200"]},
+        )
+
+    def test_reads_the_cited_thread_after_the_history_of_its_channel(self):
+        opener, _ = api_cited(cited_api_thread())
+
+        self.assertEqual([urllib.parse.urlsplit(request.full_url).path for request in opener.requests], [HISTORY_PATH, REPLIES_PATH])
+
+    def test_follows_the_next_cursor_of_a_cited_thread(self):
+        opener, result = api_cited(cited_api_thread(replies=CITED_REPLIES[:2], more="cursor-cited-2"), cited_api_thread(replies=CITED_REPLIES[2:]))
+
+        self.assertEqual((query(requests_to(opener, REPLIES_PATH)[1])["cursor"], result["records"]["messages"]), (["cursor-cited-2"], CITED_MESSAGES))
+
+    def test_reads_a_cited_thread_whose_root_lies_in_the_history_once(self):
+        source = cited_source(ROOT_TS)
+        opener, result = run(history(root_item()), history(root_item(), reply_item("1760002300.000230")), source=source)
+
+        self.assertEqual((len(requests_to(opener, REPLIES_PATH)), len(result["records"]["messages"])), (1, 2))
+
+    def test_reads_a_thread_cited_twice_once(self):
+        opener, _ = api_cited(cited_api_thread(), source=cited_source(CITED_ROOT, CITED_ROOT))
+
+        self.assertEqual(len(requests_to(opener, REPLIES_PATH)), 1)
+
+    def test_replies_of_a_cited_thread_do_not_move_the_cursor(self):
+        _, result = run(history(), cited_api_thread(), source=cited_source(CITED_ROOT))
+
+        self.assertEqual(result["cursor"], CITED_CURSOR)
+
+    def test_cited_thread_with_no_new_reply_adds_no_record(self):
+        _, result = api_cited(cited_api_thread(replies=CITED_REPLIES[:1]))
+
+        self.assertEqual((result["records"]["messages"], result["entries"]), ([], {}))
+
+    def test_cited_thread_not_found_is_a_failed_entry_keyed_by_channel_and_root(self):
+        _, result = api_cited(body({"ok": False, "error": "thread_not_found"}))
+
+        self.assertEqual((result["records"]["messages"], result["entries"]), ([], {f"CHAN1:{CITED_ROOT}": failed("thread_not_found")}))
+
+    def test_deleted_thread_does_not_stop_the_threads_read_after_it(self):
+        source = cited_source(GONE_ROOT, CITED_ROOT)
+
+        _, result = api_cited(body({"ok": False, "error": "thread_not_found"}), cited_api_thread(), source=source)
+
+        self.assertEqual((result["records"]["messages"], result["entries"]), (CITED_MESSAGES, {f"CHAN1:{GONE_ROOT}": failed("thread_not_found")}))
+
+    def test_channel_error_on_a_cited_thread_is_a_failed_entry_of_that_thread(self):
+        _, result = api_cited(body({"ok": False, "error": "is_archived"}))
+
+        self.assertEqual(result["entries"], {f"CHAN1:{CITED_ROOT}": failed("is_archived")})
+
+    def test_other_error_on_a_cited_thread_fails_the_source(self):
+        with self.assertRaises(_http.SourceUnreadable) as caught:
+            api_cited(body({"ok": False, "error": "ratelimited"}))
+
+        self.assertEqual(str(caught.exception), "CHAN1: ratelimited")
+
+    def test_cited_thread_of_a_failed_channel_is_not_read(self):
+        opener, result = run(ok("error_not_in_channel.json"), source=cited_source(CITED_ROOT))
+
+        self.assertEqual((len(opener.requests), result["entries"]), (1, {"CHAN1": failed("not_in_channel")}))
+
+    def test_cited_thread_of_a_channel_outside_the_source_is_a_failed_entry_without_a_call(self):
+        opener, result = run(history(), source=cited_source(CITED_ROOT, channel="CHAN7"))
+
+        self.assertEqual((len(opener.requests), result["entries"]), (1, {f"CHAN7:{CITED_ROOT}": failed("channel not listed")}))
+
+    def test_cited_thread_with_an_invalid_root_ts_is_a_failed_entry_without_a_call(self):
+        opener, result = run(history(), source=cited_source("not-a-ts"))
+
+        self.assertEqual((len(opener.requests), result["entries"]), (1, {"CHAN1:not-a-ts": failed("invalid root ts")}))
+
+    def test_cited_thread_with_a_root_ts_over_the_bounds_is_a_failed_entry_without_a_call(self):
+        root = "1" * 17 + ".000100"
+
+        opener, result = run(history(), source=cited_source(root))
+
+        self.assertEqual((len(opener.requests), result["entries"]), (1, {f"CHAN1:{root}": failed("invalid root ts")}))
+
+    def test_invalid_root_ts_is_capped_in_the_entry_key(self):
+        _, result = run(history(), source=cited_source("1" * 200 + ".1"))
+
+        self.assertEqual(list(result["entries"]), ["CHAN1:" + "1" * slack.KEY_PART_CAP])
+
+    def test_invalid_root_ts_blanks_control_characters_in_the_entry_key(self):
+        _, result = run(history(), source=cited_source("12\n34\x00"))
+
+        self.assertEqual(list(result["entries"]), ["CHAN1:12 34 "])
+
+    def test_channel_outside_the_source_blanks_control_characters_in_the_entry_key(self):
+        _, result = run(history(), source=cited_source(CITED_ROOT, channel="CH\nAN7"))
+
+        self.assertEqual(list(result["entries"]), [f"CH AN7:{CITED_ROOT}"])
+
+    def test_collection_with_a_failed_thread_entry_passes_the_role_schema(self):
+        _, result = api_cited(body({"ok": False, "error": "thread_not_found"}))
+
+        self.assertIsNone(roles.validate_collection(collection(result)))
+
+    def test_cited_threads_share_the_call_budget_with_the_history(self):
+        opener = FakeOpener([history(), *(cited_api_thread() for _ in range(60))])
+        source = cited_source(*(f"{1759900000 + 100 * n}.000100" for n in range(60)))
+
+        with self.assertRaises(_http.PartialRead) as caught:
+            slack.fetch(source, WINDOW, STORED, [], client(opener))
+
+        self.assertEqual((len(opener.requests), str(caught.exception)), (50, "partial: call cap"))
+
+
+class CitedThreadRelayTest(unittest.TestCase):
+    def test_reads_only_the_replies_newer_than_the_previous_window_end(self):
+        result = relay_cited(cited_relay_thread())
+
+        self.assertEqual(result["records"]["messages"], CITED_MESSAGES)
+
+    def test_plan_reads_the_cited_thread_after_its_channel(self):
+        step = slack.plan(cited_source(CITED_ROOT), WINDOW, STORED, [], {"team-chat-1": relay_page("CHAN1")}, CONNECTOR)
+
+        self.assertEqual(step, {"done": False, "partial": None, "calls": [thread_call("team-chat-2", "CHAN1", CITED_ROOT)]})
+
+    def test_plan_of_a_complete_read_with_a_cited_thread_is_done(self):
+        responses = {"team-chat-1": relay_page("CHAN1"), "team-chat-2": cited_relay_thread()}
+
+        self.assertEqual(slack.plan(cited_source(CITED_ROOT), WINDOW, STORED, [], responses, CONNECTOR), {"done": True, "partial": None, "calls": []})
+
+    def test_plan_asks_the_next_page_while_every_reply_is_newer_than_the_previous_window_end(self):
+        newest = cited_relay_thread(replies=CITED_REPLIES[1:3], pagination=THREAD_MORE.format(THREAD_CURSOR))
+        responses = {"team-chat-1": relay_page("CHAN1"), "team-chat-2": newest}
+
+        step = slack.plan(cited_source(CITED_ROOT), WINDOW, STORED, [], responses, CONNECTOR)
+
+        self.assertEqual(step["calls"], [thread_call("team-chat-3", "CHAN1", CITED_ROOT, THREAD_CURSOR)])
+
+    def test_stops_at_the_page_that_reaches_the_previous_window_end(self):
+        newest = cited_relay_thread(replies=CITED_REPLIES[1:3], pagination=THREAD_MORE.format(THREAD_CURSOR))
+        older = cited_relay_thread(replies=CITED_REPLIES[:1], pagination=THREAD_MORE.format("older-cursor"))
+        responses = {"team-chat-1": relay_page("CHAN1"), "team-chat-2": newest, "team-chat-3": older}
+
+        step = slack.plan(cited_source(CITED_ROOT), WINDOW, STORED, [], responses, CONNECTOR)
+
+        self.assertEqual((step["done"], relay(responses, source=cited_source(CITED_ROOT))["records"]["messages"]), (True, CITED_MESSAGES))
+
+    def test_thread_not_found_is_a_failed_entry_keyed_by_channel_and_root(self):
+        result = relay_cited(error_body("thread_not_found"))
+
+        self.assertEqual((result["records"]["messages"], result["entries"]), ([], {f"CHAN1:{CITED_ROOT}": failed("thread_not_found")}))
+
+    def test_thread_not_found_in_a_text_that_is_not_json_is_a_failed_entry(self):
+        result = relay_cited("Error: thread_not_found")
+
+        self.assertEqual(result["entries"], {f"CHAN1:{CITED_ROOT}": failed("thread_not_found")})
+
+    def test_deleted_thread_does_not_stop_the_threads_read_after_it(self):
+        result = relay_cited(error_body("thread_not_found"), cited_relay_thread(), source=cited_source(GONE_ROOT, CITED_ROOT))
+
+        self.assertEqual((result["records"]["messages"], result["entries"]), (CITED_MESSAGES, {f"CHAN1:{GONE_ROOT}": failed("thread_not_found")}))
+
+    def test_channel_error_on_a_cited_thread_is_a_failed_entry_of_that_thread(self):
+        result = relay_cited(error_body("is_archived"))
+
+        self.assertEqual(result["entries"], {f"CHAN1:{CITED_ROOT}": failed("is_archived")})
+
+    def test_reply_quoting_the_not_found_code_is_a_reply_not_a_failure(self):
+        replies = (("U2", FIRST_REPLY, "the api said thread_not_found"),)
+
+        result = relay_cited(cited_relay_thread(replies=replies))
+
+        self.assertEqual((result["records"]["messages"][0]["text"], result["entries"]), ("the api said thread_not_found", {}))
+
+    def test_other_error_code_on_a_cited_thread_fails_the_source(self):
+        with self.assertRaises(_http.SourceUnreadable):
+            relay_cited(error_body("ratelimited"))
+
+    def test_cited_thread_of_a_failed_channel_is_not_read(self):
+        responses = {"team-chat-1": error_body("not_in_channel")}
+
+        step = slack.plan(cited_source(CITED_ROOT), WINDOW, STORED, [], responses, CONNECTOR)
+
+        self.assertEqual((step["done"], relay(responses, source=cited_source(CITED_ROOT))["entries"]), (True, {"CHAN1": failed("not_in_channel")}))
+
+    def test_cited_thread_of_a_channel_outside_the_source_is_a_failed_entry_without_a_call(self):
+        responses = {"team-chat-1": relay_page("CHAN1")}
+        source = cited_source(CITED_ROOT, channel="CHAN7")
+
+        self.assertEqual((slack.plan(source, WINDOW, STORED, [], responses, CONNECTOR)["done"], relay(responses, source=source)["entries"]), (True, {f"CHAN7:{CITED_ROOT}": failed("channel not listed")}))
+
+    def test_cited_thread_with_an_invalid_root_ts_is_a_failed_entry_without_a_call(self):
+        responses = {"team-chat-1": relay_page("CHAN1")}
+        source = cited_source("not-a-ts")
+
+        self.assertEqual((slack.plan(source, WINDOW, STORED, [], responses, CONNECTOR)["done"], relay(responses, source=source)["entries"]), (True, {"CHAN1:not-a-ts": failed("invalid root ts")}))
+
+    def test_cited_thread_with_its_root_in_the_history_is_read_once(self):
+        responses = {"team-chat-1": root_page(), "team-chat-2": thread_page(thread_reply("U2", "1760002300.000230", "Thanks"))}
+
+        step = slack.plan(cited_source(ROOT_TS), WINDOW, STORED, [], responses, CONNECTOR)
+
+        self.assertEqual(step["done"], True)
+
+
+class CitedThreadTransportEqualityTest(unittest.TestCase):
+    def test_both_transports_give_the_same_records_cursor_and_entries(self):
+        _, over_api = api_cited(cited_api_thread())
+
+        self.assertEqual(state.dump(relay_cited(cited_relay_thread())), state.dump(over_api))
+
+    def test_both_transports_give_a_deleted_thread_next_to_a_read_one_the_same(self):
+        source = cited_source(GONE_ROOT, CITED_ROOT)
+        _, over_api = api_cited(body({"ok": False, "error": "thread_not_found"}), cited_api_thread(), source=source)
+
+        over_relay = relay_cited(error_body("thread_not_found"), cited_relay_thread(), source=source)
+
+        self.assertEqual(state.dump(over_relay), state.dump(over_api))
+
+    def test_both_transports_give_several_thread_pages_the_same_with_the_early_stop(self):
+        newest = (CITED_REPLIES[2],)
+        oldest = CITED_REPLIES[:2]
+        _, over_api = api_cited(cited_api_thread(replies=CITED_REPLIES[1:2], more="cursor-cited-2"), cited_api_thread(replies=newest))
+        responses = {
+            "team-chat-1": relay_page("CHAN1"),
+            "team-chat-2": cited_relay_thread(replies=newest, pagination=THREAD_MORE.format(THREAD_CURSOR)),
+            "team-chat-3": cited_relay_thread(replies=oldest, pagination=THREAD_MORE.format("older-cursor")),
+        }
+
+        self.assertEqual(state.dump(relay(responses, source=cited_source(CITED_ROOT))), state.dump(over_api))
+        self.assertEqual(slack.plan(cited_source(CITED_ROOT), WINDOW, STORED, [], responses, CONNECTOR)["done"], True)
+
+    def test_both_transports_give_the_cited_cursor(self):
+        _, over_api = api_cited(cited_api_thread())
+
+        self.assertEqual((over_api["cursor"], relay_cited(cited_relay_thread())["cursor"]), (CITED_CURSOR, CITED_CURSOR))
+
+
 class CleanTextEqualityTest(unittest.TestCase):
     def test_both_transports_clean_line_breaks_and_trailing_whitespace_the_same(self):
         over_api = api_one({"type": "message", "user": "U1", "text": "one\r\ntwo\rthree  \n", "ts": "1760004000.000400"})
@@ -915,7 +1200,7 @@ class RelayTest(unittest.TestCase):
     def test_empty_window_gets_the_window_end_as_cursor(self):
         result = relay({"team-chat-1": saved("read_empty.json")}, source=one_channel())
 
-        self.assertEqual(result["cursor"], {"ts": {"CHAN1": WINDOW_END_CURSOR, "CHAN9": "1759000000.000900"}})
+        self.assertEqual(result["cursor"], CITED_CURSOR)
 
     def test_message_at_the_stored_ts_is_not_read_again(self):
         result = relay_one(relay_message("U1", "1760004000.000400", "new"), relay_message("U1", "1760000500.000050", "seen"))
@@ -925,7 +1210,7 @@ class RelayTest(unittest.TestCase):
     def test_page_without_messages_gets_the_window_end_as_cursor(self):
         result = relay_one()
 
-        self.assertEqual(result["cursor"], {"ts": {"CHAN1": WINDOW_END_CURSOR, "CHAN9": "1759000000.000900"}})
+        self.assertEqual(result["cursor"], CITED_CURSOR)
 
     def test_link_defaults_to_the_vendor_web_host_without_api_or_links_base(self):
         source = {**one_channel(), "provider_config": {"adapter": "slack", "mcp": {"connectors": {"cloud": CONNECTOR}}}}

@@ -1,3 +1,4 @@
+import argparse
 import contextlib
 import importlib
 import io
@@ -35,7 +36,8 @@ DATA_GUARD = (
 RUN_AT = "20261017T090000Z"
 MARKER = "<!-- not runnable -->"
 MARKED = MARKER + "\nPost to {{chat.channel}}.\n"
-SKELETONS = ("tribe-digest", "chat-recap", "weekly-status")
+SKELETONS = ("chat-recap", "weekly-status")
+DENY = ["PushNotification", "Bash(sleep *)", "Monitor"]
 PINNED_ENGINE = (
     "import argparse\n\nPLACES = ('cloud',)\n\n\n"
     "def build_parser():\n"
@@ -51,6 +53,14 @@ PINNED_COLLECT = (
     "    parser = argparse.ArgumentParser()\n"
     "    commands = parser.add_subparsers(dest='command')\n"
     "    commands.add_parser('sources').add_argument('--place', choices=state.PLACES)\n"
+    "    return parser\n"
+)
+PINNED_TRIBE = (
+    "import argparse\n\n\n"
+    "def build_parser():\n"
+    "    parser = argparse.ArgumentParser()\n"
+    "    commands = parser.add_subparsers(dest='command')\n"
+    "    commands.add_parser('seed').add_argument('--page')\n"
     "    return parser\n"
 )
 PINNED_EVALUATE = (
@@ -189,6 +199,17 @@ def tree(directory):
     }
 
 
+def runtime_files():
+    files = {}
+    for root, directories, names in os.walk(routines.RUNTIME_PATH):
+        directories[:] = [name for name in directories if name not in ("__pycache__", "fixtures")]
+        for name in names:
+            if name.endswith(".py") and not name.startswith("test_"):
+                relative = os.path.relpath(os.path.join(root, name), routines.RUNTIME_PATH)
+                files[f"{routines.RUNTIME_IN_REPO}/{relative}"] = read(os.path.join(root, name))
+    return files
+
+
 def runtime_module(name):
     with routines.runtime_imports(routines.RUNTIME_PATH):
         return importlib.import_module(name)
@@ -238,6 +259,12 @@ class Case(unittest.TestCase):
 
     def write_config(self, config):
         write(os.path.join(self.private, "config.json"), json.dumps(config))
+
+    def settings_path(self):
+        return os.path.join(self.private, ".claude", "settings.json")
+
+    def write_settings(self, document=None):
+        write(self.settings_path(), json.dumps({"permissions": {"deny": DENY}} if document is None else document))
 
     def write_routine_file(self, slug, routine):
         write(os.path.join(self.private, "config", "routines", f"{slug}.json"), json.dumps(routine))
@@ -1682,13 +1709,17 @@ class RepeatedValuesTest(unittest.TestCase):
         self.assertEqual(lint.repeated_values({"a": {"flag": True}, "b": {"flag": 1}}), [])
 
 
-class PrivateLintTest(Case):
+class PinnedClaudioCase(Case):
+    with_settings = True
+
     def setUp(self):
         super().setUp()
         self.claudio = make_repo(os.path.join(self.root, "claudio"), {"plugins/claudio-routines/runtime/state.py": PINNED_ENGINE})
         git(self.claudio, "tag", "v0.1.0")
         self.sha = git(self.claudio, "rev-parse", "HEAD")
         self.write_config(make_config(sha=self.sha))
+        if self.with_settings:
+            self.write_settings()
 
     def lint(self):
         return run("lint", "--private", self.private, "--claudio", self.claudio)
@@ -1701,6 +1732,8 @@ class PrivateLintTest(Case):
         git(self.claudio, "tag", "-f", "v0.1.0")
         self.write_config(make_config(sha=git(self.claudio, "rev-parse", "HEAD")))
 
+
+class PrivateLintTest(PinnedClaudioCase):
     def test_marked_template_passes_without_a_warning(self):
         self.write_template("prod-watch", MARKED)
         self.assertEqual(self.lint(), (0, "", ""))
@@ -1959,6 +1992,442 @@ class PrivateLintTest(Case):
         self.assertEqual(self.lint()[2], "")
 
 
+class SettingsLintTest(PinnedClaudioCase):
+    with_settings = False
+
+    def setUp(self):
+        super().setUp()
+        self.write_template("prod-watch", MARKED)
+
+    def finding(self, *rules):
+        return "".join(f"{self.settings_path()}:1:{rule}\n" for rule in rules)
+
+    def denying(self, *entries):
+        self.write_settings({"permissions": {"deny": list(entries)}})
+        return self.lint()[:2]
+
+    def test_all_three_entries_denied_passes(self):
+        self.write_settings()
+        self.assertEqual(self.lint(), (0, "", ""))
+
+    def test_extra_denied_entries_pass(self):
+        self.assertEqual(self.denying(*DENY, "WebFetch"), (0, ""))
+
+    def test_missing_file_is_a_finding_naming_it(self):
+        self.assertEqual(self.lint()[:2], (1, self.finding("settings-missing")))
+
+    def test_file_that_is_not_utf_8_is_invalid(self):
+        os.makedirs(os.path.dirname(self.settings_path()))
+        with open(self.settings_path(), "wb") as handle:
+            handle.write(b'{"permissions": {"deny": ["\xff"]}}')
+        self.assertEqual(self.lint()[:2], (1, self.finding("settings-invalid")))
+
+    def test_invalid_json_is_a_finding_naming_the_file(self):
+        write(self.settings_path(), "{not json")
+        self.assertEqual(self.lint()[:2], (1, self.finding("settings-invalid")))
+
+    def test_json_that_is_not_an_object_is_invalid(self):
+        write(self.settings_path(), "[]")
+        self.assertEqual(self.lint()[:2], (1, self.finding("settings-invalid")))
+
+    def test_missing_push_notification_is_named(self):
+        self.assertEqual(self.denying("Bash(sleep *)", "Monitor"), (1, self.finding("deny-missing:PushNotification")))
+
+    def test_missing_sleep_is_named(self):
+        self.assertEqual(self.denying("PushNotification", "Monitor"), (1, self.finding("deny-missing:Bash(sleep *)")))
+
+    def test_missing_monitor_is_named(self):
+        self.assertEqual(self.denying("PushNotification", "Bash(sleep *)"), (1, self.finding("deny-missing:Monitor")))
+
+    def test_every_missing_entry_is_named_in_one_run(self):
+        self.assertEqual(self.denying("Monitor"), (1, self.finding("deny-missing:Bash(sleep *)", "deny-missing:PushNotification")))
+
+    def test_settings_without_permissions_miss_all_three(self):
+        self.write_settings({"model": "model-test"})
+        self.assertEqual(self.lint()[:2], (1, self.finding(*(f"deny-missing:{entry}" for entry in sorted(DENY)))))
+
+    def test_entries_under_allow_do_not_count(self):
+        self.write_settings({"permissions": {"allow": DENY}})
+        self.assertEqual(self.lint()[:2], (1, self.finding(*(f"deny-missing:{entry}" for entry in sorted(DENY)))))
+
+    def test_deny_that_is_not_a_list_misses_all_three(self):
+        self.write_settings({"permissions": {"deny": "Monitor"}})
+        self.assertEqual(self.lint()[:2], (1, self.finding(*(f"deny-missing:{entry}" for entry in sorted(DENY)))))
+
+    def test_settings_finding_joins_the_template_findings(self):
+        path = self.write_template("prod-watch", "{{chat.channel}}\ndigest.py --summary s\n")
+        self.assertEqual(self.lint()[:2], (1, self.finding("settings-missing") + f"{path}:2:digest-missing\n"))
+
+
+class SeedCase(Case):
+    slug = "tribe-digest"
+
+    def setUp(self):
+        super().setUp()
+        self.support = runtime_module("tribe_support")
+        self.runtime_dir = os.path.join(self.root, "claudio-runtime-local")
+        make_repo(self.runtime_dir, runtime_files())
+        self.write_config(self.config())
+        self.out = os.path.join(self.root, "scratch", "state.json")
+        os.makedirs(os.path.dirname(self.out))
+
+    def config(self):
+        config = self.support.make_config()
+        config["runtime"] = {"repo": "https://example.invalid/claudio.git", "tag": "v0.1.0", "sha": git(self.runtime_dir, "rev-parse", "HEAD")}
+        config["places"] = make_places(local={"runtime_dir": self.runtime_dir})
+        config["routines"][self.slug].update(id="trig_test_a", template="tribe-digest", cron=CRON)
+        return config
+
+    def commit_runtime(self):
+        git(self.runtime_dir, "add", "-A")
+        git(self.runtime_dir, "commit", "-q", "-m", "pin")
+        self.write_config(self.config())
+
+    def pin(self, tribe_text):
+        write(os.path.join(self.runtime_dir, routines.RUNTIME_IN_REPO, "tribe.py"), tribe_text)
+        self.commit_runtime()
+
+    def page(self, name, run_state):
+        path = os.path.join(self.root, name)
+        write(path, json.dumps(self.support.make_page(run_state)))
+        return path
+
+    def valid_page(self, name):
+        return self.page(name, self.support.make_run_state())
+
+    def page_without_run_state(self, name):
+        return self.page(name, None)
+
+    def seed(self, *pages):
+        flags = [flag for page in pages for flag in ("--page", page)]
+        return self.run_private("seed", self.slug, *flags, "--out", self.out)
+
+
+class SeededStateTest(SeedCase):
+    def setUp(self):
+        super().setUp()
+        self.before = tree(self.private)
+        self.code, self.stdout, self.stderr = self.seed(self.valid_page("page.json"))
+
+    def test_exits_0(self):
+        self.assertEqual(self.code, 0)
+
+    def test_writes_the_warnings_of_the_run_state(self):
+        self.assertEqual(sorted(json.loads(read(self.out))["warnings"]), ["disk-usage", "queue-depth"])
+
+    def test_prints_the_seeded_state_summary(self):
+        expected = (
+            f"seeded {self.slug}: state written to {self.out}\n"
+            f"run at {self.support.PREVIOUS}, weekly heading week 2026-W42, "
+            f"previous page {self.support.PAGE_ID} written {self.support.WRITTEN}\n"
+            "warnings: 2\n"
+            "  disk-usage: Low, within months, in progress\n"
+            "  queue-depth: High, now, open\n"
+            "checks: 1\n"
+            "  ask-export: Investigate\n"
+            "cursors: channels, issues, observability, pages\n"
+            "blind spot runs: 0\n"
+        )
+        self.assertEqual(self.stdout, expected)
+
+    def test_prints_nothing_on_stderr(self):
+        self.assertEqual(self.stderr, "")
+
+    def test_writes_nothing_but_the_out_file(self):
+        self.assertEqual(tree(self.private), self.before)
+
+
+class SeededWithoutWarningsTest(SeedCase):
+    def test_summary_counts_zero_warnings_and_lists_none(self):
+        run_state = self.support.make_run_state()
+        run_state["warnings"] = {}
+        stdout = self.seed(self.page("page.json", run_state))[1]
+        self.assertIn("warnings: 0\nchecks: 1\n  ask-export: Investigate\n", stdout)
+
+
+class SkippedPageSeedTest(SeedCase):
+    def setUp(self):
+        super().setUp()
+        self.newer = self.page_without_run_state("newer.json")
+        self.code, _, self.stderr = self.seed(self.newer, self.valid_page("older.json"))
+
+    def test_seeds_from_the_older_page(self):
+        self.assertEqual(self.code, 0)
+
+    def test_names_the_skipped_page(self):
+        self.assertIn(f"skipped page {self.newer}", self.stderr)
+
+
+class Refusal:
+    def arrange(self):
+        pass
+
+    def pages(self):
+        return [self.valid_page("page.json")]
+
+    def cause(self):
+        raise NotImplementedError
+
+    def setUp(self):
+        super().setUp()
+        self.arrange()
+        self.code, self.stdout, self.stderr = self.seed(*self.pages())
+
+    def test_exits_2(self):
+        self.assertEqual(self.code, 2)
+
+    def test_names_the_cause(self):
+        self.assertIn(self.cause(), self.stderr)
+
+    def test_writes_no_state(self):
+        self.assertFalse(os.path.exists(self.out))
+
+
+class NoEngineSeedTest(Refusal, SeedCase):
+    def arrange(self):
+        config = self.config()
+        del config["routines"][self.slug]["engine"]
+        self.write_config(config)
+
+    def cause(self):
+        return f"routine {self.slug} has engine watch: seeding needs engine tribe"
+
+
+class WatchEngineSeedTest(Refusal, SeedCase):
+    def arrange(self):
+        config = self.config()
+        config["routines"][self.slug]["engine"] = "watch"
+        self.write_config(config)
+
+    def cause(self):
+        return f"routine {self.slug} has engine watch: seeding needs engine tribe"
+
+
+class UnknownRoutineSeedTest(Refusal, SeedCase):
+    def arrange(self):
+        self.slug = "other-digest"
+
+    def cause(self):
+        return "routine other-digest is neither"
+
+
+class InvalidSlugSeedTest(Refusal, SeedCase):
+    def arrange(self):
+        self.slug = "Bad_Slug"
+
+    def cause(self):
+        return "routine slug Bad_Slug must match ^[a-z0-9-]+$"
+
+
+class OutInsideWorkTreeSeedTest(Refusal, SeedCase):
+    def arrange(self):
+        self.repository = make_repo(os.path.join(self.root, "repository"), {"a.txt": "x\n"})
+        self.out = os.path.join(self.repository, "state.json")
+
+    def cause(self):
+        return f"--out {self.out} is inside the git work tree {self.repository}"
+
+
+class RuntimeAtAnotherCommitSeedTest(Refusal, SeedCase):
+    def arrange(self):
+        write(os.path.join(self.runtime_dir, "moved.txt"), "x\n")
+        git(self.runtime_dir, "add", "-A")
+        git(self.runtime_dir, "commit", "-q", "-m", "moved")
+
+    def cause(self):
+        return f"{self.runtime_dir} is not a clean checkout of runtime.sha"
+
+
+class RuntimeAdviceSeedTest(Refusal, SeedCase):
+    def arrange(self):
+        write(os.path.join(self.runtime_dir, "extra.txt"), "x\n")
+
+    def cause(self):
+        return "run setup-script --place local and run its output"
+
+
+class UntrackedFileSeedTest(Refusal, SeedCase):
+    def arrange(self):
+        write(os.path.join(self.runtime_dir, "extra.txt"), "x\n")
+
+    def cause(self):
+        return "is not a clean checkout of runtime.sha"
+
+
+class IgnoredFileSeedTest(Refusal, SeedCase):
+    def arrange(self):
+        write(os.path.join(self.runtime_dir, ".gitignore"), "ignored.txt\n")
+        self.commit_runtime()
+        write(os.path.join(self.runtime_dir, "ignored.txt"), "x\n")
+
+    def cause(self):
+        return "is not a clean checkout of runtime.sha"
+
+
+class MissingRuntimeDirSeedTest(Refusal, SeedCase):
+    def arrange(self):
+        shutil.rmtree(self.runtime_dir)
+
+    def cause(self):
+        return "is not a clean checkout of runtime.sha"
+
+
+class NoValidPageSeedTest(Refusal, SeedCase):
+    def pages(self):
+        self.bad_page = self.page_without_run_state("page.json")
+        return [self.bad_page]
+
+    def cause(self):
+        return self.bad_page
+
+
+class PinnedScriptSeedTest(SeedCase):
+    def setUp(self):
+        super().setUp()
+        self.pin("import sys\nsys.stderr.write('pinned tribe\\n')\nsys.exit(3)\n")
+        self.code, self.stdout, self.stderr = self.seed(self.valid_page("page.json"))
+
+    def test_returns_the_exit_code_of_the_pinned_script(self):
+        self.assertEqual(self.code, 3)
+
+    def test_passes_the_stderr_of_the_pinned_script_through(self):
+        self.assertEqual(self.stderr, "pinned tribe\n")
+
+    def test_prints_no_summary(self):
+        self.assertEqual(self.stdout, "")
+
+
+class MalformedStateSeedTest(SeedCase):
+    def seed_writing(self, content):
+        self.pin(f"import sys\nopen(sys.argv[sys.argv.index('--out') + 1], 'w').write({content!r})\n")
+        return self.seed(self.valid_page("page.json"))
+
+    def test_state_without_the_expected_sections_exits_2(self):
+        self.assertEqual(self.seed_writing("{}")[0], 2)
+
+    def test_state_that_is_not_an_object_exits_2(self):
+        self.assertEqual(self.seed_writing("[]")[0], 2)
+
+    def test_names_the_state_file_and_its_shape(self):
+        stderr = self.seed_writing("{}")[2]
+        self.assertEqual(stderr, f"routines.py: seeded state {self.out} has an unexpected shape\n")
+
+    def test_prints_no_summary(self):
+        self.assertEqual(self.seed_writing("{}")[1], "")
+
+
+class SeedArgumentTest(SeedCase):
+    def test_requires_a_page(self):
+        self.assertEqual(self.run_private("seed", self.slug, "--out", self.out)[0], 2)
+
+    def test_requires_an_out_file(self):
+        self.assertEqual(self.run_private("seed", self.slug, "--page", self.valid_page("page.json"))[0], 2)
+
+    def test_unset_private_directory_exits_2(self):
+        code, _, stderr = run("seed", self.slug, "--page", self.valid_page("page.json"), "--out", self.out)
+        self.assertEqual((code, "private directory not set" in stderr), (2, True))
+
+
+class SkillSeedTest(unittest.TestCase):
+    def setUp(self):
+        self.steps = skill_steps("Seed")
+        self.text = read(SKILL)
+        self.section = self.text[self.text.index("## Seed\n"):]
+        self.section = self.section[: self.section.find("\n## ", 1)]
+
+    def seed_step(self):
+        return self.steps[step_index(self.steps, "R seed <slug>")]
+
+    def test_usage_block_lists_the_seed_command(self):
+        self.assertIn("/claudio-routines:routines seed <slug>\n", self.text)
+
+    def test_seed_passes_each_page_with_its_flag(self):
+        self.assertIn("--page <dir>/page-1.json [--page <dir>/page-2.json ...]", self.seed_step())
+
+    def test_seed_orders_the_pages_newest_first(self):
+        self.assertIn("the pages newest first", self.seed_step())
+
+    def test_seed_writes_the_state_to_the_scratch_directory(self):
+        self.assertIn("--out <dir>/state.json", self.seed_step())
+
+    def test_seed_fetches_the_pages_before_it_runs_the_subcommand(self):
+        self.assertLess(step_index(self.steps, "document store connector"), step_index(self.steps, "R seed <slug>"))
+
+    def test_seed_runs_the_runtime_pinned_in_the_local_place(self):
+        self.assertIn("the runtime checked out at `runtime.sha` in `places.local.runtime_dir`", self.seed_step())
+
+    def test_seed_tells_the_owner_to_set_up_the_runtime_on_a_refusal(self):
+        self.assertIn("tell the owner to run `R setup-script --place local` and run its output, then stop", self.section)
+
+    def test_seed_shows_the_summary_before_asking_for_approval(self):
+        self.assertLess(step_index(self.steps, "R seed <slug>"), step_index(self.steps, "explicit approval"))
+
+    def test_seed_approval_precedes_the_push(self):
+        self.assertLess(step_index(self.steps, "explicit approval"), step_index(self.steps, "push origin HEAD:refs/heads/claude/state"))
+
+    def test_seed_pushes_fast_forward(self):
+        self.assertIn("fast-forward push", self.steps[step_index(self.steps, "push origin HEAD:refs/heads/claude/state")])
+
+    def test_seed_never_forces_the_push(self):
+        self.assertNotRegex(self.section.replace("worktree remove --force", ""), r"--force|\+HEAD")
+
+    def test_seed_removes_the_work_tree_whatever_the_push_exited_with(self):
+        self.assertIn("Whatever the command exited with, run `git -C <private> worktree remove --force <dir>/store`.", self.section)
+
+    def test_seed_ends_by_comparing_the_pushed_state_with_the_seeded_file(self):
+        self.assertIn("git -C <private> show origin/claude/state:state/<slug>.json | cmp - <dir>/state.json", self.steps[-1])
+
+    def test_seed_stops_on_a_refused_routine(self):
+        self.assertIn("engine is not `tribe`", self.section)
+
+    def test_seed_states_that_nothing_is_pushed_without_approval(self):
+        self.assertIn("Never push the state without the owner's explicit approval", self.section)
+
+    def test_lint_section_names_the_private_settings_findings(self):
+        section = self.text[self.text.index("## Lint\n"):self.text.index("## Sync\n")]
+        self.assertEqual([part in section for part in ("`settings-missing`", "`settings-invalid`", "`deny-missing:<entry>`")], [True] * 3)
+
+
+class TribeLintTest(PinnedClaudioCase):
+    def lint_public(self, text):
+        path = self.write_template("skeleton", text, self.public)
+        return run("lint", "--public")[:2] + (path,)
+
+    def lint_private(self, text):
+        path = self.write_template("prod-watch", text)
+        return self.lint()[:2] + (path,)
+
+    def test_public_unknown_tribe_command_fails(self):
+        code, stdout, path = self.lint_public("tribe.py replay --state s\n")
+        self.assertEqual((code, stdout), (1, f"{path}:1:tribe-command\n"))
+
+    def test_public_unknown_tribe_flag_fails(self):
+        code, stdout, path = self.lint_public("tribe.py seed --page p --routine r --config c --out o --bogus x\n")
+        self.assertEqual((code, stdout), (1, f"{path}:1:tribe-flag\n"))
+
+    def test_public_known_tribe_commands_and_flags_pass(self):
+        text = (
+            "tribe.py init --digest d --out s\n"
+            "tribe.py seed --page p --routine r --config c --out o\n"
+            "tribe.py judge --features f --judgment j\n"
+            "tribe.py window --state s --now t --tz z --report-only --out w\n"
+        )
+        self.assertEqual(self.lint_public(text)[:2], (0, ""))
+
+    def test_private_tribe_call_against_a_pinned_tree_without_it_fails(self):
+        code, stdout, path = self.lint_private("{{chat.channel}}\ntribe.py seed --page p\n")
+        self.assertEqual((code, stdout), (1, f"{path}:2:tribe-missing\n"))
+
+    def test_private_flag_missing_from_the_pinned_tribe_fails(self):
+        self.pin({"tribe.py": PINNED_TRIBE})
+        code, stdout, path = self.lint_private("{{chat.channel}}\ntribe.py seed --page p --out o\n")
+        self.assertEqual((code, stdout), (1, f"{path}:2:tribe-flag\n"))
+
+    def test_private_flag_the_pinned_tribe_has_passes(self):
+        self.pin({"tribe.py": PINNED_TRIBE})
+        self.assertEqual(self.lint_private("{{chat.channel}}\ntribe.py seed --page p\n")[:2], (0, ""))
+
+
 class PluginCacheLayoutTest(unittest.TestCase):
     def setUp(self):
         root = tempfile.mkdtemp()
@@ -2001,30 +2470,30 @@ class ShippedFilesTest(Case):
     def test_shipped_templates_pass_the_public_lint(self):
         self.assertEqual(run("lint", "--public")[:2], (0, ""))
 
-    def test_the_three_skeletons_are_marked_not_runnable(self):
+    def test_the_two_skeletons_are_marked_not_runnable(self):
         marked = [lint.is_marked(read(os.path.join(SHIPPED_TEMPLATES, f"{name}.md"))) for name in SKELETONS]
-        self.assertEqual(marked, [True, True, True])
+        self.assertEqual(marked, [True, True])
 
-    def test_the_three_skeletons_carry_no_marker_near_miss(self):
+    def test_the_two_skeletons_carry_no_marker_near_miss(self):
         near = [lint.near_miss_marker(read(os.path.join(SHIPPED_TEMPLATES, f"{name}.md"))) for name in SKELETONS]
-        self.assertEqual(near, [False, False, False])
+        self.assertEqual(near, [False, False])
 
     def test_prod_watch_and_the_setup_script_are_not_marked(self):
         marked = [lint.is_marked(read(os.path.join(SHIPPED_TEMPLATES, name))) for name in ("prod-watch.md", "setup-env.sh")]
         self.assertEqual(marked, [False, False])
 
-    def test_the_three_skeletons_hold_the_four_sections(self):
+    def test_the_two_skeletons_hold_the_four_sections(self):
         sections = ("## Purpose\n", "## Sources\n", "## Steps\n", "## Outputs\n")
         held = [all(section in read(os.path.join(SHIPPED_TEMPLATES, f"{name}.md")) for section in sections) for name in SKELETONS]
-        self.assertEqual(held, [True, True, True])
+        self.assertEqual(held, [True, True])
 
-    def test_the_three_skeletons_keep_their_records_on_the_state_branch(self):
+    def test_the_two_skeletons_keep_their_records_on_the_state_branch(self):
         held = ["`claude/state`" in read(os.path.join(SHIPPED_TEMPLATES, f"{name}.md")) for name in SKELETONS]
-        self.assertEqual(held, [True, True, True])
+        self.assertEqual(held, [True, True])
 
-    def test_the_three_skeletons_do_not_call_a_runtime_script(self):
+    def test_the_two_skeletons_do_not_call_a_runtime_script(self):
         calls = [lint.SCRIPT_CALL.search(read(os.path.join(SHIPPED_TEMPLATES, f"{name}.md"))) for name in SKELETONS]
-        self.assertEqual(calls, [None, None, None])
+        self.assertEqual(calls, [None, None])
 
     def test_prod_watch_skeleton_renders_without_warnings(self):
         self.write_config(self.full_config())
@@ -2740,13 +3209,12 @@ class ShippedFilesTest(Case):
         routine = self.example()["routines"]["prod-watch"]
         self.assertEqual((len(routine["rules"]), routine["sources"]["monitors"]["discovery_query"]), (3, "<monitor-search-query>"))
 
-
     def tribe(self):
         return self.example()["routines"]["tribe-digest"]
 
-    def test_example_tribe_routine_loads_alone_with_its_five_sources(self):
+    def test_example_tribe_routine_loads_alone_with_its_six_sources(self):
         routine = self.example("tribe-digest")["routines"]["tribe-digest"]
-        self.assertEqual(sorted(routine["sources"]), ["changed-pages", "channels", "issues", "metrics", "monitors"])
+        self.assertEqual(sorted(routine["sources"]), ["changed-pages", "channels", "issues", "metrics", "monitors", "previous-digest"])
 
     def test_example_tribe_sources_point_at_one_provider_per_role(self):
         providers = {name: source["provider"] for name, source in self.tribe()["sources"].items()}
@@ -2758,6 +3226,7 @@ class ShippedFilesTest(Case):
                 "changed-pages": "document-store",
                 "monitors": "observability",
                 "metrics": "observability",
+                "previous-digest": "document-store",
             },
         )
 
@@ -2823,8 +3292,196 @@ class ShippedFilesTest(Case):
         self.assertEqual(render(self.tribe()), render(bare))
 
 
-class SaveBlockExecutionTest(Case):
+class TribeTemplateTest(unittest.TestCase):
+    PATH = os.path.join(SHIPPED_TEMPLATES, "tribe-digest.md")
+    SCRIPTS = ("tribe", "collect")
+    CALL = re.compile(r"/(?:tribe|collect)\.py ([a-z-]+)")
+    ORDER = ["init", "window", "features", "judge", "apply", "render", "publish-plan", "publish-parse", "message"]
+
+    def raw(self):
+        return read(self.PATH)
+
+    def example(self):
+        return runtime_module("config_tree").load(os.path.join(EXAMPLE_DIR, "config.json"), None)
+
+    def rendered(self, place="cloud", post=False):
+        config = self.example()
+        context, _ = routines.build_context(config, config["routines"]["tribe-digest"], place, post)
+        return routines.render_text(self.raw(), context, self.PATH)[0]
+
+    def step(self, title):
+        text = self.rendered()
+        start = text.index(f": {title}\n")
+        end = text.find("\n## ", start)
+        return text[start:end]
+
+    def calls(self, script):
+        lines = lint.logical_lines(self.rendered().splitlines())
+        return [line for _, line in lines if line.startswith("python3 -B") and f"/{script}.py " in line]
+
+    def parser(self, script):
+        return runtime_module(script).build_parser()
+
+    def required(self, script):
+        subparsers = next(action for action in self.parser(script)._actions if isinstance(action, argparse._SubParsersAction))
+        return {
+            name: {option for action in sub._actions if action.required for option in action.option_strings}
+            for name, sub in subparsers.choices.items()
+        }
+
+    def position(self, needle):
+        return self.rendered().index(needle)
+
+    def test_renders_with_the_example_config_in_both_places_with_no_placeholder_left(self):
+        left = [place for place in ("cloud", "local") if "{{" in self.rendered(place)]
+        self.assertEqual(left, [])
+
+    def test_is_not_marked_not_runnable(self):
+        text = self.raw()
+        self.assertEqual((lint.is_marked(text), lint.near_miss_marker(text), "not runnable" in text), (False, False, False))
+
+    def test_passes_the_public_lint_with_the_runtime_contracts(self):
+        self.assertEqual([finding for finding in routines.public_findings() if finding[0] == self.PATH], [])
+
+    def test_every_script_call_names_an_existing_command_with_existing_flags(self):
+        contracts = {f"{script}.py": lint.parser_contract(self.parser(script)) for script in self.SCRIPTS}
+        lines = [line for script in self.SCRIPTS for line in self.calls(script)]
+        self.assertEqual((len(lines) > 10, [line for line in lines if lint.contract_rules(line, contracts)]), (True, []))
+
+    def test_every_script_call_passes_the_required_flags_of_its_command(self):
+        missing = [
+            line
+            for script in self.SCRIPTS
+            for line in self.calls(script)
+            if any(flag not in line for flag in self.required(script)[self.CALL.search(line).group(1)])
+        ]
+        self.assertEqual(missing, [])
+
+    def test_calls_every_command_of_a_run_in_order(self):
+        order = [self.CALL.search(line).group(1) for line in self.calls("tribe") if "--degraded" not in line]
+        self.assertEqual(order, self.ORDER)
+
+    def test_the_window_is_computed_in_the_configured_timezone_before_any_source_is_collected(self):
+        window = next(line for line in self.calls("tribe") if " window " in line)
+        first_collection = min(self.position(line) for line in self.calls("collect") if " fetch " in line or " plan " in line)
+        self.assertEqual(("--tz Europe/Paris" in window, self.position(window) < first_collection), (True, True))
+
+    def test_the_window_offers_the_explicit_start_and_the_report_only_flags_the_engine_has(self):
+        options = lint.parser_contract(self.parser("tribe"))[0]["window"]
+        text = self.step("Compute the window")
+        self.assertEqual(({"--since", "--report-only"} <= options, "`--since <T0>`" in text, "`--report-only`" in text), (True, True, True))
+
+    def test_the_page_writes_are_relayed_through_one_response_directory(self):
+        plan, parse = (next(line for line in self.calls("tribe") if f" {name} " in line) for name in ("publish-plan", "publish-parse"))
+        relay = "<run>/responses/publish"
+        self.assertEqual(
+            (f"--responses {relay} " in plan, f"--responses {relay} " in parse, f"`{relay}/<id>.txt`" in self.step("Publish the page")),
+            (True, True, True),
+        )
+
+    def test_the_state_is_saved_after_the_page_is_written_and_before_the_message_is_rendered(self):
+        saved = self.position("push origin HEAD:refs/heads/claude/state")
+        self.assertEqual((self.position("tribe.py publish-parse") < saved, saved < self.position("tribe.py message --summary")), (True, True))
+
+    def test_a_failed_message_render_leaves_the_saved_state_as_it_is(self):
+        self.assertIn("The state stays as Step 11 left it.", self.step("Render the message"))
+
+    def test_the_degraded_paths_post_a_degraded_message(self):
+        causes = sorted(re.findall(r"message --degraded ([a-z]+)", self.rendered()))
+        self.assertEqual(causes, ["judgment", "structure"])
+
+    def test_a_failed_create_reports_a_degraded_message_and_keeps_the_state(self):
+        rendered = self.rendered()
+        self.assertEqual(("`status` in `<run>/result.json` is `failed`" in rendered, "the run record only" in rendered), (True, True))
+
+    def test_the_degraded_cause_of_the_rejected_judgment_follows_the_second_exit_3(self):
+        step = self.step("Judge")
+        self.assertEqual(("A second exit 3" in step, step.index("A second exit 3") < step.index("--degraded judgment")), (True, True))
+
+    def test_the_structure_failure_stops_before_any_write(self):
+        step = self.step("Render the page")
+        self.assertEqual(("Write no state and no run record." in step, "--degraded structure" in step), (True, True))
+
+    def test_the_runtime_check_reports_the_exact_one_liner(self):
+        self.assertIn("report exactly one line, `degraded: runtime missing, at another commit or modified`", self.step("Check the runtime"))
+
+    def test_the_judgment_skeleton_shows_a_cite_in_every_cited_section(self):
+        step = self.step("Judge")
+        self.assertEqual(('"cites": []' in step, step.count('"cites": [<cite>]'), "at least one cite" in step), (False, 3, True))
+
+    def test_the_judgment_lets_a_stored_warning_keep_its_stored_cites(self):
+        self.assertIn(
+            "A stored warning may cite its stored `cites` (in `previous.warnings` of the features) when no new record exists.",
+            self.step("Judge"),
+        )
+
+    def test_the_judgment_limits_follow_the_checker(self):
+        step = self.step("Judge")
+        state, tribe_state = (runtime_module(name) for name in ("state", "tribe_state"))
+        limits = (
+            f"at most {tribe_state.KEY_CAP} characters",
+            f"at most {tribe_state.DECISION_CAP} decisions",
+            f"at most {tribe_state.COVERAGE_NOTE_CAP} coverage notes",
+            f"source label of at most {tribe_state.COVERAGE_SOURCE_CAP} characters",
+            f"1 to {state.MITIGATION_CAP} mitigation leads",
+            f"at most {state.LABEL_CAP} characters",
+            "`replaces`",
+            "kebab-case",
+            "`<`, `>`, `@` or `://`",
+            "reports only the first failure",
+        )
+        self.assertEqual([limit for limit in limits if limit not in step], [])
+
+    def test_the_judgment_skeleton_shows_the_optional_coverage_notes_without_cites(self):
+        step = self.step("Judge")
+        skeleton = next(line for line in step.splitlines() if line.startswith('{"warnings"'))
+        self.assertIn('"coverage_notes": [{"source": "<label>", "text": "<text>"}]', skeleton)
+        self.assertEqual(skeleton.count('"cites": [<cite>]'), 3)
+
+    def test_the_judgment_describes_what_a_coverage_note_is_for(self):
+        step = self.step("Judge")
+        described = (
+            "`coverage_notes` is optional",
+            "did not cover",
+            "configured or not",
+            "has no record in the features",
+            "cut or capped",
+            "a `deferred` warning",
+            "Do not note a read failure",
+            "under Blind spots and Sources",
+            "no two notes share a source",
+            "holds no cite",
+            "this run only",
+            "Each text and each `source` is plain text",
+        )
+        self.assertEqual([phrase for phrase in described if phrase not in step], [])
+
+    def test_the_post_setting_governs_every_report(self):
+        rendered = self.rendered("local")
+        self.assertEqual(("The post setting of this run is `no`." in rendered, "post nothing" in rendered), (True, True))
+
+    def test_the_cloud_post_setting_is_yes(self):
+        self.assertIn("The post setting of this run is `yes`.", self.rendered("cloud"))
+
+    def test_the_template_names_no_vendor_and_no_connector_tool(self):
+        rendered = self.rendered()
+        vendor = lint.provider_rule(runtime_module("providers").names())
+        publish = self.example()["routines"]["tribe-digest"]["publish"]
+        tools = {publish[call]["tool"] for call in ("create", "poll", "heading")} | {"PushNotification"}
+        self.assertEqual(([line for line in rendered.splitlines() if vendor(line)], [tool for tool in tools if tool in rendered]), ([], []))
+
+    def test_the_routine_values_come_through_placeholders_only(self):
+        raw = self.raw()
+        held = [name for name in ("{{digest.slug}}", "{{digest.name}}", "{{place}}", "{{run.post}}", "{{state.dir}}", "{{runtime.dir}}") if name not in raw]
+        self.assertEqual(held, [])
+
+
+class SaveBlockExecution:
     patch_templates = False
+    SLUG = "prod-watch"
+
+    def config(self, places):
+        return make_config(values={"chat": {"digest_channel_id": "channel-test"}}, places=places)
 
     def setUp(self):
         super().setUp()
@@ -2832,11 +3489,8 @@ class SaveBlockExecutionTest(Case):
         seed = make_repo(os.path.join(self.root, "seed"), {"config.json": "{}\n"})
         git(self.root, "clone", "-q", "--bare", seed, self.remote)
         self.clone = self.single_branch_clone("clone")
-        self.write_config(make_config(
-            values={"chat": {"digest_channel_id": "channel-test"}},
-            places=make_places(cloud={"state_dir": self.clone}),
-        ))
-        code, self.rendered, stderr = self.run_private("render", "prod-watch")
+        self.write_config(self.config(make_places(cloud={"state_dir": self.clone})))
+        code, self.rendered, stderr = self.run_private("render", self.SLUG)
         self.assertEqual(code, 0, stderr)
 
     def single_branch_clone(self, name):
@@ -2889,13 +3543,13 @@ class SaveBlockExecutionTest(Case):
         files = git(self.remote, "ls-tree", "-r", "--name-only", "claude/state").splitlines()
         self.assertEqual(
             (result.returncode, files),
-            (0, [f"runs/prod-watch/{RUN_AT}.json", "state/prod-watch.json"]),
+            (0, [f"runs/{self.SLUG}/{RUN_AT}.json", f"state/{self.SLUG}.json"]),
             result.stderr,
         )
 
     def test_first_save_stores_the_next_state(self):
         self.save("orphan", "first")
-        self.assertEqual(json.loads(git(self.remote, "show", "claude/state:state/prod-watch.json")), {"run": "first"})
+        self.assertEqual(json.loads(git(self.remote, "show", f"claude/state:state/{self.SLUG}.json")), {"run": "first"})
 
     def test_orphan_save_leaves_the_checked_out_branch_and_working_tree_unchanged(self):
         before = self.checkout_view()
@@ -2913,7 +3567,7 @@ class SaveBlockExecutionTest(Case):
         self.save("orphan", "first")
         self.fetch(self.root)
         self.save("detached", "second")
-        self.assertEqual(json.loads(git(self.remote, "show", "claude/state:state/prod-watch.json")), {"run": "second"})
+        self.assertEqual(json.loads(git(self.remote, "show", f"claude/state:state/{self.SLUG}.json")), {"run": "second"})
 
     def test_push_after_the_remote_moved_fails_and_keeps_the_remote_tip(self):
         self.save("orphan", "first")
@@ -2924,6 +3578,42 @@ class SaveBlockExecutionTest(Case):
         moved = self.remote_tip()
         result = self.save("detached", "late-run")
         self.assertEqual((result.returncode != 0, self.remote_tip()), (True, moved))
+
+
+class SaveBlockExecutionTest(SaveBlockExecution, Case):
+    pass
+
+
+class TribeSaveBlockExecutionTest(SaveBlockExecution, Case):
+    SLUG = "tribe-digest"
+
+    def config(self, places):
+        config = make_config(
+            template="tribe-digest",
+            values={"chat": {"digest_channel_id": "channel-test"}},
+            routine_values={"digest": {"name": "Example", "slug": self.SLUG}},
+            places=places,
+        )
+        config["routines"] = {self.SLUG: config["routines"]["prod-watch"]}
+        return config
+
+    def failed_create_block(self):
+        lines = [line for line in self.save_block("detached").splitlines() if "cp <run>/next.json" not in line]
+        return "\n".join(lines).replace("add state runs", "add runs")
+
+    def stored(self, path):
+        return json.loads(git(self.remote, "show", f"claude/state:{path}"))
+
+    def test_the_template_tells_a_failed_create_to_commit_the_run_record_only(self):
+        step = self.rendered_step("Save the state")
+        self.assertIn("drop the `cp` of the state file and run `git add runs`", step)
+
+    def test_a_failed_create_saves_the_run_record_and_keeps_the_stored_state(self):
+        self.save("orphan", "first")
+        self.fetch(self.root)
+        result = self.bash(self.failed_create_block(), self.run_dir("second", {"run": "second"}))
+        stored = (self.stored(f"state/{self.SLUG}.json"), self.stored(f"runs/{self.SLUG}/{RUN_AT}.json")["run"])
+        self.assertEqual((result.returncode, stored), (0, ({"run": "first"}, "second")), result.stderr)
 
 
 if __name__ == "__main__":

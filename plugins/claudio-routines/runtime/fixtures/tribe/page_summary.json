@@ -1,0 +1,365 @@
+{
+  "baseline": false,
+  "blind_spots": [
+    {
+      "gap": "alerts feed returned no data since 2026-03-09",
+      "key": "alerts-feed",
+      "runs": 3
+    },
+    {
+      "gap": "metrics trend read failed",
+      "key": "metrics-trend",
+      "runs": 1
+    }
+  ],
+  "blind_spots_dropped": 1,
+  "checks": {
+    "confirm-freeze-dates": {
+      "group": "Before the month-end",
+      "since": "2026-03-04T08:30:00Z",
+      "text": "Confirm the freeze dates with the release manager",
+      "topic": "Release"
+    },
+    "plan-resize": {
+      "group": "Before the month-end",
+      "since": "2026-03-02T08:30:00Z",
+      "text": "Plan the volume resize",
+      "topic": "Capacity"
+    },
+    "read-pool-quota": {
+      "group": "This week",
+      "since": "2026-03-06T08:30:00Z",
+      "text": "Read the worker pool quota",
+      "topic": "Capacity"
+    },
+    "run-restore-drill": {
+      "group": "Investigate",
+      "since": "2026-03-09T08:30:00Z",
+      "text": "Run one restore drill from last night's backup",
+      "topic": "Reliability"
+    },
+    "trace-latency-step": {
+      "group": "This week",
+      "since": "2026-03-11T08:30:00Z",
+      "text": "Find what moved the queue latency",
+      "topic": "Reliability"
+    }
+  },
+  "corrections": [
+    {
+      "cites": [],
+      "now": "19 failed imports in 7 days, after removing 2 duplicate runs",
+      "was": "21 failed imports in 7 days"
+    }
+  ],
+  "coverage_notes": [
+    {
+      "source": "Mobile app",
+      "text": "Not read, no connector is configured for it"
+    },
+    {
+      "source": "Issue tracker",
+      "text": "A rule names it and the features hold no record of it"
+    }
+  ],
+  "decisions": [
+    {
+      "deadline": "before the month-end",
+      "decision": "Second worker pool for batch jobs",
+      "options": "add the pool now, or cap nightly imports and wait one month",
+      "topic": "Capacity"
+    },
+    {
+      "deadline": "2026-03-20",
+      "decision": "Freeze window for the spring release",
+      "options": "freeze for 2 days, or release before the holiday",
+      "topic": "Release"
+    }
+  ],
+  "details": {
+    "Capacity": [
+      {
+        "cites": [
+          {
+            "link": "https://example.com/metrics/pool",
+            "source": "metrics"
+          }
+        ],
+        "text": "Pool usage peaked at 94 of 100 slots on 2026-03-11"
+      }
+    ],
+    "Reliability": [
+      {
+        "cites": [],
+        "text": "The importer retry policy was checked and left unchanged"
+      }
+    ]
+  },
+  "digest": "sample",
+  "done": [
+    {
+      "key": "check-retry-policy",
+      "text": "Check the retry policy of the importer"
+    }
+  ],
+  "edits_ignored": [
+    {
+      "where": "warning row 4",
+      "why": "no key marker"
+    }
+  ],
+  "highlights": [
+    {
+      "cites": [
+        {
+          "feature": "trend:pool",
+          "name": "max_7d",
+          "value": 94
+        }
+      ],
+      "text": "Worker pool at 94 of 100 slots, 3 pool-full alerts in 7 days"
+    },
+    {
+      "cites": [
+        {
+          "link": "https://example.com/threads/latency",
+          "source": "chat"
+        }
+      ],
+      "text": "Queue latency at 140 s, above the 120 s target"
+    }
+  ],
+  "moved": [
+    {
+      "field": "severity",
+      "from": "Low",
+      "key": "disk-growth",
+      "to": "Medium"
+    }
+  ],
+  "previous_page": {
+    "id": "previous-page-id",
+    "written_at": "2026-03-11T08:34:00Z"
+  },
+  "report_only": false,
+  "resolved": [
+    {
+      "key": "cache-hit-ratio",
+      "reason": "under every threshold for 2 runs",
+      "title": "Cache hit ratio below target"
+    }
+  ],
+  "run_at": "2026-03-12T08:30:00Z",
+  "sources": [
+    {
+      "from_ts": 1773217800,
+      "read": true,
+      "reason": null,
+      "role": "observability",
+      "source": "alerts",
+      "to_ts": 1773304200
+    },
+    {
+      "from_ts": 1773217800,
+      "read": true,
+      "reason": null,
+      "role": "issue tracker",
+      "source": "tickets",
+      "to_ts": 1773304200
+    },
+    {
+      "from_ts": null,
+      "read": false,
+      "reason": "connector signed out",
+      "role": "document store",
+      "source": "pages",
+      "to_ts": null
+    }
+  ],
+  "warnings": {
+    "disk-growth": {
+      "change": "moved",
+      "cites": [],
+      "confidence": "inferred",
+      "evidence": [
+        {
+          "cites": [
+            {
+              "feature": "trend:volume",
+              "name": "growth_monthly",
+              "value": 9
+            }
+          ],
+          "claim": "the volume grows 9 percent a month"
+        }
+      ],
+      "impact": "writes fail once the volume is full",
+      "metric": "volume",
+      "mitigation": [
+        "plan a resize before the 80 percent mark"
+      ],
+      "risk": "the primary volume fills before the next resize",
+      "runs_under": 0,
+      "runway": "about 5 months at +9 percent a month",
+      "severity": "Medium",
+      "since": "2026-02-20T08:30:00Z",
+      "status": "in progress",
+      "title": "Primary volume filling up",
+      "topic": "Capacity",
+      "when": "within months"
+    },
+    "freeze-overlap": {
+      "change": "same",
+      "cites": [],
+      "confidence": "reported",
+      "evidence": [
+        {
+          "cites": [
+            {
+              "link": "https://example.com/threads/freeze",
+              "source": "chat"
+            }
+          ],
+          "claim": "the freeze overlaps a public holiday"
+        },
+        {
+          "cites": [],
+          "claim": "2 reviewers are away that week"
+        }
+      ],
+      "impact": [
+        "the release slips by a week",
+        "hotfixes wait for a reviewer"
+      ],
+      "metric": null,
+      "mitigation": [
+        "move the freeze by 2 days",
+        "name a backup reviewer",
+        "release before the holiday"
+      ],
+      "risk": [
+        "the freeze starts when reviewers are away",
+        "no owner is named for hotfixes"
+      ],
+      "runs_under": 0,
+      "runway": "freeze starts on 2026-03-26",
+      "severity": "High",
+      "since": "2026-03-04T08:30:00Z",
+      "status": "open",
+      "title": "Release freeze overlaps a holiday",
+      "topic": "Release",
+      "when": "within months"
+    },
+    "queue-latency": {
+      "change": "new",
+      "cites": [],
+      "confidence": "measured",
+      "evidence": [
+        {
+          "cites": [
+            {
+              "feature": "trend:queue",
+              "name": "max_7d",
+              "value": 140
+            }
+          ],
+          "claim": "latest hourly max 140 s against a 120 s target"
+        }
+      ],
+      "impact": "imports and emails run late",
+      "metric": "queue",
+      "mitigation": [
+        "move long jobs to their own queue",
+        "spread out the nightly burst"
+      ],
+      "risk": "jobs wait more than 120 s during the day",
+      "runs_under": 0,
+      "runway": "none, 140 s of 120 s",
+      "severity": "Medium",
+      "since": "2026-03-12T08:30:00Z",
+      "status": "open",
+      "title": "Queue latency above target",
+      "topic": "Reliability",
+      "when": "now"
+    },
+    "restore-untested": {
+      "change": "same",
+      "cites": [],
+      "confidence": "reported",
+      "evidence": [
+        {
+          "cites": [
+            {
+              "link": "https://example.com/pages/backups",
+              "source": "pages"
+            }
+          ],
+          "claim": "no restore drill is recorded this year"
+        }
+      ],
+      "impact": "recovery time is unknown",
+      "metric": null,
+      "mitigation": [
+        "run one drill on a copy of last night's backup"
+      ],
+      "risk": "a backup that cannot be restored",
+      "runs_under": 0,
+      "runway": "unknown",
+      "severity": "Low",
+      "since": "2026-03-09T08:30:00Z",
+      "status": "open",
+      "title": "Backup restore never tested",
+      "topic": "Reliability",
+      "when": "watch"
+    },
+    "worker-pool-ceiling": {
+      "change": "same",
+      "cites": [],
+      "confidence": "measured",
+      "evidence": [
+        {
+          "cites": [
+            {
+              "feature": "trend:pool",
+              "name": "max_7d",
+              "value": 94
+            }
+          ],
+          "claim": "94 of 100 worker slots busy at the daily peak"
+        },
+        {
+          "cites": [
+            {
+              "link": "https://example.com/monitors/pool-full",
+              "source": "alerts"
+            }
+          ],
+          "claim": "3 pool-full alerts fired in 7 days"
+        }
+      ],
+      "impact": [
+        "batch exports finish late",
+        "interactive requests wait for a free slot"
+      ],
+      "metric": "pool",
+      "mitigation": [
+        "add a second pool for batch jobs",
+        "cap the concurrency of nightly imports",
+        "alert at 85 percent of the pool"
+      ],
+      "risk": "jobs queue behind a full worker pool at peaks",
+      "runs_under": 0,
+      "runway": "none at peak, 94 of 100 slots",
+      "severity": "High",
+      "since": "2026-02-27T08:30:00Z",
+      "status": "open",
+      "title": "Worker pool near its ceiling",
+      "topic": "Capacity",
+      "when": "now"
+    }
+  },
+  "window": {
+    "from_ts": 1773217800,
+    "to_ts": 1773304200
+  }
+}

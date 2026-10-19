@@ -1,0 +1,96 @@
+{
+  "blind_spots": [
+    {
+      "gap": "no history",
+      "key": "channels",
+      "runs": 1
+    }
+  ],
+  "checks": {
+    "ask-export": {
+      "group": "This week",
+      "since": "2026-10-15T07:45:00Z",
+      "text": "Ask for the export",
+      "topic": "Capacity"
+    }
+  },
+  "cursors": {
+    "channels": {
+      "ts": {
+        "@CHANNEL_A@": "1791990730.002679"
+      }
+    },
+    "observability": {
+      "events_ts_ms": 1000,
+      "metrics": {
+        "queue-depth": 5
+      },
+      "monitors": {
+        "1001": "OK"
+      }
+    }
+  },
+  "digest": "example",
+  "retired": {
+    "old-warning": "Old title"
+  },
+  "run": {
+    "at": "2026-10-15T07:45:00Z",
+    "daily_metrics_on": "2026-10-15",
+    "layout_version": 1,
+    "models": {
+      "collect": "model-a"
+    },
+    "posted": true,
+    "previous_page": {
+      "id": "@PAGE_ID@",
+      "written_at": "2026-10-15T07:53:00Z"
+    },
+    "weekly_heading_week": "2026-W41",
+    "window": {
+      "from_ts": 1792046700,
+      "to_ts": 1792050300
+    }
+  },
+  "schema": "tribe-1",
+  "threads": {
+    "channels": [
+      {
+        "channel": "@CHANNEL_A@",
+        "links": [
+          "https://example.test/c/1"
+        ],
+        "root_ts": "1791990000.000100"
+      }
+    ]
+  },
+  "warnings": {
+    "queue-depth": {
+      "cites": [
+        {
+          "link": "https://example.test/c/1",
+          "source": "channels"
+        },
+        {
+          "feature": "metric:queue-depth",
+          "name": "value"
+        }
+      ],
+      "confidence": "measured",
+      "impact": "reports arrive late",
+      "metric": "queue-depth",
+      "mitigation": [
+        "add a worker"
+      ],
+      "risk": "jobs start late",
+      "runs_under": 0,
+      "runway": "about two weeks",
+      "severity": "Medium",
+      "since": "2026-10-15T07:45:00Z",
+      "status": "open",
+      "title": "Queue depth rises",
+      "topic": "Capacity",
+      "when": "watch"
+    }
+  }
+}

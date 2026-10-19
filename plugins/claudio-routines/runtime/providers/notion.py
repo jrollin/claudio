@@ -51,7 +51,8 @@ EQUATION = re.compile(r"\$\$.+\$\$")
 IMAGE = re.compile(r"!\[[^\]\n]*\]\([^)\n]*\)")
 LINE_BREAK = re.compile(r"\r\n|\r|\n")
 HEADING = re.compile(r"#{1,4} (.*)")
-LIST_ITEM = re.compile(r"(?:[-*] \[[ xX]\] |[-*] |[0-9]+\. )(.*)")
+LIST_ITEM = re.compile(r"(?:[-*] \[(?P<mark>[ xX])\] |[-*] |[0-9]+\. )(?P<text>.*)")
+TICKED = "xX"
 QUOTE = re.compile(r"> ?(.*)")
 ATTRIBUTES = re.compile(r'\{(?:[\w-]+="[^"]*"\s*)+\}$')
 OPEN_TAG = re.compile(r"<([A-Za-z][\w-]*)")
@@ -285,7 +286,11 @@ def _markdown_block(lines, index):
         return _tag_block(lines, index, tag.group(1))
     if line.strip() == DIVIDER or EQUATION.fullmatch(line.rstrip()) or IMAGE.fullmatch(line.rstrip()):
         return _other(), index + 1
-    for pattern, kind in ((HEADING, "heading"), (LIST_ITEM, "list"), (QUOTE, "paragraph")):
+    item = LIST_ITEM.fullmatch(line)
+    if item:
+        mark = item.group("mark")
+        return _text_block("list", _plain(_without_attributes(item.group("text"))), None if mark is None else mark in TICKED), index + 1
+    for pattern, kind in ((HEADING, "heading"), (QUOTE, "paragraph")):
         marker = pattern.fullmatch(line)
         if marker:
             return _text_block(kind, _plain(_without_attributes(marker.group(1)))), index + 1
@@ -302,7 +307,7 @@ def _tag_block(lines, index, name):
     one_line = line.rstrip().endswith("/>") or close in line
     end = index if one_line else _closing(lines, index, close, f"<{name}> without {close}")
     if name == "table":
-        return {"type": "table", "text": "", "rows": _table_rows("\n".join(lines[index : end + 1]), index)}, end + 1
+        return {"type": "table", "text": "", "rows": _table_rows("\n".join(lines[index : end + 1]), index), "checked": None}, end + 1
     if name == EMPTY_BLOCK:
         return _text_block("paragraph", ""), end + 1
     return _other(), end + 1
@@ -357,12 +362,12 @@ def _unwrap(match):
     return _inline(next(part for part in wrapped if part is not None))
 
 
-def _text_block(kind, text):
-    return {"type": kind, "text": text, "rows": None}
+def _text_block(kind, text, checked=None):
+    return {"type": kind, "text": text, "rows": None, "checked": checked}
 
 
 def _other():
-    return {"type": "other", "text": "", "rows": None}
+    return {"type": "other", "text": "", "rows": None, "checked": None}
 
 
 def _read_page(page_id, http):
@@ -416,10 +421,11 @@ def _block(item, index, parent_id, http):
     block_type = dig(item, "type")
     kind = BLOCK_KINDS.get(block_type, "other") if isinstance(block_type, str) else "other"
     if kind == "table":
-        return {"type": kind, "text": "", "rows": _rows(_table_id(item, index, parent_id), http)}
+        return {"type": kind, "text": "", "rows": _rows(_table_id(item, index, parent_id), http), "checked": None}
     if kind == "other":
-        return {"type": kind, "text": "", "rows": None}
-    return {"type": kind, "text": _text(dig(item, block_type, "rich_text")), "rows": None}
+        return _other()
+    checked = dig(item, block_type, "checked") is True if block_type == "to_do" else None
+    return _text_block(kind, _text(dig(item, block_type, "rich_text")), checked)
 
 
 def _table_id(item, index, parent_id):

@@ -2,7 +2,7 @@ import json
 import os
 import re
 
-from roles import ENV_VAR, PLACES, TRANSPORTS, ConfigError
+from roles import DEFAULT_ENGINE, ENGINES, ENV_VAR, PLACES, TRANSPORTS, ConfigError
 
 SLUG = re.compile(r"[a-z0-9-]+")
 ROUTINE_FILE = re.compile(rf"({SLUG.pattern})\.json")
@@ -190,6 +190,8 @@ def _check_places(transport, where, path):
 
 
 def _resolve_routine(routine, where, providers):
+    if isinstance(routine, dict) and routine.get("engine", DEFAULT_ENGINE) not in ENGINES:
+        raise ConfigError(f"{where}engine: must be one of " + ", ".join(ENGINES))
     if not isinstance(routine, dict) or not isinstance(routine.get("sources"), dict):
         return routine
     sources = {
