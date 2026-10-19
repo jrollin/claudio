@@ -275,6 +275,20 @@ class WaitingLineTest(RenderCase):
         line = make_line(status="promise", late=2, due="2026-10-14T08:00:00Z")
         self.assertTrue(self.waiting(line)[0].startswith("- ⏰ **You** promised"))
 
+    def test_a_summary_ending_in_a_period_drops_it_before_the_text_that_follows(self):
+        promise = make_line(ts=at("2026-10-14T09:00:00Z"), status="promise", person=None, summary="the revised planning.")
+        waiting = asked(at("2026-10-14T09:00:00Z"), summary="asks for a review.")
+        owed = make_line(ts=at("2026-10-14T15:00:00Z"), status="waiting_on_others", summary="the updated budget sheet.")
+        got = (
+            self.waiting(promise)[0],
+            self.waiting(waiting)[0],
+            self.lines("You're waiting on", make_summary(waiting_on_others=[owed]))[0],
+        )
+        self.assertEqual(
+            [text.split(" · ")[0] for text in got],
+            ["- **You** promised the revised planning, no date given", "- **Peer Name** asks for a review", "- **Peer Name** owes the updated budget sheet since Wed 17:00"],
+        )
+
     def test_a_promise_does_not_name_the_person(self):
         self.assertNotIn("Peer Name", self.waiting(make_line(status="promise"))[0])
 

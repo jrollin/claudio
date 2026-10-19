@@ -3947,6 +3947,12 @@ class RecapTemplateTest(unittest.TestCase):
     def raw(self):
         return read(self.PATH)
 
+    def test_the_judge_step_says_what_each_summary_completes(self):
+        text = self.raw()
+        for opening in ("without their name", "as the object of `You promised`", "as the object of `<name> owes`"):
+            with self.subTest(opening=opening):
+                self.assertIn(opening, text)
+
     def example(self):
         return runtime_module("config_tree").load(os.path.join(EXAMPLE_DIR, "config.json"), None)
 
