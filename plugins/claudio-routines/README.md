@@ -46,7 +46,9 @@ A template is marked not runnable when its first line is exactly `<!-- not runna
 - `diff` and `lint` treat it like any other template.
 - `lint` reports a first line that is an HTML comment holding `not runnable` in another case or spacing as the finding `marker`, since it would leave the template runnable.
 
-`lint --private` runs the role check of the runtime checkout on every routine file in `config/routines/`, for both places, and exits 2 naming the file and the key path of the first invalid value. A routine whose template is marked not runnable is not checked, and `render` runs the key check of a recap routine before it renders.
+`lint --private` runs the role check of the runtime checkout on every routine file in `config/routines/`, for both places, and exits 2 naming the file and the key path of the first invalid value. Only a routine whose template calls the runtime (it holds `{{runtime.dir}}`) is checked: a prompt-only mirror and a template marked not runnable are not. `render` runs the key check of a recap routine before it renders.
+
+A private `<name>-runtime.md` template is a byte copy of the public runnable template `<name>.md` at the pinned runtime commit. `lint --private` reports `runtime-copy-differs:<name>.md` at line 1 when the copy differs, and `runtime-copy-missing:<name>.md` when that commit has no such public template; copy the public template again after each release.
 
 `lint --private` also prints two warnings on stderr, naming keys and never values, and leaves the exit code unchanged:
 - `literal-value`: a template line holds, as case-sensitive text, a string value of 8 characters or more from the shared and own `values` of a routine that renders it. Use the placeholder.
