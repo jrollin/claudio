@@ -1,0 +1,9 @@
+{
+  "data": [
+    {"id": "e3", "type": "event", "attributes": {"title": "Checkout latency alert", "attributes": {"monitor_id": 101, "timestamp": 1760002000000}}},
+    {"id": "e4", "type": "event", "attributes": {"title": "Event without a timestamp", "attributes": {}}},
+    {"id": "e5", "type": "event", "attributes": {"timestamp": 1760001000000, "attributes": {"monitor_id": 101}}},
+    {"id": "e0", "type": "event", "attributes": {"timestamp": 1760001000000, "title": "Queue depth alert", "attributes": {"monitor_id": 102}}}
+  ],
+  "meta": {"page": {}}
+}

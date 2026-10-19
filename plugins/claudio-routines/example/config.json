@@ -1,0 +1,67 @@
+{
+  "timezone": "Europe/Paris",
+  "runtime": {
+    "repo": "https://github.com/<owner>/claudio",
+    "tag": "<release-tag>",
+    "sha": "<40-hex-sha>"
+  },
+  "places": {
+    "cloud": {
+      "runtime_dir": "/<cloud-parent-dir>/claudio-runtime",
+      "state_dir": "/<cloud-private-repo-dir>"
+    },
+    "local": {
+      "runtime_dir": "/<local-parent-dir>/claudio-runtime",
+      "state_dir": "/<local-private-repo-dir>"
+    }
+  },
+  "providers": {
+    "observability": {
+      "adapter": "<observability-adapter>",
+      "api": {
+        "base_url": "https://<observability-api-host>",
+        "credentials": {
+          "api_key": "OBSERVABILITY_API_KEY",
+          "app_key": "OBSERVABILITY_APP_KEY"
+        }
+      },
+      "mcp": {
+        "connectors": {
+          "cloud": "<observability-connector-name>",
+          "local": "<observability-connector-name>"
+        }
+      },
+      "transport": {
+        "cloud": "api",
+        "local": "api"
+      }
+    },
+    "document-store": {
+      "adapter": "<document-store-adapter>",
+      "api": {
+        "base_url": "https://<document-store-api-host>",
+        "credentials": {
+          "token": "DOCUMENT_STORE_TOKEN"
+        }
+      },
+      "mcp": {
+        "connectors": {
+          "cloud": "<document-store-connector-name>",
+          "local": "<document-store-connector-name>"
+        }
+      },
+      "transport": {
+        "cloud": "api",
+        "local": "api"
+      }
+    }
+  },
+  "values": {
+    "chat": {
+      "digest_channel_id": "<chat-channel-id>"
+    },
+    "owner": {
+      "name": "<owner-name>"
+    }
+  }
+}

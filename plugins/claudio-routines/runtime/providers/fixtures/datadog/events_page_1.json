@@ -1,0 +1,8 @@
+{
+  "data": [
+    {"id": "e1", "type": "event", "attributes": {"timestamp": 1760001000000, "title": "Queue depth alert", "attributes": {"title": "Queue depth alert", "monitor_id": 102, "timestamp": 1760001000000}}},
+    {"id": "e2", "type": "event", "attributes": {"timestamp": "2025-10-09T08:55:00.000Z", "attributes": {"title": "Inner title"}}}
+  ],
+  "meta": {"page": {"after": "page-2"}},
+  "links": {"next": "https://api.example.test/api/v2/events?page%5Bcursor%5D=page-2"}
+}

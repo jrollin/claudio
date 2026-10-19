@@ -1,0 +1,45 @@
+[
+  {
+    "number": 12,
+    "title": "Add retry to the importer",
+    "user": {
+      "login": "alice-dev",
+      "id": 101,
+      "type": "User"
+    },
+    "state": "open",
+    "created_at": "2026-09-03T10:00:00Z",
+    "updated_at": "2026-09-04T15:00:00Z",
+    "html_url": "https://code.example.test/acme/app/pull/12",
+    "pull_request": {
+      "html_url": "https://code.example.test/acme/app/pull/12",
+      "merged_at": null
+    }
+  },
+  {
+    "number": 14,
+    "title": "Importer times out",
+    "user": {
+      "login": "carol-dev",
+      "id": 103,
+      "type": "User"
+    },
+    "state": "open",
+    "created_at": "2026-09-04T13:00:00Z",
+    "updated_at": "2026-09-04T14:00:00Z",
+    "html_url": "https://code.example.test/acme/app/issues/14"
+  },
+  {
+    "number": 9,
+    "title": "Typo on the settings page",
+    "user": {
+      "login": "dana-dev",
+      "id": 104,
+      "type": "User"
+    },
+    "state": "closed",
+    "created_at": "2026-08-28T10:00:00Z",
+    "updated_at": "2026-09-04T11:00:00Z",
+    "html_url": "https://code.example.test/acme/app/issues/9"
+  }
+]

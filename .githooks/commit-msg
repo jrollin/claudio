@@ -1,0 +1,34 @@
+#!/bin/sh
+case $1 in
+  /*) source=$1 ;;
+  *) source=$PWD/$1 ;;
+esac
+
+could_not_run() {
+  echo "commit-msg: leak check could not run ($1); commit blocked" >&2
+  exit 2
+}
+
+if ! root=$(git rev-parse --show-toplevel) || ! cd "$root"; then
+  could_not_run "cannot enter the repository toplevel"
+fi
+tmp=$(mktemp -d) || could_not_run "cannot create a temporary directory"
+trap 'rm -rf "$tmp"' EXIT
+trap 'exit 2' HUP INT TERM
+
+comment=$(git config --get core.commentChar)
+case $comment in
+  '' | auto) comment='#' ;;
+esac
+scissors="$comment ------------------------ >8 ------------------------"
+if ! awk -v cut="$scissors" '$0 == cut { exit } { print }' "$source" >"$tmp/cut" ||
+  ! git stripspace --strip-comments <"$tmp/cut" >"$tmp/message"; then
+  could_not_run "cannot read the commit message"
+fi
+
+python3 scripts/leak_check.py --message "$tmp/message"
+status=$?
+if [ "$status" -eq 0 ] || [ "$status" -eq 1 ]; then
+  exit "$status"
+fi
+could_not_run "exit $status"

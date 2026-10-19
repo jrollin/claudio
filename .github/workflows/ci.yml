@@ -1,0 +1,53 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  leak-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Fork guard
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "leak-check: the LEAK_DENY_WORDS secret is not available to forks, so this check cannot run"
+          exit 1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.10"
+      - name: Leak check
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+          LEAK_DENY_WORDS: ${{ secrets.LEAK_DENY_WORDS }}
+        run: |
+          python3 scripts/leak_check.py --tree --require-deny-words
+          if [ "$EVENT" = pull_request ]; then
+            python3 scripts/leak_check.py --range "$PR_BASE..$PR_HEAD" --require-deny-words
+          elif [ -n "${PUSH_BEFORE//0/}" ] && git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null; then
+            python3 scripts/leak_check.py --range "$PUSH_BEFORE..$PUSH_AFTER" --require-deny-words
+          else
+            python3 scripts/leak_check.py --history --require-deny-words
+          fi
+      - name: Template lint
+        run: python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public
+      - name: Unit tests, scripts
+        run: python3 -m unittest discover -s scripts
+      - name: Unit tests, state engine
+        run: python3 -m unittest discover -s plugins/claudio-routines/runtime
+      - name: Unit tests, routines tooling
+        run: python3 -m unittest discover -s plugins/claudio-routines/skills/routines/scripts

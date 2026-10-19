@@ -1,7 +1,7 @@
 {
   "name": "claudio-power",
   "description": "Spec-driven development, engineering craft, and tooling skills for Claude Code",
-  "version": "2.12.1",
+  "version": "2.14.0",
   "owner": {
     "name": "Julien Rollin"
   },
@@ -36,6 +36,14 @@
         "source": "git-subdir",
         "url": "jrollin/claudio",
         "path": "plugins/claudio-rust"
+      }
+    },
+    {
+      "name": "claudio-routines",
+      "source": {
+        "source": "git-subdir",
+        "url": "jrollin/claudio",
+        "path": "plugins/claudio-routines"
       }
     }
   ]

@@ -1,0 +1,5 @@
+{
+  "id": "<chat-recap-routine-id>",
+  "template": "chat-recap",
+  "cron": "CRON_TZ=Europe/Paris 0 9,14 * * 1-5"
+}

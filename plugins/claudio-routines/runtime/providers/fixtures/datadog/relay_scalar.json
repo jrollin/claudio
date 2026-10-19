@@ -1,0 +1,1 @@
+{"metrics": [{"entry": "checkout-p95", "ok": true, "scalar": {"columns": [{"type": "number", "name": "a", "values": [42.5]}]}}]}

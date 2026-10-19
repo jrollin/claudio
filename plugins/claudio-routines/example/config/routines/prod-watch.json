@@ -1,0 +1,71 @@
+{
+  "id": "<prod-watch-routine-id>",
+  "template": "prod-watch",
+  "cron": "CRON_TZ=Europe/Paris 30 9,13,17 * * 1-5",
+  "sources": {
+    "monitors": {
+      "provider": "observability",
+      "kind": "monitors",
+      "scope_filter": "<alert-event-query>",
+      "discovery_query": "<monitor-search-query>"
+    },
+    "metrics": {
+      "provider": "observability",
+      "kind": "metrics",
+      "scope_filter": ""
+    },
+    "sources-page": {
+      "provider": "document-store",
+      "page_id": "<document-page-id>",
+      "transport": {
+        "local": "mcp"
+      }
+    }
+  },
+  "rules": [
+    "<routine-rule-for-flapping-monitors>",
+    "<routine-rule-for-discovered-monitors>",
+    "<routine-rule-for-monitors-without-data>"
+  ],
+  "query_pack": [
+    {
+      "key": "monitor-1234",
+      "source": "monitors",
+      "title": "<monitor-title>",
+      "link": "<monitor-link>",
+      "rule": "<rule-for-this-monitor>",
+      "schedule": "every_run",
+      "monitor": "1234"
+    },
+    {
+      "key": "<hourly-metric-key>",
+      "source": "metrics",
+      "title": "<hourly-metric-title>",
+      "link": "<hourly-metric-link>",
+      "rule": "<rule-for-this-metric>",
+      "schedule": "every_run",
+      "query": "<hourly-metric-query>",
+      "read": "hourly",
+      "aggregator": "<aggregator>",
+      "excluded_hours": [
+        2,
+        3
+      ]
+    },
+    {
+      "key": "<daily-metric-key>",
+      "source": "metrics",
+      "title": "<daily-metric-title>",
+      "link": "<daily-metric-link>",
+      "rule": "<rule-for-this-metric>",
+      "schedule": "daily",
+      "query": "<daily-metric-query>",
+      "read": "scalar",
+      "aggregator": "<aggregator>",
+      "lookback_days": 7
+    }
+  ],
+  "models": {
+    "digest": "<model-id>"
+  }
+}

@@ -1,0 +1,1 @@
+{"id": 103, "name": "Disk usage", "type": "metric alert", "query": "avg(last_5m):avg:system.disk.in_use{env:prod} > 0.9"}

@@ -1,0 +1,13 @@
+{"object": "list", "type": "block", "block": {}, "has_more": false, "next_cursor": null, "results": [
+  {"object": "block", "id": "b-step", "type": "numbered_list_item", "has_children": false, "numbered_list_item": {"rich_text": [{"plain_text": "Read the monitors"}]}},
+  {"object": "block", "id": "b-todo", "type": "to_do", "has_children": false, "to_do": {"rich_text": [{"plain_text": "Review the mutes"}], "checked": false}},
+  {"object": "block", "id": "b-quote", "type": "quote", "has_children": false, "quote": {"rich_text": [{"plain_text": "Quiet weeks count too."}]}},
+  {"object": "block", "id": "b-callout", "type": "callout", "has_children": false, "callout": {"rich_text": [{"plain_text": "Owner: platform"}], "icon": {"type": "emoji", "emoji": "!"}}},
+  {"object": "block", "id": "b-toggle", "type": "toggle", "has_children": true, "toggle": {"rich_text": [{"plain_text": "Details"}]}},
+  {"object": "block", "id": "b-code", "type": "code", "has_children": false, "code": {"rich_text": [{"plain_text": "avg:queue.depth{*}"}], "language": "plain text"}},
+  {"object": "block", "id": "b-notes", "type": "heading_3", "has_children": false, "heading_3": {"rich_text": [{"plain_text": "Notes"}]}},
+  {"object": "block", "id": "b-minor", "type": "heading_4", "has_children": false, "heading_4": {"rich_text": [{"plain_text": "Minor"}]}},
+  {"object": "block", "id": "b-empty", "type": "paragraph", "has_children": false, "paragraph": {"rich_text": []}},
+  {"object": "block", "id": "b-divider", "type": "divider", "has_children": false, "divider": {}},
+  {"object": "block", "id": "b-child", "type": "child_page", "has_children": true, "child_page": {"title": "Archive"}}
+]}

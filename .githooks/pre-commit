@@ -1,0 +1,12 @@
+#!/bin/sh
+if ! root=$(git rev-parse --show-toplevel) || ! cd "$root"; then
+  echo "pre-commit: leak check could not run: cannot enter the repository toplevel; commit blocked" >&2
+  exit 2
+fi
+python3 scripts/leak_check.py --staged
+status=$?
+if [ "$status" -eq 0 ] || [ "$status" -eq 1 ]; then
+  exit "$status"
+fi
+echo "pre-commit: leak check could not run (exit $status); commit blocked" >&2
+exit 2

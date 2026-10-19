@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "messages": [
+    {
+      "type": "message",
+      "subtype": "channel_join",
+      "user": "U3",
+      "text": "<@U3> has joined the channel",
+      "ts": "1760005000.000500"
+    },
+    {
+      "type": "message",
+      "user": "U1",
+      "text": "=== incident review ===\nall clear",
+      "ts": "1760004000.000400"
+    }
+  ],
+  "has_more": false
+}

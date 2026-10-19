@@ -1,0 +1,5 @@
+# One entry per line: path:<glob> <rule> or commit:<short-hash> <rule>. Never the matched text.
+# An example UUID in the utoipa OpenAPI reference.
+path:plugins/claudio-rust/skills/rust-hexagonal/references/openapi-utoipa.md notion-id
+# The onboarding commit whose examples were made generic later.
+commit:174491e deny-word

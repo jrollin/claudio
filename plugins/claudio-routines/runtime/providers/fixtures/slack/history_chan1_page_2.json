@@ -1,0 +1,15 @@
+{
+  "ok": true,
+  "messages": [
+    {
+      "type": "message",
+      "user": "U1",
+      "text": "Morning",
+      "ts": "1760001000.000100"
+    }
+  ],
+  "has_more": false,
+  "response_metadata": {
+    "next_cursor": ""
+  }
+}

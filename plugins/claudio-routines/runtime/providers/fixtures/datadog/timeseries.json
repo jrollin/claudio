@@ -1,0 +1,5 @@
+{"data": {"type": "timeseries_response", "attributes": {
+  "series": [{"group_tags": [], "query_index": 0, "unit": null}],
+  "times": [1760000000000, 1760003600000, 1760007200000],
+  "values": [[3.5, null, 7.25]]
+}}}
