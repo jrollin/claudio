@@ -713,6 +713,60 @@ class RoleOptionsTest(ConfigCase):
         self.assert_config_error(config, "routines.prod-watch.sources.metrics.discovery_query")
 
 
+class CodeHostSearchesTest(ConfigCase):
+    SOURCE_PATH = "routines.prod-watch.sources.code"
+
+    def searches_config(self, searches=None, transport=None):
+        config = make_config()
+        source = routine_sources(config)["code"]
+        del source["repos"]
+        source["searches"] = ["is:pr org:example-org author:dev"] if searches is None else searches
+        if transport is not None:
+            config["providers"]["code"]["mcp"] = {"connectors": {"cloud": "code-cloud", "local": "code-local"}}
+            source["transport"] = transport
+        return config
+
+    def test_accepts_searches_in_place_of_repos(self):
+        self.assertIsNone(roles.validate_config(self.searches_config(), ROUTINE, "local", role_of))
+
+    def test_accepts_excluded_authors(self):
+        config = self.searches_config()
+        routine_sources(config)["code"]["exclude_authors"] = ["release-manager"]
+        self.assertIsNone(roles.validate_config(config, ROUTINE, "local", role_of))
+
+    def test_rejects_repos_next_to_searches(self):
+        config = self.searches_config()
+        routine_sources(config)["code"]["repos"] = ["acme/service"]
+        self.assert_config_error(config, self.SOURCE_PATH)
+
+    def test_rejects_a_source_with_neither_repos_nor_searches(self):
+        config = make_config()
+        del routine_sources(config)["code"]["repos"]
+        self.assert_config_error(config, self.SOURCE_PATH)
+
+    def test_rejects_an_empty_search_list(self):
+        self.assert_config_error(self.searches_config([]), self.SOURCE_PATH + ".searches")
+
+    def test_rejects_a_blank_search(self):
+        self.assert_config_error(self.searches_config(["is:pr", "  "]), self.SOURCE_PATH + ".searches[1]")
+
+    def test_rejects_a_search_that_is_not_a_string(self):
+        self.assert_config_error(self.searches_config([7]), self.SOURCE_PATH + ".searches[0]")
+
+    def test_rejects_excluded_authors_that_is_not_a_list(self):
+        config = self.searches_config()
+        routine_sources(config)["code"]["exclude_authors"] = "release-manager"
+        self.assert_config_error(config, self.SOURCE_PATH + ".exclude_authors")
+
+    def test_rejects_searches_over_an_mcp_transport_for_the_place(self):
+        config = self.searches_config(transport={"cloud": "api", "local": "mcp"})
+        self.assert_config_error(config, self.SOURCE_PATH + ".searches")
+
+    def test_rejects_searches_over_an_mcp_transport_for_the_other_place(self):
+        config = self.searches_config(transport={"cloud": "mcp", "local": "api"})
+        self.assert_config_error(config, self.SOURCE_PATH + ".searches")
+
+
 class DocumentPagesOptionTest(ConfigCase):
     SOURCE_PATH = "routines.prod-watch.sources.sources-page"
 
@@ -2476,6 +2530,32 @@ class CodeHostRecordsTest(CollectionCase):
         doc = self.code_collection()
         doc["cursor"]["updated_at"] = 0
         self.assert_collection_error(doc, "cursor.updated_at")
+
+    def activity_collection(self, **changes):
+        doc = self.code_collection()
+        entry = {
+            "repo": "acme/service",
+            "number": 42,
+            "kind": "review",
+            "author": "reviewer",
+            "at": "2026-10-02T08:30:00Z",
+            "state": "APPROVED",
+            "text": "Looks good",
+        }
+        doc["records"]["activity"] = [{**entry, **changes}]
+        return doc
+
+    def test_accepts_the_activity_of_a_pull_request(self):
+        self.assertIsNone(roles.validate_collection(self.activity_collection()))
+
+    def test_accepts_an_activity_without_a_state(self):
+        self.assertIsNone(roles.validate_collection(self.activity_collection(kind="comment", state=None)))
+
+    def test_rejects_an_activity_time_without_the_utc_suffix(self):
+        self.assert_collection_error(self.activity_collection(at="2026-10-02 08:30"), "records.activity[0].at")
+
+    def test_rejects_an_activity_text_that_is_not_a_string(self):
+        self.assert_collection_error(self.activity_collection(text=None), "records.activity[0].text")
 
 
 class IssueTrackerContractTest(ConfigCase, CollectionCase):

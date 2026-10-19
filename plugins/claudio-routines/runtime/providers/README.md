@@ -112,6 +112,11 @@ An API key carries no scopes: it names the organization, and the application key
 - Version: every call sends `X-GitHub-Api-Version: 2022-11-28` and `Accept: application/vnd.github+json`, pinned in the module.
 - Issues disabled: a repository whose issue list answers HTTP 410 reads as having no issues.
 - Query: a source with a non-empty `query` is not read, under either transport: neither the list endpoints nor the connector's list tools take a search query.
+- Searches: a source sets `searches`, a list of pull request search queries such as `is:pr org:example-org author:dev`, in place of `repos` (exactly one of the two). It reads over `api` only: a source that sets `searches` with an `mcp` transport for either place fails the config load with the key path, and the connector steps refuse it. Optional `exclude_authors`, a list of logins, drops their activity.
+  - Search: `GET /search/issues` for each query, with `q` set to the query followed by `updated:>=<window start date>` (UTC, `YYYY-MM-DD`), `per_page=100`, following the `Link` header's `rel="next"` page up to the page cap, which ends the read partial. Items that are not pull requests are skipped, and a pull request found by several queries is kept once by repository and number. Each becomes a `pull_requests` record, `issues` stays empty.
+  - Activity: for each pull request, `GET /repos/{owner}/{repo}/issues/{number}/comments?since=<window start>`, `GET /repos/{owner}/{repo}/pulls/{number}/reviews` and `GET /repos/{owner}/{repo}/pulls/{number}/comments?since=<window start>`, each paged the same way. The collection gains `activity`, one record per comment (`kind` `comment`), submitted review (`review`) or review comment (`review_comment`) whose time is inside the window: `repo`, `number`, `kind`, `author` (login), `at` (comment creation or review submission time, UTC), `state` (the review state as the host returns it, such as `APPROVED`, null for a comment) and `text` (the body, at most 1000 characters, empty when the host sends none).
+  - Dropped: activity by a login ending in `[bot]` or listed in `exclude_authors`, and reviews not yet submitted.
+  - Cursor: `updated_at` stays null. The window alone bounds the read, so a stored cursor never narrows it.
 - Connector: each repository costs at least 2 relay calls (its pull requests, then its issues), and a source stops at 50 relay calls (`call cap`). A source holds at most about 20 repositories over the connector transport: split a larger set into several sources.
 
 ### Credentials
@@ -138,7 +143,7 @@ An API key carries no scopes: it names the organization, and the application key
 
 ### Read-only scope
 
-Create a fine-grained personal access token whose repository access lists only the repositories in `repos`, with these repository permissions only:
+Create a fine-grained personal access token whose repository access lists only the repositories in `repos` (or those the `searches` reach), with these repository permissions only:
 
 | Permission | Reads |
 | --- | --- |

@@ -154,7 +154,9 @@ ROLE_OPTIONS = {
         "call_cap": Omittable(Rule(lambda value: is_integer(value) and 1 <= value <= CALL_CAP_MAX, f"must be an integer from 1 to {CALL_CAP_MAX}")),
     },
     "code_host": {
-        "repos": ListOf(Rule(_matches(REPO), "must be an owner/name repository"), non_empty=True),
+        "repos": Omittable(ListOf(Rule(_matches(REPO), "must be an owner/name repository"), non_empty=True)),
+        "searches": Omittable(ListOf(NON_BLANK, non_empty=True)),
+        "exclude_authors": Omittable(ListOf(TEXT)),
         "query": Omittable(STRING),
     },
     "issue_tracker": {
@@ -395,6 +397,19 @@ ROLE_SCHEMAS = {
                     "link": STRING,
                 }
             ),
+            "activity": Omittable(
+                ListOf(
+                    {
+                        "repo": STRING,
+                        "number": INTEGER,
+                        "kind": STRING,
+                        "author": STRING,
+                        "at": UTC_TIME,
+                        "state": Nullable(STRING),
+                        "text": STRING,
+                    }
+                )
+            ),
         },
         {"updated_at": Nullable(STRING)},
     ),
@@ -542,6 +557,16 @@ def _validate_source(source, path, providers, place, role_of, engine, owner=None
         _validate_chat_options(source, path)
     if role == "issue_tracker":
         _validate_issue_options(source, path)
+    if role == "code_host":
+        _validate_code_host_options(source, path)
+
+
+def _validate_code_host_options(source, path):
+    if ("repos" in source) == ("searches" in source):
+        raise ConfigError(f"{path}: a code host source sets exactly one of repos and searches")
+    mcp_places = [place for place in PLACES if source["transport"][place] == "mcp"]
+    if "searches" in source and mcp_places:
+        raise ConfigError(f"{path}.searches: read over api only, but {path}.transport.{mcp_places[0]} is mcp")
 
 
 def _validate_recap_source(source, path, role, owner):
