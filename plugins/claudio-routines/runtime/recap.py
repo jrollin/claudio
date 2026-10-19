@@ -1,11 +1,12 @@
 import argparse
 import sys
 
+import recap_seed
 import recap_state
 import recap_window
 import state
 
-STUBS = ("seed", "features", "judge", "apply", "message")
+STUBS = ("features", "judge", "apply", "message")
 
 
 def lookback_days(text):
@@ -33,11 +34,16 @@ def run_window(args):
     return 0
 
 
+def run_seed(args):
+    recap_state.write(args.out, recap_seed.seed(args.source, args.digest))
+    return 0
+
+
 def run_stub(args):
     raise state.InputError(f"{args.command}: not implemented yet")
 
 
-COMMANDS = {"init": run_init, "window": run_window, **{name: run_stub for name in STUBS}}
+COMMANDS = {"init": run_init, "window": run_window, "seed": run_seed, **{name: run_stub for name in STUBS}}
 
 
 def build_parser():
@@ -53,6 +59,10 @@ def build_parser():
     start = window.add_mutually_exclusive_group()
     start.add_argument("--since", help="explicit window start, uncapped; the run then never advances the state")
     start.add_argument("--report-only", action="store_true", help="normal window start, marked explicit so the run never advances the state")
+    seed = commands.add_parser("seed", help="turn the state a live routine kept in the document store into a recap state")
+    seed.add_argument("--from", dest="source", required=True, help="the stored state, extracted as JSON (schema 1)")
+    for flag in ("--digest", "--out"):
+        seed.add_argument(flag, required=True)
     for name in STUBS:
         commands.add_parser(name, help="not implemented yet").add_argument("rest", nargs=argparse.REMAINDER)
     return parser

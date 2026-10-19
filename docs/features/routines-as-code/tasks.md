@@ -925,7 +925,7 @@ Runs in a local session with the chat, issue tracker, document store and observa
 - **Files**: `plugins/claudio-routines/runtime/recap_seed.py` (new), `plugins/claudio-routines/runtime/test_recap_seed.py` (new), `plugins/claudio-routines/runtime/recap.py` (modify), `plugins/claudio-routines/skills/routines/scripts/routines.py` (modify), `plugins/claudio-routines/skills/routines/scripts/test_routines.py` (modify)
 - **Blocked by**: T-79
 - **Rules**: BR-67
-- **Status**: Not Started
+- **Status**: Complete
 
 ### T-85: Recap template and engine wiring
 - The `recap` engine joins `ENGINES`; the role check validates the recap routine keys of TD-64 with key paths; the runnable template `chat-recap.md` follows TD-64; `routines.py` lints its flags against `recap.py`; the READMEs list the engine.

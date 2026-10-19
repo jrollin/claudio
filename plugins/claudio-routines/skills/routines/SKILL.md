@@ -1,6 +1,6 @@
 ---
 name: routines
-description: Manage claude.ai routines (scheduled cloud agents) as code. Export the live routines into a private repository, render their prompts from templates, show drift between git and live, lint templates, push a rendered prompt after an explicit approval, seed a tribe routine's state from its previous digest pages, and run a routine locally in this session. Use for "/routines", "export my routines", "is my routine in sync", "diff routines", "sync the routine", "push the routine prompt", "seed the tribe state", "render the routine", "lint routine templates", "print the environment setup script", "run prod watch locally", "run the routine here". NOT for creating or deleting routines, and NOT for reading a routine's run logs.
+description: Manage claude.ai routines (scheduled cloud agents) as code. Export the live routines into a private repository, render their prompts from templates, show drift between git and live, lint templates, push a rendered prompt after an explicit approval, seed a tribe routine's state from its previous digest pages or a recap routine's state from its stored state, and run a routine locally in this session. Use for "/routines", "export my routines", "is my routine in sync", "diff routines", "sync the routine", "push the routine prompt", "seed the tribe state", "render the routine", "lint routine templates", "print the environment setup script", "run prod watch locally", "run the routine here". NOT for creating or deleting routines, and NOT for reading a routine's run logs.
 ---
 
 # Routines
@@ -115,16 +115,18 @@ Never post to the chat channel without `--post`: the rendered prompt then prints
 
 ## Seed
 
-Seeds the state of a routine whose engine is `tribe` from its previous digest pages, so the first runtime run continues their keys. The seeded state stays in a scratch directory until the owner approves it. Never push the state without the owner's explicit approval of the summary shown in this session.
+Seeds the state of a routine whose engine is `tribe` from its previous digest pages, or whose engine is `recap` from the state its live routine kept in the document store, so the first runtime run continues their keys. The seeded state stays in a scratch directory until the owner approves it. Never push the state without the owner's explicit approval of the summary shown in this session.
 
 `<private>` below is the private repository path of the Preconditions.
 
 1. Run `R check-private`. On exit 2, stop and show its message.
 2. Ask the owner for the previous digest pages of the routine, newest first, as page ids or links. Make a directory `<dir>` with `mktemp -d`, outside any repository, and fetch each page with the document store connector.
    - When the result says it was saved to a file, copy that file to `<dir>/page-<n>.json`. Otherwise write the full result, first line included, to that path. `<n>` counts from 1, newest first.
+   - A `recap` routine takes no digest pages: ask for the page that holds the stored state, fetch it the same way, and write the JSON of its state to `<dir>/source.json`.
 3. Run `R seed <slug> --page <dir>/page-1.json [--page <dir>/page-2.json ...] --out <dir>/state.json`, the pages newest first. It runs the seed command of the runtime checked out at `runtime.sha` in `places.local.runtime_dir`, so the state matches the version that reads it.
+   - A `recap` routine runs `R seed <slug> --from <dir>/source.json --out <dir>/state.json` instead: the state is named after the routine's `values.digest.name`, else its slug, and each unit keeps its kind, channel, status, waiting runs and lateness with its title cut to 8 words; links, blind spots and run bookkeeping are dropped.
    - The runtime directory is missing, at another commit or not clean: tell the owner to run `R setup-script --place local` and run its output, then stop.
-   - Exit 2 or 3 stops the seed with its message and nothing written: the routine's engine is not `tribe`, the config is invalid, no page holds a valid run state (each page read is named), or a run state holds a field outside the allowed values, a warning `status` excepted (its key path is named).
+   - Exit 2 or 3 stops the seed with its message and nothing written: the routine's engine is not `tribe` or `recap`, the input flag does not fit the engine (`--page` for `tribe`, `--from` for `recap`), the config is invalid, no page holds a valid run state (each page read is named), a run state holds a field outside the allowed values, a warning `status` excepted (its key path is named), or a stored `recap` unit cannot be mapped (its key path `units.<key>.<field>` is named).
    - A page without a valid run state is named on stderr with its reason and skipped; the next page seeds the state.
    - A warning `status` other than `open`, `in progress`, `mitigated`, `decided` or `dropped` is read as the one it starts with, else as `open`. Each reading is printed on stderr: show those lines with the summary of step 5.
 4. Run `git -C <private> fetch origin +claude/state:refs/remotes/origin/claude/state`, then `git -C <private> cat-file -e origin/claude/state:state/<slug>.json`.

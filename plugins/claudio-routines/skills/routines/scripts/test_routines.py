@@ -2190,7 +2190,7 @@ class NoEngineSeedTest(Refusal, SeedCase):
         self.write_config(config)
 
     def cause(self):
-        return f"routine {self.slug} has engine watch: seeding needs engine tribe"
+        return f"routine {self.slug} has engine watch: seeding needs engine tribe or recap"
 
 
 class WatchEngineSeedTest(Refusal, SeedCase):
@@ -2200,7 +2200,7 @@ class WatchEngineSeedTest(Refusal, SeedCase):
         self.write_config(config)
 
     def cause(self):
-        return f"routine {self.slug} has engine watch: seeding needs engine tribe"
+        return f"routine {self.slug} has engine watch: seeding needs engine tribe or recap"
 
 
 class UnknownRoutineSeedTest(Refusal, SeedCase):
@@ -2328,6 +2328,228 @@ class SeedArgumentTest(SeedCase):
         self.assertEqual((code, "private directory not set" in stderr), (2, True))
 
 
+RECAP_CHANNEL = "C" + "1" * 6
+RECAP_THREAD = f"thread-{'C' + '2' * 6}-1791990000.000100"
+
+
+def recap_source_unit(channel, **fields):
+    unit = {
+        "kind": "dm",
+        "channel": channel,
+        "title": "Review the export plan",
+        "permalink": f"https://chat.example.test/archives/{channel}/p1791990730",
+        "first_seen": 1791963900,
+        "last_ts": 1792000330,
+        "status": "waiting",
+        "runs_waiting": 2,
+        "late": "3 working days",
+    }
+    return {**unit, **fields}
+
+
+def recap_source():
+    return {
+        "schema": 1,
+        "digest": "recap",
+        "run": {
+            "at": "2026-10-15T07:45:00Z",
+            "previous_at": "2026-10-14T07:45:00Z",
+            "sources_last_edited": "2026-10-01",
+            "window": {"from_ts": 1791963900, "to_ts": 1792050300},
+            "models": {"main": "model-a"},
+            "posted": True,
+        },
+        "units": {
+            f"dm-{RECAP_CHANNEL}": recap_source_unit(RECAP_CHANNEL),
+            RECAP_THREAD: recap_source_unit("C" + "2" * 6, kind="thread", status="promise", runs_waiting=1, late=None),
+        },
+        "blind_spots": ["mentions search cut after 10 pages"],
+    }
+
+
+class RecapSeedCase(SeedCase):
+    slug = "chat-recap"
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.object(routines, "load_config", side_effect=lambda private: self.config())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def config(self):
+        config = make_config(template="chat-recap", places=make_places(local={"runtime_dir": self.runtime_dir}), sha=git(self.runtime_dir, "rev-parse", "HEAD"))
+        config["routines"] = {self.slug: {"engine": "recap", "id": "trig_test_a", "template": "chat-recap", "cron": CRON}}
+        return config
+
+    def source(self, document=None):
+        path = os.path.join(self.root, "source.json")
+        write(path, json.dumps(recap_source() if document is None else document))
+        return path
+
+    def seed_from(self, *flags):
+        return self.run_private("seed", self.slug, *flags, "--out", self.out)
+
+
+class RecapSeededStateTest(RecapSeedCase):
+    def setUp(self):
+        super().setUp()
+        self.before = tree(self.private)
+        self.code, self.stdout, self.stderr = self.seed_from("--from", self.source())
+
+    def test_exits_0(self):
+        self.assertEqual(self.code, 0)
+
+    def test_writes_a_state_that_passes_the_recap_state_check(self):
+        self.assertIsNone(runtime_module("recap_state").check_state(json.loads(read(self.out))))
+
+    def test_names_the_state_after_the_routine(self):
+        self.assertEqual(json.loads(read(self.out))["digest"], self.slug)
+
+    def test_drops_the_permalinks(self):
+        self.assertNotIn("example.test", read(self.out))
+
+    def test_prints_the_seeded_state_summary(self):
+        expected = (
+            f"seeded {self.slug}: state written to {self.out}\n"
+            "run at 2026-10-15T07:45:00Z, previous run 2026-10-14T07:45:00Z\n"
+            "units: 2\n"
+            f"  dm-{RECAP_CHANNEL}: waiting, runs waiting 2, late 3 working days\n"
+            f"  {RECAP_THREAD}: promise, runs waiting 1\n"
+            "blind spots: 0\n"
+        )
+        self.assertEqual(self.stdout, expected)
+
+    def test_prints_nothing_on_stderr(self):
+        self.assertEqual(self.stderr, "")
+
+    def test_writes_nothing_but_the_out_file(self):
+        self.assertEqual(tree(self.private), self.before)
+
+
+class RecapDigestNameSeedTest(RecapSeedCase):
+    def config(self):
+        config = super().config()
+        config["routines"][self.slug]["values"] = {"digest": {"name": "Chat recap"}}
+        return config
+
+    def test_names_the_state_after_the_digest_value(self):
+        self.seed_from("--from", self.source())
+        self.assertEqual(json.loads(read(self.out))["digest"], "Chat recap")
+
+
+class RecapUnmappableSeedTest(RecapSeedCase):
+    def setUp(self):
+        super().setUp()
+        source = recap_source()
+        source["units"][RECAP_THREAD]["status"] = "done"
+        self.code, self.stdout, self.stderr = self.seed_from("--from", self.source(source))
+
+    def test_exits_3(self):
+        self.assertEqual(self.code, 3)
+
+    def test_names_the_key_path_of_the_unit_field(self):
+        self.assertIn(f"units.{RECAP_THREAD}.status", self.stderr)
+
+    def test_writes_no_state(self):
+        self.assertFalse(os.path.exists(self.out))
+
+    def test_prints_no_summary(self):
+        self.assertEqual(self.stdout, "")
+
+
+class RecapPageSeedTest(RecapSeedCase):
+    def setUp(self):
+        super().setUp()
+        self.code, _, self.stderr = self.seed_from("--page", self.source())
+
+    def test_exits_2(self):
+        self.assertEqual(self.code, 2)
+
+    def test_asks_for_the_stored_state(self):
+        self.assertIn(f"routine {self.slug} has engine recap: seeding takes --from <stored state>, not --page", self.stderr)
+
+    def test_writes_no_state(self):
+        self.assertFalse(os.path.exists(self.out))
+
+
+class TribeFromSeedTest(SeedCase):
+    def setUp(self):
+        super().setUp()
+        self.code, _, self.stderr = self.run_private("seed", self.slug, "--from", self.valid_page("page.json"), "--out", self.out)
+
+    def test_exits_2(self):
+        self.assertEqual(self.code, 2)
+
+    def test_asks_for_the_digest_pages(self):
+        self.assertIn(f"routine {self.slug} has engine tribe: seeding takes --page <digest page>, not --from", self.stderr)
+
+    def test_writes_no_state(self):
+        self.assertFalse(os.path.exists(self.out))
+
+
+class RecapSeedArgumentTest(RecapSeedCase):
+    def test_requires_a_source(self):
+        self.assertEqual(self.seed_from()[0], 2)
+
+    def test_refuses_a_page_with_a_stored_state(self):
+        self.assertEqual(self.seed_from("--from", self.source(), "--page", self.source())[0], 2)
+
+    def test_requires_an_out_file(self):
+        self.assertEqual(self.run_private("seed", self.slug, "--from", self.source())[0], 2)
+
+
+class SeedRoutingTest(unittest.TestCase):
+    def config(self, **routine):
+        return {"routines": {"chat-recap": routine}}
+
+    def arguments(self, engine, config, **flags):
+        args = argparse.Namespace(**{"slug": "chat-recap", "out": "state.json", "page": None, "source": None, **flags})
+        return routines.seed_arguments(engine, config, args, "/private")
+
+    def test_a_recap_routine_seeds_with_the_recap_engine(self):
+        self.assertEqual(routines.seed_engine(self.config(engine="recap"), "chat-recap"), "recap")
+
+    def test_a_tribe_routine_seeds_with_the_tribe_engine(self):
+        self.assertEqual(routines.seed_engine(self.config(engine="tribe"), "chat-recap"), "tribe")
+
+    def test_a_watch_routine_is_refused(self):
+        with self.assertRaisesRegex(routines.UsageError, "routine chat-recap has engine watch: seeding needs engine tribe or recap"):
+            routines.seed_engine(self.config(), "chat-recap")
+
+    def test_an_unknown_engine_is_refused(self):
+        with self.assertRaisesRegex(routines.UsageError, "has engine batch: seeding needs engine tribe or recap"):
+            routines.seed_engine(self.config(engine="batch"), "chat-recap")
+
+    def test_recap_arguments_carry_the_source_the_digest_and_the_out_file(self):
+        self.assertEqual(
+            self.arguments("recap", self.config(engine="recap"), source="source.json"),
+            ["--from", "source.json", "--digest", "chat-recap", "--out", "state.json"],
+        )
+
+    def test_recap_digest_is_the_digest_name_value(self):
+        config = self.config(engine="recap", values={"digest": {"name": "Chat recap"}})
+        self.assertEqual(self.arguments("recap", config, source="source.json")[3], "Chat recap")
+
+    def test_recap_digest_name_must_be_a_string(self):
+        config = self.config(engine="recap", values={"digest": {"name": 3}})
+        with self.assertRaisesRegex(routines.UsageError, "routine chat-recap: values digest.name must be a string"):
+            self.arguments("recap", config, source="source.json")
+
+    def test_recap_arguments_refuse_pages(self):
+        with self.assertRaisesRegex(routines.UsageError, "seeding takes --from <stored state>, not --page"):
+            self.arguments("recap", self.config(engine="recap"), page=["page.json"])
+
+    def test_tribe_arguments_carry_each_page(self):
+        self.assertEqual(
+            self.arguments("tribe", self.config(engine="tribe"), page=["a.json", "b.json"]),
+            ["--routine", "chat-recap", "--config", "/private/config.json", "--out", "state.json", "--page", "a.json", "--page", "b.json"],
+        )
+
+    def test_tribe_arguments_refuse_a_stored_state(self):
+        with self.assertRaisesRegex(routines.UsageError, "seeding takes --page <digest page>, not --from"):
+            self.arguments("tribe", self.config(engine="tribe"), source="source.json")
+
+
 class SkillSeedTest(unittest.TestCase):
     def setUp(self):
         self.steps = skill_steps("Seed")
@@ -2379,6 +2601,12 @@ class SkillSeedTest(unittest.TestCase):
 
     def test_seed_stops_on_a_refused_routine(self):
         self.assertIn("engine is not `tribe`", self.section)
+
+    def test_seed_runs_a_recap_routine_from_its_stored_state(self):
+        self.assertIn("R seed <slug> --from <dir>/source.json --out <dir>/state.json", self.section)
+
+    def test_seed_fetches_the_stored_state_of_a_recap_routine_into_the_source_file(self):
+        self.assertIn("write the JSON of its state to `<dir>/source.json`", self.section)
 
     def test_seed_states_that_nothing_is_pushed_without_approval(self):
         self.assertIn("Never push the state without the owner's explicit approval", self.section)
