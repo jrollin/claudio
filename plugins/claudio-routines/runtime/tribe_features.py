@@ -166,6 +166,10 @@ def trend_values(trend, value, to_day, span):
     return values
 
 
+def empty_trend_values(value):
+    return {**dict.fromkeys(TREND_NAMES, 0), "value": value, "growth_monthly": None}
+
+
 def trend_documents(reading, collections, to_day):
     docs, gaps = {}, []
     for entry in reading.pack:
@@ -177,9 +181,10 @@ def trend_documents(reading, collections, to_day):
         trend = record.get("trend")
         window = reading.keys.get(entry["key"])
         value = window["values"]["value"] if window else None
-        values = trend_values(trend, value, to_day, entry["trend_days"])
+        empty = not trend and features.reads_empty_as_zero(entry) and record.get("trend_reason") == features.NO_DATAPOINTS
+        values = empty_trend_values(value) if empty else trend_values(trend, value, to_day, entry["trend_days"])
         docs[TREND_PREFIX + entry["key"]] = document("trend", entry["source"], entry["link"], entry["title"], values)
-        if not trend:
+        if not trend and not empty:
             gaps.append((TREND_PREFIX + entry["key"], features.label(record.get("trend_reason") or NO_TREND)))
     return docs, gaps
 

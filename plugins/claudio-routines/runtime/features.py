@@ -11,6 +11,7 @@ SIGNIFICANT = 4
 HASH_LENGTH = 8
 SLUG_RUNS = re.compile(r"[^a-z0-9]+")
 NO_DATAPOINTS = "no datapoints"
+EMPTY_AS_ZERO = "zero"
 MONITOR_ABSENT = "monitor absent"
 NOT_FOUND = "not found"
 NOT_IN_PACK = "not in the query pack"
@@ -112,6 +113,10 @@ def group_keys(entry_key, groups):
         head = slug[: max(room - HASH_LENGTH - 1, 0)].strip("-")
         keys.append("-".join(part for part in (entry_key, head, suffix) if part))
     return keys
+
+
+def reads_empty_as_zero(entry):
+    return entry.get("empty") == EMPTY_AS_ZERO
 
 
 def metric_values(value, window_max, window_max_at, latest, previous):
@@ -278,7 +283,9 @@ class Reading:
         if record is None:
             return Outcome(GAP, NO_DATAPOINTS)
         if entry["read"] == "top":
-            return Outcome(GROUPS, groups=record["groups"]) if record["groups"] else Outcome(GAP, NO_DATAPOINTS)
+            if record["groups"] or reads_empty_as_zero(entry):
+                return Outcome(GROUPS, groups=record["groups"])
+            return Outcome(GAP, NO_DATAPOINTS)
         doc = self.series_doc(entry, record)
         return Outcome(OBSERVED, docs=[(key, doc)]) if doc else Outcome(GAP, NO_DATAPOINTS)
 
@@ -305,7 +312,9 @@ class Reading:
         else:
             value = record["value"]
             if value is None and not any(day["value"] is not None for day in days):
-                return None
+                if not reads_empty_as_zero(entry):
+                    return None
+                value = 0
             values = metric_values(value, value, None, value, previous)
         return self.doc(key, "metric", entry, "metrics", entry["title"], entry["link"], values, **extra)
 
@@ -335,7 +344,7 @@ class Reading:
         complete = len(groups) < limit
         self.settle(entry_key, OBSERVED)
         if entry_key in self.items:
-            self.set_auto(entry_key, REPLACED_BY_GROUPS)
+            self.set_auto(entry_key, REPLACED_BY_GROUPS if groups else GROUP_MISSING)
         for key, group in zip(keys, groups):
             title = label(f"{entry['title']}: {title_of(group['group'])}")
             value = group["value"]

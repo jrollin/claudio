@@ -1518,6 +1518,45 @@ class TrendDaysTest(PackCase):
         self.assert_pack_error(self.with_trend(1, 7, aggregator="p95"), "routines.prod-watch.query_pack[1].aggregator")
 
 
+class EmptyReadTest(PackCase):
+    def with_empty(self, index, value):
+        pack = make_pack()
+        pack[index]["empty"] = value
+        return pack
+
+    def test_accepts_zero_on_a_scalar_entry(self):
+        self.assert_pack_accepted(self.with_empty(1, "zero"))
+
+    def test_accepts_gap_on_a_scalar_entry(self):
+        self.assert_pack_accepted(self.with_empty(1, "gap"))
+
+    def test_accepts_zero_on_a_top_entry(self):
+        self.assert_pack_accepted(self.with_empty(2, "zero"))
+
+    def test_accepts_zero_next_to_a_trend(self):
+        pack = self.with_empty(1, "zero")
+        pack[1]["trend_days"] = 7
+        self.assert_pack_accepted(pack)
+
+    def test_rejects_a_value_outside_gap_and_zero(self):
+        self.assert_pack_error(self.with_empty(1, "none"), "routines.prod-watch.query_pack[1].empty")
+
+    def test_rejects_a_boolean_value(self):
+        self.assert_pack_error(self.with_empty(1, True), "routines.prod-watch.query_pack[1].empty")
+
+    def test_rejects_a_value_on_a_top_entry_outside_gap_and_zero(self):
+        self.assert_pack_error(self.with_empty(2, "ignore"), "routines.prod-watch.query_pack[2].empty")
+
+    def test_rejects_the_option_on_an_hourly_entry(self):
+        self.assert_pack_error(self.with_empty(3, "zero"), "routines.prod-watch.query_pack[3].empty")
+
+    def test_rejects_the_default_on_an_hourly_entry(self):
+        self.assert_pack_error(self.with_empty(3, "gap"), "routines.prod-watch.query_pack[3].empty")
+
+    def test_rejects_the_option_on_a_monitor_entry(self):
+        self.assert_pack_error(self.with_empty(0, "zero"), "routines.prod-watch.query_pack[0].empty")
+
+
 class GroupKeyPrefixTest(PackCase):
     def test_rejects_a_key_after_a_top_entry_that_starts_with_its_key_and_a_dash(self):
         pack = make_pack()
