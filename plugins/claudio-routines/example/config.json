@@ -12,7 +12,8 @@
     },
     "local": {
       "runtime_dir": "/<local-parent-dir>/claudio-runtime",
-      "state_dir": "/<local-private-repo-dir>"
+      "state_dir": "/<local-private-repo-dir>",
+      "runs_dir": "/srv/claudio-runs"
     }
   },
   "providers": {

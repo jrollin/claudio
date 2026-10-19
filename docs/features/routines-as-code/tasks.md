@@ -1036,7 +1036,7 @@ Owner-gated: needs the merged pull request, a release tag, the transport and its
 - **Verify**: `for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
 - **Blocked by**: T-94
 - **Rules**: BR-70
-- **Status**: Not Started
+- **Status**: Complete
 
 ### T-96: Replay a run's collections from its raw folder
 - `collect.py replay --config --routine --place --window --state --raw <run>/raw --out <dir>` writes every source's collection of that place: an `mcp` source through the `parse` of `<raw>/<role>/<source>`, an `api` source through the adapter's `fetch` against a replay client.

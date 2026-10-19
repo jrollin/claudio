@@ -39,7 +39,7 @@ TEMPLATE_NAME = re.compile(r"[a-z0-9-]+")
 RUNTIME_DIR = re.compile(r"(/[A-Za-z0-9._-]+){2,}/?")
 RUNTIME_DIR_PREFIX = "claudio-runtime"
 TIMEZONE_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+)*")
-STATE_DIR = re.compile(r"(/[A-Za-z0-9._-]+)+/?")
+PLAIN_DIR = re.compile(r"(/[A-Za-z0-9._-]+)+/?")
 REPO_URL = re.compile(r"https://[A-Za-z0-9.-]+(?::[0-9]+)?/[^\s@?#]+")
 PLACEHOLDER = re.compile(r"\\\{\{|\{\{([^{}]*)\}\}|\{\{")
 KEY_PATTERN = re.compile(r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*")
@@ -309,8 +309,8 @@ def check_runtime_dir(value, key):
         )
 
 
-def check_state_dir(value, key):
-    if not plain_path(STATE_DIR, value):
+def check_plain_dir(value, key):
+    if not plain_path(PLAIN_DIR, value):
         raise UsageError(f"config.json: {key} must match ^(/[A-Za-z0-9._-]+)+/?$ without . or .. parts")
 
 
@@ -327,7 +327,9 @@ def check_places(config):
     for place in PLACES:
         settings = require(places, place, dict, "places.")
         check_runtime_dir(require(settings, "runtime_dir", str, f"places.{place}."), f"places.{place}.runtime_dir")
-        check_state_dir(require(settings, "state_dir", str, f"places.{place}."), f"places.{place}.state_dir")
+        check_plain_dir(require(settings, "state_dir", str, f"places.{place}."), f"places.{place}.state_dir")
+        if "runs_dir" in settings:
+            check_plain_dir(require(settings, "runs_dir", str, f"places.{place}."), f"places.{place}.runs_dir")
 
 
 def read_config_tree(private):
@@ -447,6 +449,7 @@ def build_context(config, routine, place, post):
     context.update({
         "runtime.dir": settings["runtime_dir"],
         "state.dir": settings["state_dir"],
+        "runs.dir": settings.get("runs_dir", "/tmp"),
         "place": place,
         "run.post": "yes" if place == "cloud" or post else "no",
     })
