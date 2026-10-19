@@ -790,7 +790,7 @@ THE collectors return what the owner did during the week, from Monday 00:00 in t
 - [ ] An issue tracker source takes a `jql` query instead of a saved filter, on both transports; the collector adds the window bound *(AC-53.1)*
 - [ ] A code host source takes `searches`, pull request search queries; the collector adds the window start, keeps each pull request once, and reads its comments, reviews and review comments written in the window by a human *(AC-53.2)*
 - [ ] A document store source takes `edited_by`, a user id; the collector lists the pages that user last edited in the window, newest first, and reads their blocks *(AC-53.3)*
-- [ ] A chat source takes the recap's `searches`, so the owner's threads come with their messages *(AC-53.4)*
+- [ ] Chat comes from the chat recap: the routine names the recap routine, and the run reads its state and its run records of the week from the state branch, with no chat call; a chat source with the recap's `searches` adds a direct read with message text, when the routine sets one *(AC-53.4)*
 - [ ] Code host `searches` and document store `edited_by` read over `api` only; a source that sets them with an `mcp` transport fails the load with its key path *(AC-53.5)*
 
 ### Summarise the week {#US-54}

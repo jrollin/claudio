@@ -1108,9 +1108,9 @@ Owner-gated: needs the merged pull request, a release tag, the transport and its
 - **Status**: Not Started
 
 ### T-102: Weekly engine: state, window and features
-- `roles.ENGINES` gains `weekly`; a weekly routine takes issue tracker, code host, chat and document store sources, `owner`, `exclude.channels` and `digest`; the role check names the key path of an invalid value.
-- `weekly_state.py` holds the `weekly-1` schema; `weekly.py init`, `window` and `features` follow TD-68.
-- Tests: the window starts Monday 00:00 in the timezone, across a DST change; items per role with their keys, links and excerpts; excerpt and count caps; a chat unit in an excluded channel or the digest channel is dropped; a source not read is listed with its reason; an activity outside the window makes no item.
+- `roles.ENGINES` gains `weekly`; a weekly routine takes issue tracker, code host, chat and document store sources, `owner`, `workspace`, `recap` (a routine slug), `exclude.channels` and `digest`; the role check names the key path of an invalid value.
+- `weekly_state.py` holds the `weekly-1` schema; `weekly.py init`, `window` and `features` follow TD-68. `features` takes `--recap <run>/recap` and reads the recap state and run records from it, through `recap_state`'s checks.
+- Tests: the window starts Monday 00:00 in the timezone, across a DST change; items per role with their keys, links and excerpts; excerpt and count caps; a recap unit seen in the week makes an item with its title, status and link, one outside the week makes none; `recap_counts` counts the week's records only; a direct chat unit adds its messages to the recap item with the same key; a chat unit in an excluded channel or the digest channel is dropped; a source not read is listed with its reason; an activity outside the window makes no item.
 - **Refs**: US-54, TD-68
 - **Files**: `plugins/claudio-routines/runtime/roles.py` (modify), `plugins/claudio-routines/runtime/test_roles.py` (modify), `plugins/claudio-routines/runtime/weekly_state.py` (new), `plugins/claudio-routines/runtime/weekly.py` (new), `plugins/claudio-routines/runtime/test_weekly.py` (new), `plugins/claudio-routines/README.md` (modify)
 - **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
@@ -1130,6 +1130,7 @@ Owner-gated: needs the merged pull request, a release tag, the transport and its
 
 ### T-104: Runnable weekly status template
 - `templates/weekly-status.md` loses the not-runnable marker and runs the steps of TD-69, with the save block, retry rule, raw folders and run folder of the other templates.
+- Step 2 also extracts the recap routine's state and run records into `<run>/recap/` with `git show` and `git archive`, and passes `--recap <run>/recap` to `features`.
 - `example/config/routines/weekly-status.json` shows `engine: weekly` and one source per role.
 - Tests: the template renders without warnings; it calls each `weekly.py` command with the flags the engine has; its save, raw and run folder rules match the other runnable templates; the skeleton list no longer holds it.
 - **Refs**: US-55, TD-69
@@ -1140,7 +1141,7 @@ Owner-gated: needs the merged pull request, a release tag, the transport and its
 
 ### T-105: Weekly status rollout
 Owner-gated: needs the release tag, the tokens per place and an approved sync.
-1. Write the private routine file with `engine: weekly`, the owner identities and the sources over `api`.
+1. Write the private routine file with `engine: weekly`, `recap: slack-recap`, the owner identities and the sources over `api`; add the direct chat source once a chat token exists.
 2. Copy the runnable template to the private `weekly-status-runtime.md` and point the routine file at it.
 3. Run one local report-only run and compare it with the last live weekly status.
 4. Sync the routine.
