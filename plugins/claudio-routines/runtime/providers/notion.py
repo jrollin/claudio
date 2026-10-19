@@ -16,6 +16,7 @@ BLOCKS_PATH = "/v1/blocks/"
 PAGE_SIZE = 100
 REQUEST_CAP = 50
 REQUEST_CAP_PARTIAL = "request cap"
+MAX_DEPTH = 4
 BLOCK_KINDS = {
     "heading_1": "heading",
     "heading_2": "heading",
@@ -23,6 +24,11 @@ BLOCK_KINDS = {
     "heading_4": "heading",
     "paragraph": "paragraph",
     "quote": "paragraph",
+    "toggle": "paragraph",
+    "callout": "paragraph",
+    "synced_block": "container",
+    "column_list": "container",
+    "column": "container",
     "bulleted_list_item": "list",
     "numbered_list_item": "list",
     "to_do": "list",
@@ -385,12 +391,11 @@ def _metadata(page_id, http):
 
 
 def _page(page_id, body, last_edited, http):
-    items = _children(page_id, http)
     return {
         "id": page_id,
         "title": _title(dig(body, "properties")),
         "last_edited": last_edited,
-        "blocks": [_block(item, index, page_id, http) for index, item in enumerate(items)],
+        "blocks": _blocks(page_id, 1, http),
     }
 
 
@@ -417,22 +422,44 @@ def _children(block_id, http):
     raise PartialRead(PAGE_CAP_PARTIAL)
 
 
-def _block(item, index, parent_id, http):
+def _blocks(parent_id, level, http):
+    records = []
+    for index, item in enumerate(_children(parent_id, http)):
+        records.extend(_records(item, index, parent_id, level, http))
+    return records
+
+
+def _records(item, index, parent_id, level, http):
     block_type = dig(item, "type")
     kind = BLOCK_KINDS.get(block_type, "other") if isinstance(block_type, str) else "other"
     if kind == "table":
-        return {"type": kind, "text": "", "rows": _rows(_table_id(item, index, parent_id), http), "checked": None}
+        rows = _rows(_block_id(item, "id", block_type, index, parent_id), http)
+        return [{"type": kind, "text": "", "rows": rows, "checked": None}]
     if kind == "other":
-        return _other()
+        return [_other()]
+    nested = _nested(item, block_type, index, parent_id, level, http)
+    if kind == "container":
+        return nested
     checked = dig(item, block_type, "checked") is True if block_type == "to_do" else None
-    return _text_block(kind, _text(dig(item, block_type, "rich_text")), checked)
+    return [_text_block(kind, _text(dig(item, block_type, "rich_text")), checked), *nested]
 
 
-def _table_id(item, index, parent_id):
-    table_id = dig(item, "id")
-    if not isinstance(table_id, str) or not table_id:
-        raise SourceUnreadable(f"GET {_children_path(parent_id)}: table block {index} without an id")
-    return table_id
+def _nested(item, block_type, index, parent_id, level, http):
+    if level >= MAX_DEPTH:
+        return []
+    synced_from = dig(item, "synced_block", "synced_from") if block_type == "synced_block" else None
+    if synced_from is not None:
+        return _blocks(_block_id(synced_from, "block_id", block_type, index, parent_id), level + 1, http)
+    if dig(item, "has_children") is not True:
+        return []
+    return _blocks(_block_id(item, "id", block_type, index, parent_id), level + 1, http)
+
+
+def _block_id(source, key, block_type, index, parent_id):
+    block_id = dig(source, key)
+    if not isinstance(block_id, str) or not block_id:
+        raise SourceUnreadable(f"GET {_children_path(parent_id)}: {block_type} block {index} without an id")
+    return block_id
 
 
 def _rows(table_id, http):

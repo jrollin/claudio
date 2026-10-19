@@ -192,17 +192,18 @@ Create the API token for a user who can browse the projects of the filter and ca
 ## notion
 
 - Role: document store.
-- Calls: `GET /v1/pages/{page_id}` for the page, and `GET /v1/blocks/{id}/children` for its top-level blocks and the rows of each table.
-- Request cap: a source makes at most 50 requests over the api transport, counting the page, each page of blocks and each page of table rows. A source that needs more is not read (`partial: request cap`).
+- Calls: `GET /v1/pages/{page_id}` for the page, and `GET /v1/blocks/{id}/children` for its blocks, the blocks nested under them and the rows of each table.
+- Request cap: a source makes at most 50 requests over the api transport, counting the page, each page of blocks (nested ones included) and each page of table rows. A source that needs more is not read (`partial: request cap`).
+- Nesting: over the `api` transport, the children of a block that has them are read depth first, in page order, up to 4 levels below the page; deeper children are not read, without an error. A text block keeps its record and is followed by its children's, a `toggle` and a `callout` read as `paragraph`, a synced block adds its original's children (a reference reads the block it is synced from), a `column_list` and a `column` add only their children, and `child_page`, `child_database`, `link_to_page` and any other type stay `other` with their children unread. The connector does not read nested blocks.
 - Page id: letters, digits and dashes only.
 - Source kinds: a source sets exactly one of `page_id` (the sources page, read in full every run) or `pages` (a list of page ids, the changed documents; list pages, not databases). Both kinds give `pages` records with a `link`, `<base>/<page id without dashes>`, where the base is `links_base` when set, else `https://www.notion.so`.
 - To-do flag: every block an adapter emits carries `checked`: `true` or `false` for a to-do and `null` for any other block. The collection check accepts a block without the key. Over the api transport it is the to-do's `checked` flag (a missing or non-boolean flag reads as `false`); over the connector it is the `- [ ]` marker (`false`) or the `- [x]` / `- [X]` marker (`true`) of a list item, in either `-` or `*` form.
 - Page from the state: a source of a `tribe` routine may set `page_from_state: previous_page` in place of `page_id` and `pages`. `collect.py` hands the adapter the page id of the state's `run.previous_page` as `page_id`, so the source is read like a sources page. A run with no previous page does not call the adapter: the collection is `read: false` with the reason `no previous digest page in the state`, empty records and the stored cursor.
 - Page writes: the adapter only reads. The digest page create, its task polls and the weekly heading are connector calls named by the routine's `publish` key, planned by `tribe.py publish-plan` and relayed by the model; the provider named there needs an `mcp` connector for the place.
 - Changed pages: records follow the configured page order, and the cursor is `{"pages": {<page id>: <edit time>}}`. A page whose edit time equals its stored one at minute precision is left out of the records, and a page that is unchanged or failed keeps its stored edit time in the cursor. Without a stored cursor every page is read.
-  - Over the `api` transport, the page call gives each page's edit time, and only a page whose edit minute differs from its cursor is read in full (blocks and table rows).
+  - Over the `api` transport, the page call gives each page's edit time, and only a page whose edit minute differs from its cursor is read in full (blocks, nested blocks and table rows).
   - Over the connector, no call gives an edit time: every listed page is fetched in full, one `notion-fetch` call per page, changed or not, and an unchanged page is dropped after the fetch. The cost grows with the number of pages, and each fetched page passes through the session.
-  - Keep a `pages` source to about 10 pages: the 50 requests of the `api` transport cover the page call and the block reads of about 10 pages, and the connector stops at 50 calls (`partial: call cap`).
+  - Keep a `pages` source to about 10 pages: the 50 requests of the `api` transport cover the page call and the block reads of about 10 pages, fewer when pages nest deeply, and the connector stops at 50 calls (`partial: call cap`).
 - Entries: per page id, `ok` when the page is read, `deferred` with the reason `unchanged`, or `failed` with the reason `not found or not shared`, `not a page` or `partial: page truncated`.
   - A page answered not found (HTTP 404, or over the connector a response reporting 404 or `object_not_found` without text) is a failed entry, and the other pages are still read. A shared integration reads a page only when the page is shared with it, so an unshared page reads as not found.
   - A database id in a `pages` source is a failed entry with the reason `not a page`, and the other pages are still read: over the `api` transport the page call answers HTTP 400, and over the connector the fetch reports `metadata.type` `database`. The client does not keep the error body, so every HTTP 400 on the page call counts as `not a page`. The sources page (`page_id`) has no such case: a database id there makes the source not read.
@@ -239,7 +240,7 @@ Create an internal integration with this content capability only, and no comment
 
 | Capability | Reads |
 | --- | --- |
-| Read content | the sources page and the listed pages, their blocks and their table rows |
+| Read content | the sources page and the listed pages, their blocks, nested blocks and table rows |
 
 An integration reads only the pages shared with it: add the integration to the sources page and to each listed page from the page's connections menu.
 

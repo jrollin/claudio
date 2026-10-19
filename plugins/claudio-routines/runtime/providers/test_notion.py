@@ -258,8 +258,8 @@ class BlocksTest(unittest.TestCase):
                 ("list", "Read the monitors"),
                 ("list", "Review the mutes"),
                 ("paragraph", "Quiet weeks count too."),
-                ("other", ""),
-                ("other", ""),
+                ("paragraph", "Owner: platform"),
+                ("paragraph", "Details"),
                 ("code", "avg:queue.depth{*}"),
                 ("heading", "Notes"),
                 ("heading", "Minor"),
@@ -898,6 +898,215 @@ class RequestCapTest(unittest.TestCase):
         with self.assertRaises(_http.PartialRead) as caught:
             run(*page_with_tables(49))
         self.assertEqual(str(caught.exception), "partial: request cap")
+
+
+def node(block_type, block_id=None, children=False, **body):
+    return {"object": "block", "id": block_id, "type": block_type, "has_children": children, block_type: body}
+
+
+def text_node(block_type, text, block_id=None, children=False, **body):
+    return node(block_type, block_id, children, rich_text=[{"plain_text": text}], **body)
+
+
+def row(*cells):
+    return node("table_row", cells=[[{"plain_text": cell}] for cell in cells])
+
+
+def listing(items, next_cursor=None):
+    return {"results": items, "has_more": next_cursor is not None, "next_cursor": next_cursor}
+
+
+class TreeOpener:
+    def __init__(self, listings):
+        self.listings = listings
+        self.requests = []
+
+    def open(self, request, timeout=None):
+        self.requests.append(request)
+        _, path = endpoint(request)
+        if path == PAGE_PATH:
+            return ok("page.json")
+        parent_id = path.split("/")[3]
+        cursor = query(request).get("start_cursor", [None])[0]
+        found = self.listings[parent_id if cursor is None else (parent_id, cursor)]
+        return served_json(found if isinstance(found, dict) else listing(found))
+
+    def parents(self):
+        return [endpoint(request)[1].split("/")[3] for request in self.requests[1:]]
+
+
+def read_tree(listings):
+    opener = TreeOpener(listings)
+    result = notion.fetch(SOURCE, WINDOW, STORED, [], client(opener))
+    return opener, result["records"]["pages"][0]["blocks"]
+
+
+def shapes(blocks):
+    return [(record["type"], record["text"]) for record in blocks]
+
+
+def toggles(count, children=None):
+    listings = {PAGE_ID: [text_node("toggle", f"Toggle {number}", f"tg-{number}", True) for number in range(count)]}
+    listings.update({f"tg-{number}": [text_node("paragraph", f"Inside {number}")] for number in range(count)})
+    return {**listings, **(children or {})}
+
+
+class NestedBlocksTest(unittest.TestCase):
+    def test_toggle_heading_is_followed_by_the_paragraphs_under_it(self):
+        opener, blocks = read_tree(
+            {
+                PAGE_ID: [text_node("heading_1", "Summary", "h-one", True), text_node("paragraph", "After")],
+                "h-one": [text_node("paragraph", "First"), text_node("paragraph", "Second")],
+            }
+        )
+
+        self.assertEqual(
+            shapes(blocks), [("heading", "Summary"), ("paragraph", "First"), ("paragraph", "Second"), ("paragraph", "After")]
+        )
+        self.assertEqual(opener.parents(), [PAGE_ID, "h-one"])
+
+    def test_toggle_reads_as_a_paragraph_followed_by_its_children(self):
+        _, blocks = read_tree(
+            {PAGE_ID: [text_node("toggle", "Details", "tg", True)], "tg": [text_node("paragraph", "Inside")]}
+        )
+
+        self.assertEqual(shapes(blocks), [("paragraph", "Details"), ("paragraph", "Inside")])
+
+    def test_callout_reads_as_a_paragraph_followed_by_its_children(self):
+        opener, blocks = read_tree(
+            {
+                PAGE_ID: [text_node("callout", "Owner", "co", True), text_node("callout", "Alone")],
+                "co": [text_node("bulleted_list_item", "Detail")],
+            }
+        )
+
+        self.assertEqual(shapes(blocks), [("paragraph", "Owner"), ("list", "Detail"), ("paragraph", "Alone")])
+        self.assertEqual(opener.parents(), [PAGE_ID, "co"])
+
+    def test_original_synced_block_adds_only_its_children(self):
+        opener, blocks = read_tree(
+            {
+                PAGE_ID: [node("synced_block", "sy", True, synced_from=None)],
+                "sy": [text_node("heading_1", "Shared", "sy-h", True)],
+                "sy-h": [text_node("paragraph", "Under shared")],
+            }
+        )
+
+        self.assertEqual(shapes(blocks), [("heading", "Shared"), ("paragraph", "Under shared")])
+        self.assertEqual(opener.parents(), [PAGE_ID, "sy", "sy-h"])
+
+    def test_reference_synced_block_reads_the_children_of_its_original(self):
+        reference = node("synced_block", "ref", True, synced_from={"type": "block_id", "block_id": "sy"})
+        opener, blocks = read_tree({PAGE_ID: [reference], "sy": [text_node("paragraph", "Shared text")]})
+
+        self.assertEqual(shapes(blocks), [("paragraph", "Shared text")])
+        self.assertEqual(opener.parents(), [PAGE_ID, "sy"])
+
+    def test_column_list_adds_the_children_of_each_column(self):
+        opener, blocks = read_tree(
+            {
+                PAGE_ID: [node("column_list", "cl", True)],
+                "cl": [node("column", "c-one", True), node("column", "c-two", True)],
+                "c-one": [text_node("paragraph", "Left")],
+                "c-two": [text_node("paragraph", "Right")],
+            }
+        )
+
+        self.assertEqual(shapes(blocks), [("paragraph", "Left"), ("paragraph", "Right")])
+        self.assertEqual(opener.parents(), [PAGE_ID, "cl", "c-one", "c-two"])
+
+    def test_list_item_is_followed_by_its_nested_items_depth_first(self):
+        opener, blocks = read_tree(
+            {
+                PAGE_ID: [text_node("bulleted_list_item", "Parent", "li", True), text_node("bulleted_list_item", "Sibling")],
+                "li": [text_node("numbered_list_item", "Child", "li-c", True)],
+                "li-c": [text_node("to_do", "Grandchild", checked=True)],
+            }
+        )
+
+        self.assertEqual(
+            blocks,
+            [block("list", "Parent"), block("list", "Child"), block("list", "Grandchild", True), block("list", "Sibling")],
+        )
+        self.assertEqual(opener.parents(), [PAGE_ID, "li", "li-c"])
+
+    def test_nesting_stops_at_four_levels_without_an_error(self):
+        listings = {PAGE_ID: [text_node("toggle", "Level 1", "t1", True)]}
+        for level in range(1, 6):
+            listings[f"t{level}"] = [text_node("toggle", f"Level {level + 1}", f"t{level + 1}", True)]
+
+        opener, blocks = read_tree(listings)
+
+        self.assertEqual([record["text"] for record in blocks], ["Level 1", "Level 2", "Level 3", "Level 4"])
+        self.assertEqual(opener.parents(), [PAGE_ID, "t1", "t2", "t3"])
+
+    def test_child_pages_and_databases_stay_other_without_a_children_read(self):
+        opener, blocks = read_tree(
+            {
+                PAGE_ID: [
+                    node("child_page", "cp", True, title="Archive"),
+                    node("child_database", "cd", True, title="Tasks"),
+                    node("link_to_page", "lp", True, type="page_id", page_id="linked"),
+                    node("unsupported", "un", True),
+                ]
+            }
+        )
+
+        self.assertEqual(blocks, [OTHER] * 4)
+        self.assertEqual(opener.parents(), [PAGE_ID])
+
+    def test_nested_children_follow_their_next_cursor(self):
+        opener, blocks = read_tree(
+            {
+                PAGE_ID: [text_node("toggle", "Details", "tg", True)],
+                "tg": listing([text_node("paragraph", "One")], "more-1"),
+                ("tg", "more-1"): [text_node("paragraph", "Two")],
+            }
+        )
+
+        self.assertEqual(shapes(blocks), [("paragraph", "Details"), ("paragraph", "One"), ("paragraph", "Two")])
+        self.assertEqual(query(opener.requests[3]), {"page_size": ["100"], "start_cursor": ["more-1"]})
+
+    def test_table_under_a_toggle_keeps_its_rows(self):
+        _, blocks = read_tree(
+            {
+                PAGE_ID: [text_node("toggle", "Details", "tg", True)],
+                "tg": [node("table", "tb", True)],
+                "tb": [row("key", "until"), row("checkout-p95", "2026-10-30")],
+            }
+        )
+
+        self.assertEqual(blocks[1], table(("key", "until"), ("checkout-p95", "2026-10-30")))
+
+    def test_children_reads_up_to_the_request_cap_are_read(self):
+        _, blocks = read_tree(toggles(48))
+
+        self.assertEqual(len(blocks), 96)
+
+    def test_children_reads_beyond_the_request_cap_are_a_partial_read(self):
+        opener = TreeOpener(toggles(49))
+
+        with self.assertRaises(_http.PartialRead) as caught:
+            notion.fetch(SOURCE, WINDOW, STORED, [], client(opener))
+        self.assertEqual(str(caught.exception), "partial: request cap")
+        self.assertEqual(len(opener.requests), 50)
+
+    def test_pages_of_nested_children_count_against_the_request_cap(self):
+        paged = {"tg-0": listing([text_node("paragraph", "One")], "more-1"), ("tg-0", "more-1"): []}
+
+        with self.assertRaises(_http.PartialRead) as caught:
+            read_tree(toggles(48, paged))
+        self.assertEqual(str(caught.exception), "partial: request cap")
+
+    def test_block_with_children_but_no_id_makes_the_source_unreadable(self):
+        with self.assertRaises(_http.SourceUnreadable) as caught:
+            read_tree({PAGE_ID: [text_node("toggle", "Details", None, True)]})
+        self.assertEqual(str(caught.exception), f"GET {BLOCKS_PATH}: toggle block 0 without an id")
+
+    def test_reference_synced_block_without_its_original_id_makes_the_source_unreadable(self):
+        with self.assertRaises(_http.SourceUnreadable) as caught:
+            read_tree({PAGE_ID: [node("synced_block", "ref", True, synced_from={"type": "block_id"})]})
+        self.assertEqual(str(caught.exception), f"GET {BLOCKS_PATH}: synced_block block 0 without an id")
 
 
 ONE, TWO, THREE = "page-one", "page-two", "page-three"
