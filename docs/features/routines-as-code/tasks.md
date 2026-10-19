@@ -3,7 +3,7 @@
 ---
 feature: routines-as-code
 spec_version: 1
-total_tasks: 75
+total_tasks: 76
 phases:
   - name: "Leak guard"
     tasks: [T-1, T-2, T-3]
@@ -38,7 +38,7 @@ phases:
   - name: "Monitor priority and seed fixes"
     tasks: [T-72, T-73, T-74]
   - name: "Cloud run fixes"
-    tasks: [T-75]
+    tasks: [T-75, T-76]
 depends_on: []
 ---
 
@@ -843,6 +843,14 @@ Runs in a local session with the chat, issue tracker, document store and observa
 - **Verify**: `python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
 - **Rules**: BR-66
 - **Status**: In Progress (templates changed; a cloud tribe run to check)
+
+### T-76: Render the Prod watch digest in the compact chat layout
+- `digest.py` takes a required `--tz` and renders the TD-57 layout: title and window line in the zone, Summary counts, item blocks with the urgency mark and ⬆️ for escalated items, one line per resolved item, still open as at most 3 titles per severity then `+N`, then the `Blind spots:`, `Not shown:` and `Overrides:` lines. The runnable template passes `--tz {{timezone}}` in Step 12.
+- Tests: a golden digest from a fixture summary, state, record and base; the baseline title; an escalated block; each urgency mark; an item without analysis; a severity with more than 3 open items and one with none; blind spots, an unread source and the cut on one line; empty sections skipped except Summary; a monitor and a metric label; a link with parentheses, spaces and a backslash; a `javascript:`, a relative and an empty link; `](` and `**` in titles and in Risk; a run, a `since` and a cut in winter time and one in summer time, and a `since` whose offset differs from the run's; a `since` on the run's day, on another day and stored as text; singular and plural counts; a blind spot named by its item title; a `still_open` key missing from the state and a time out of range in the zone, both exit 2; no item key in the output.
+- **Refs**: US-44, TD-33, TD-57
+- **Files**: `docs/features/routines-as-code/design.md` (modify), `docs/features/routines-as-code/requirements.md` (modify), `docs/features/routines-as-code/tasks.md` (modify), `plugins/claudio-routines/runtime/digest.py` (modify), `plugins/claudio-routines/runtime/test_digest.py` (modify), `plugins/claudio-routines/runtime/fixtures/digest_golden.md` (new), `plugins/claudio-routines/skills/routines/templates/prod-watch.md` (modify), `plugins/claudio-routines/README.md` (modify), `plugins/claudio-routines/skills/routines/scripts/test_routines.py` (modify)
+- **Verify**: `for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
+- **Status**: Complete
 
 ## Related Features
 

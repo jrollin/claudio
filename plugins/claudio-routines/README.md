@@ -288,16 +288,17 @@ The features, rules, judgment and analysis files stay in the run's temporary dir
 ## Digest
 
 ```text
-python3 runtime/digest.py --summary M --state N --record R --base BASE --out DIGEST
+python3 runtime/digest.py --summary M --state N --record R --base BASE --tz ZONE --out DIGEST
 ```
 
-`digest.py` renders the message as Markdown, so the same inputs give the same bytes. Only text from the four files reaches the output, never model text or free text. Sections with nothing to show are skipped.
-- Title: the state's `digest` name and the record's `run_at`. A report-only run leaves the state as it was and still shows its own run time.
-- New items, then escalated items, in the summary's rank order: severity, urgency, link, then the analysis (risk, reason claims tagged `measured` or `inferred`, mitigation leads, action).
-- Resolved items.
-- Still open items per severity, as listed by the summary's `still_open` (muted keys left out): each with since, last value, link and the stored action, read from the next state by key.
-- Counts of muted changes and dropped blind spots, when not zero.
-- Blind spots with their gap and runs, the cut span when set, the sources not read with their reasons (from `base.json`), and the overrides. A blind spot whose key is an unread source is shown only under the unread sources.
+`digest.py` renders the compact chat layout in Standard Markdown, so the same inputs give the same bytes. Only text from the four files reaches the output, never model text or free text. A section with nothing to show is skipped, except Summary. `--tz` is required: every time of the message is in that zone, and an unknown zone exits 2.
+- Title: the bold digest name of the state and the record's `run_at` as `DD Mon HH:MM <city>`, then `(since <weekday HH:MM>)` from the next state's window start, or `(baseline)` when the next state has no previous run. A report-only run leaves the state as it was and still shows its own run time.
+- Summary: `N new, N escalated, N resolved, N still open`. Counts take the singular at 1 (`1 run`, `1 muted change`, `1 blind spot dropped`).
+- New items, then escalated items, in the summary's rank order: one block each, with the urgency mark (🔴 now, 🟠 within months, 🟡 watch, ⬆️ before it when escalated), the title, `severity · urgency · since <time> · [label](link)`, then the Risk, Reason (claims tagged `measured` or `inferred`, the claim's trailing period dropped before its tag), Mitigation and Action bullets the item holds. `since` is read from the next state by key and shown as stored when it is not a UTC time.
+- Resolved items: one line each, with the link and the last value.
+- Still open: the count, then one bullet per severity with at most 3 titles in the summary's order and `+N` for the rest. The summary's `still_open` leaves muted keys out, and each of its keys must be an item of the next state, else the script exits 2 naming the key.
+- One line each for `Blind spots:` (blind spots with the item's title when the key is an item of the next state, else the key, then gap and runs, the sources not read with their reasons from `base.json`, and the cut as the end of the unread span), `Not shown:` (muted changes and dropped blind spots, when not zero) and `Overrides:`. A blind spot whose key is an unread source is shown only as a source not read.
+- A link label is `monitor <id>` for a monitor link and `metric` otherwise. Only an `http://` or `https://` link renders as a Markdown link; any other link (empty, `javascript:`, relative) shows the label alone. `(`, `)`, spaces and backslashes of the destination are percent-encoded. In text, `](` becomes `] (` and `**` becomes `* *`, so a value cannot make a link or close a bold span. No item key appears in the message.
 
 The run adds only the `state not saved` line, first, and the missing variables and connectors of the environment check, which the script does not know.
 

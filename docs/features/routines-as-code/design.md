@@ -799,7 +799,7 @@ Feature rules:
 ### TD-33: Digest rendered by a script
 
 **Choice**:
-- A dedicated script, `digest.py --summary M --state N --record R --base BASE --out DIGEST`, renders the message as Markdown from the change summary, the next state, the run record and the base file. The title line takes the state's `digest` name and the record's `run_at`, so a report-only run shows its own time, so each routine's message carries its own title. The summary gives: new then escalated items in rank order, each with severity, urgency, link and analysis (risk, the reason's claims with their tags, mitigation leads, action); resolved items; still open items per severity: the keys of the summary's `still_open` lists, which leave muted keys out, each with its `since`, last value, link and stored action read from the next state by key; muted changes and dropped blind spots as counts; the blind spots with their gaps; the cut span; the unread sources and their reasons from `base.json` `run_context.collected`, whose blind spots are not listed twice; the overrides.
+- A dedicated script, `digest.py --summary M --state N --record R --base BASE --tz ZONE --out DIGEST`, renders the message in the chat layout of TD-57 from the change summary, the next state, the run record and the base file. The title line takes the state's `digest` name and the record's `run_at`, so a report-only run shows its own time, so each routine's message carries its own title. The summary gives: new then escalated items in rank order, each with severity, urgency, link and analysis (risk, the reason's claims with their tags, mitigation leads, action); resolved items; still open items per severity: the titles of the summary's `still_open` lists, which leave muted keys out, as TD-57 shows them, each key being an item of the next state; muted changes and dropped blind spots as counts; the blind spots with their gaps; the cut span; the unread sources and their reasons from `base.json` `run_context.collected`, whose blind spots are not listed twice; the overrides.
 - The template posts the file's text unchanged with the chat tool, or prints it on a report-only run (BR-42); it adds only the `state not saved` line and the missing variables and connectors of the environment check, which the run knows before the digest.
 - Every rendered value comes from the summary, the next state or the base file, whose text fields are labels or cleaned text, so no model-composed sentence reaches the channel.
 
@@ -1351,6 +1351,24 @@ A degraded run's message is one line that starts with `degraded:` and names the 
 
 **Rationale**: only the pack author knows whether a series can be legitimately empty; the default keeps the safe reading.
 
+### TD-57: Compact chat layout for Prod watch
+
+**Choice**:
+- `digest.py` takes `--tz` and renders the layout of the message format the routine followed before the runtime (US-44), in Standard Markdown: bold section titles on their own line, in the order Title, Summary, New, Escalated, Resolved, Still open (N), then the `Blind spots:`, `Not shown:` and `Overrides:` lines.
+- Item titles stay the stored titles. The earlier `<service>: <what>` names were written by the model, and the runtime posts no model-composed name (TD-33).
+- The window start is `run.window.from_ts` of the next state; a run whose next state has a null `run.previous_at` is a baseline run.
+- The `Blind spots:` line joins, with semicolons, each blind spot as `<name> <gap> (<N> runs)`, each unread source as `<source> not read (<reason>)`, and the cut as `metrics before <weekday HH:MM> not read`. A blind spot is recorded with its entry key, which is the item key of a monitor or a metric: the name is the title of that item in the next state, and the key itself when the key is not an item.
+- Counts take the singular at 1: `1 run`, `1 muted change`, `1 blind spot dropped`.
+- A link label is `monitor <id>` when the link path holds `/monitors/<digits>`, `metric` otherwise. The label is a Markdown link only when the link starts with `https://` or `http://`; an empty, `javascript:` or relative link shows the label alone. `(`, `)`, spaces and backslashes in the destination are percent-encoded, so a metric explorer query keeps the Markdown link whole.
+- In every rendered text value `](` becomes `] (` and `**` becomes `* *`, so a value cannot make a link or close a bold span; `[P2][svc-a]` stays readable.
+- Every `still_open` key of the summary must be an item of the next state, else the script exits 2 naming the key, on a report-only run too. A time that the zone cannot represent exits 2 naming `--tz`.
+
+**Alternatives considered**:
+- Keep one Markdown heading per section: rejected by the owner, about 100 lines for 30 items, and the chat shows `#` headings as raw text.
+- Short item names written by the model: rejected, model-composed text would reach the channel (TD-33).
+
+**Rationale**: the owner reads the message in the chat client, often on a phone; this layout is the one the routine posted for weeks.
+
 ## Implementation Considerations
 
 ### Data Model
@@ -1466,7 +1484,7 @@ python3 .../routines.py setup-script [--private DIR] [--place cloud|local]
 python3 .../runtime/state.py window --state S --now T --tz Z [--since T0 | --report-only] --out W
 python3 .../runtime/state.py apply --state S --facts F --window W --tz Z --out N --summary M --record R
 python3 .../runtime/state.py init --digest NAME --out S
-python3 .../runtime/digest.py --summary M --state N --record R --base BASE --out DIGEST
+python3 .../runtime/digest.py --summary M --state N --record R --base BASE --tz ZONE --out DIGEST
 python3 .../runtime/state.py validate (--state S | --facts F)
 python3 .../runtime/collect.py sources   --config C --routine R --place P
 python3 .../runtime/collect.py check-env --config C --routine R --place P
@@ -1841,8 +1859,9 @@ sequenceDiagram
 | `plugins/claudio-routines/runtime/state.py` | modify | Judgment: rank order in the summary, typed analysis fields |
 | `plugins/claudio-routines/runtime/providers/<vendor>.py` | modify | Judgment, observability adapter: discovery search, priority, not found, lookback reads, over both transports |
 | `plugins/claudio-routines/skills/routines/scripts/lint.py` | modify | Judgment: a call without a subcommand to a script with subcommands fails |
-| `plugins/claudio-routines/runtime/digest.py` | new | Digest: renders the posted message from the summary, the next state and the base file (TD-33) |
+| `plugins/claudio-routines/runtime/digest.py` | new | Digest: renders the posted message from the summary, the next state and the base file, in the compact chat layout (TD-33, TD-57) |
 | `plugins/claudio-routines/runtime/test_digest.py` | new | Digest: each section, empty sections skipped, rank order, report-only output, only summary, state and base text rendered |
+| `plugins/claudio-routines/runtime/fixtures/digest_golden.md` | new | Digest: golden compact chat message (TD-57) |
 | `plugins/claudio-routines/runtime/support.py`, `evaluate_support.py`, `providers/datadog_support.py` | new | Test support: shared state, evaluator and adapter fixtures, so no test module imports another |
 | `plugins/claudio-routines/runtime/test_pipeline.py` | new | Judgment: one fixture run through `features`, `judge`, a preview apply, `annotate` and `apply`, checking rank order and the stored analysis |
 | `plugins/claudio-routines/skills/routines/templates/prod-watch.md` | modify | Judgment: features, judgment, preview apply, analysis and rank-ordered digest steps |

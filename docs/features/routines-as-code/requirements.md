@@ -673,6 +673,21 @@ THE runtime reads the entry as 0 instead of a blind spot, when the entry declare
 - [ ] A read that fails is a blind spot whatever `empty` says *(AC-43.4)*
 - [ ] `empty` on an `hourly` or monitor entry, or a value other than `gap` or `zero`, is invalid with its key path *(AC-43.5)*
 
+### Read the Prod watch message at a glance {#US-44}
+
+WHEN a Prod watch run posts its digest to the chat channel
+THE message follows the compact chat layout the routine posted before the runtime: local times, a counts line, one block per new or escalated item, one line per resolved item, still open items as short lists, and the gaps on one line
+
+**Acceptance Criteria:**
+- [ ] The title is the bold digest name with the run time as `DD Mon HH:MM <city>` in the config timezone, then `(since <weekday HH:MM>)` of the window start, or `(baseline)` on a baseline run *(AC-44.1)*
+- [ ] A Summary section always shows `N new, N escalated, N resolved, N still open`; any other section with no content is skipped *(AC-44.2)*
+- [ ] A new or escalated item is a block: the urgency mark (🔴 now, 🟠 within months, 🟡 watch), ⬆️ before it when escalated, and the bold title; then `<severity> · <urgency> · since <time> · [<label>](<link>)`; then the Risk, Reason, Mitigation and Action bullets it holds, each claim of Reason followed by its tag, with the trailing period of the claim dropped before the tag, and the mitigation leads joined by semicolons *(AC-44.3)*
+- [ ] A resolved item is one line: `✅ **<title>** · [<label>](<link>) · last value <value>` *(AC-44.4)*
+- [ ] Still open shows `**Still open (N)**` and one bullet per severity, High to Low, with at most 3 titles in the summary's order then `+N` for the rest *(AC-44.5)*
+- [ ] Blind spots, unread sources and the cut window share one `**Blind spots:**` line; muted changes and dropped blind spots one `**Not shown:**` line; overrides one `**Overrides:**` line; no item key appears in the text *(AC-44.6)*
+- [ ] A link label is `monitor <id>` for a monitor link and `metric` otherwise, and a Markdown link only for an `http://` or `https://` link, the label alone otherwise, with the destination's parentheses, spaces and backslashes percent-encoded *(AC-44.7)*
+- [ ] Every time is in the config timezone: a time on the run's local day shows `HH:MM`, another day `DD Mon HH:MM`, and a `since` that is not a UTC time shows as stored *(AC-44.8)*
+
 ## Business Rules
 
 - No private name, identifier, URL host or secret is committed to this public repository *(BR-1)*
