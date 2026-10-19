@@ -133,10 +133,10 @@ def checked_page(page):
 
 
 def run_render(args):
-    values = load_page(args)[0]
+    values, zone = load_page(args)
     summary = state.load(args.summary, "summary", accept_any)
     try:
-        page = tribe_page.render(summary, values)
+        page = tribe_page.render(summary, values, zone)
     except (AttributeError, KeyError, OSError, OverflowError, TypeError, ValueError) as error:
         raise InputError(f"summary: cannot render {args.summary}: {type(error).__name__} {clean(str(error), 200)}") from error
     state.write_all([(args.out, checked_page(page).encode("utf-8"))])

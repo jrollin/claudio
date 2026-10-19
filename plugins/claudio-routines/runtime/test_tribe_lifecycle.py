@@ -1,6 +1,7 @@
 import json
 import os
 import unittest
+from zoneinfo import ZoneInfo
 
 import state
 import tribe_lifecycle
@@ -762,7 +763,7 @@ class OutputShapeTest(LifecycleCase):
         self.apply()
         with open(os.path.join(HERE, "fixtures", "tribe", "page_values.json"), encoding="utf-8") as handle:
             values = json.load(handle)
-        self.assertEqual(tribe_page.check(tribe_page.render(self.summary(), values)), [])
+        self.assertEqual(tribe_page.check(tribe_page.render(self.summary(), values, ZoneInfo("Europe/Paris"))), [])
 
     def test_the_next_state_run_block_follows_the_run(self):
         self.apply()

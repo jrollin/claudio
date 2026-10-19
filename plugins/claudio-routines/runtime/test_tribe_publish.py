@@ -21,6 +21,11 @@ class RenderTests(PublishCase):
         self.assertEqual(self.render(), (0, ""))
         self.assertEqual(self.page(), fixture("page_golden.md"))
 
+    def test_the_month_end_group_takes_the_last_day_of_the_month_of_the_run_in_the_config_zone(self):
+        self.use_summary(run_at="2026-10-31T23:30:00Z")
+        self.assertEqual(self.render(), (0, ""))
+        self.assertIn("### Before the 2026-11-30 month-end\n", self.page())
+
     def test_a_failed_structure_check_exits_3_and_writes_no_page(self):
         decision = self.summary_doc["decisions"][0]
         self.use_summary(decisions=[decision] * 4)

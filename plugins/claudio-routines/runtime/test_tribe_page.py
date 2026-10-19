@@ -1,5 +1,6 @@
 import copy
 import unittest
+from zoneinfo import ZoneInfo
 
 import tribe_page
 from tribe_support import (
@@ -8,6 +9,8 @@ from tribe_support import (
 
 WRITTEN_AT = "2026-03-11T08:34:00Z"
 EDITED_AT = "2026-03-11T09:10:00Z"
+PARIS = ZoneInfo("Europe/Paris")
+UTC = ZoneInfo("UTC")
 
 
 def broken(page, old, new):
@@ -51,7 +54,11 @@ class PageCase(unittest.TestCase):
     def render(self, **changes):
         summary = copy.deepcopy(self.summary)
         summary.update(changes)
-        return tribe_page.render(summary, self.values)
+        return tribe_page.render(summary, self.values, PARIS)
+
+    def month_end_heading(self, run_at, zone=PARIS):
+        page = tribe_page.render({**self.summary, "run_at": run_at}, self.values, zone)
+        return [line for line in section_lines(page, "What to check") if line.startswith("### Before")]
 
     def parse(self, page, edited_at=EDITED_AT, written_at=WRITTEN_AT, page_id=None):
         return tribe_page.parse_edits(page, self.stored, written_at, edited_at, page_id)
@@ -159,8 +166,27 @@ class RenderTests(PageCase):
         lines = section_lines(self.golden, "What to check")
         self.assertEqual(
             [line for line in lines if line.startswith("### ")],
-            ["### This week", "### Before the month-end", "### Investigate"],
+            ["### This week", "### Before the 2026-03-31 month-end", "### Investigate"],
         )
+
+    def test_the_month_end_group_names_the_last_day_of_the_run_month(self):
+        self.assertEqual(self.month_end_heading("2026-10-19T08:30:00Z"), ["### Before the 2026-10-31 month-end"])
+
+    def test_a_run_late_on_the_last_day_in_utc_that_is_the_next_month_in_the_zone_names_the_next_month_end(self):
+        self.assertEqual(self.month_end_heading("2026-10-31T23:30:00Z"), ["### Before the 2026-11-30 month-end"])
+
+    def test_the_same_run_in_utc_names_the_month_end_of_its_own_month(self):
+        self.assertEqual(self.month_end_heading("2026-10-31T23:30:00Z", UTC), ["### Before the 2026-10-31 month-end"])
+
+    def test_a_february_of_a_leap_year_ends_on_the_29th(self):
+        self.assertEqual(self.month_end_heading("2028-02-10T08:30:00Z"), ["### Before the 2028-02-29 month-end"])
+
+    def test_a_february_of_a_common_year_ends_on_the_28th(self):
+        self.assertEqual(self.month_end_heading("2027-02-10T08:30:00Z"), ["### Before the 2027-02-28 month-end"])
+
+    def test_the_other_groups_keep_their_stored_name(self):
+        lines = section_lines(self.render(), "What to check")
+        self.assertEqual([line for line in lines if line.startswith("### ") and "month-end" not in line], ["### This week", "### Investigate"])
 
     def test_checks_inside_a_group_follow_the_focus_order_of_their_topics(self):
         lines = section_lines(self.golden, "What to check")
@@ -462,8 +488,32 @@ class CheckTests(PageCase):
         self.assertEqual(tribe_page.check(page), ["check groups: Whenever"])
 
     def test_a_check_group_that_extends_before_the_fails_the_group_rule(self):
-        page = broken(self.golden, "### Before the month-end", "### Before the anything")
+        page = broken(self.golden, "### Before the 2026-03-31 month-end", "### Before the anything")
         self.assertEqual(tribe_page.check(page), ["check groups: Before the anything"])
+
+    def test_the_undated_month_end_group_of_a_written_page_passes_the_group_rule(self):
+        page = broken(self.golden, "### Before the 2026-03-31 month-end", "### Before the month-end")
+        self.assertEqual(tribe_page.check(page), [])
+
+    def test_a_dated_month_end_group_on_the_last_day_of_a_leap_february_passes_the_group_rule(self):
+        page = broken(self.golden, "### Before the 2026-03-31 month-end", "### Before the 2028-02-29 month-end")
+        self.assertEqual(tribe_page.check(page), [])
+
+    def test_a_dated_group_on_a_day_that_is_not_a_month_end_fails_the_group_rule(self):
+        page = broken(self.golden, "### Before the 2026-03-31 month-end", "### Before the 2026-10-30 month-end")
+        self.assertEqual(tribe_page.check(page), ["check groups: Before the 2026-10-30 month-end"])
+
+    def test_a_dated_group_on_a_day_that_does_not_exist_fails_the_group_rule(self):
+        page = broken(self.golden, "### Before the 2026-03-31 month-end", "### Before the 2027-02-29 month-end")
+        self.assertEqual(tribe_page.check(page), ["check groups: Before the 2027-02-29 month-end"])
+
+    def test_a_dated_group_with_another_ending_fails_the_group_rule(self):
+        page = broken(self.golden, "### Before the 2026-03-31 month-end", "### Before the 2026-03-31 week-end")
+        self.assertEqual(tribe_page.check(page), ["check groups: Before the 2026-03-31 week-end"])
+
+    def test_a_dated_group_with_a_malformed_date_fails_the_group_rule(self):
+        page = broken(self.golden, "### Before the 2026-03-31 month-end", "### Before the 2026-3-31 month-end")
+        self.assertEqual(tribe_page.check(page), ["check groups: Before the 2026-3-31 month-end"])
 
     def test_a_check_group_that_extends_this_week_fails_the_group_rule(self):
         page = broken(self.golden, "### This week", "### This weekend")
@@ -483,6 +533,14 @@ class ParseTests(PageCase):
     def test_a_ticked_todo_is_reported_by_key(self):
         page = tick(self.golden, "Read the worker pool quota")
         self.assertEqual(self.parse(page)["ticked"], ["read-pool-quota"])
+
+    def test_a_todo_under_the_dated_month_end_group_is_reported_by_key(self):
+        page = tick(self.golden, "Plan the volume resize")
+        self.assertEqual(self.parse(page)["ticked"], ["plan-resize"])
+
+    def test_a_todo_under_the_undated_month_end_group_is_reported_by_key(self):
+        page = broken(tick(self.golden, "Plan the volume resize"), "### Before the 2026-03-31 month-end", "### Before the month-end")
+        self.assertEqual(self.parse(page)["ticked"], ["plan-resize"])
 
     def test_unticked_todos_are_reported_by_key(self):
         page = tick(self.golden, "Read the worker pool quota")

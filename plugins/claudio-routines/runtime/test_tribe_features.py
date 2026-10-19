@@ -365,6 +365,16 @@ class EditTests(unittest.TestCase):
         self.assertEqual((edits["after_written"], edits["statuses"], edits["ticked"], edits["unticked"]), (True, {"queue-depth": "mitigated"}, ["ask-export"], []))
         self.assertEqual((edits["page_id"], edits["edited_at"]), (PAGE_ID, "2026-10-15T09:00:00Z"))
 
+    def test_a_to_do_under_the_dated_month_end_group_is_read(self):
+        blocks = [block("heading", "Before the 2026-10-31 month-end") if item["text"] == "This week" else item for item in digest_blocks(ticked=True)]
+        edits = self.edits(overview(blocks))
+        self.assertEqual((edits["ticked"], edits["ignored"]), (["ask-export"], []))
+
+    def test_a_to_do_under_the_undated_month_end_group_is_read(self):
+        blocks = [block("heading", "Before the month-end") if item["text"] == "This week" else item for item in digest_blocks(ticked=True)]
+        edits = self.edits(overview(blocks))
+        self.assertEqual((edits["ticked"], edits["ignored"]), (["ask-export"], []))
+
     def test_a_page_missing_a_section_gives_no_edits_and_the_previous_digest_blind_spot(self):
         blocks = [item for item in digest_blocks("mitigated", ticked=True) if item["text"] != "Decisions this week"]
         doc, base, _ = compute(collections=collections_for(**{"previous-digest": overview(blocks)}))

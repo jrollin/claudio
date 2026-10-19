@@ -147,7 +147,7 @@
 ### This week
 - [ ] <span color="gray_bg">Capacity</span> Read the worker pool quota <span color="gray">read-pool-quota</span>
 - [ ] <span color="gray_bg">Reliability</span> Find what moved the queue latency <span color="gray">trace-latency-step</span>
-### Before the month-end
+### Before the 2026-03-31 month-end
 - [ ] <span color="gray_bg">Capacity</span> Plan the volume resize <span color="gray">plan-resize</span>
 - [ ] <span color="gray_bg">Release</span> Confirm the freeze dates with the release manager <span color="gray">confirm-freeze-dates</span>
 ### Investigate
