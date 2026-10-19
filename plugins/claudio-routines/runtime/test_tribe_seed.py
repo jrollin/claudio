@@ -355,6 +355,81 @@ class SeedThreadTest(SeedCase):
         self.assertIsNone(tribe_state.check_state(self.read("state.json")))
 
 
+class SeedBlindSpotTest(SeedCase):
+    def seed_runs(self, runs, where="top"):
+        run_state = make_run_state()
+        if where == "top":
+            run_state["blind_spot_runs"] = runs
+        else:
+            run_state["run"]["blind_spot_runs"] = runs
+        code, _, err = self.seed(make_page(run_state))
+        return code, err, self.read("state.json")["blind_spots"] if code == 0 else None
+
+    def test_reads_a_map_of_runs_at_the_top_level(self):
+        code, err, spots = self.seed_runs({"gap-a": 2, "gap-b": 1})
+        self.assertEqual((code, err, spots), (0, "", [{"key": "gap-a", "gap": "gap-a", "runs": 2}, {"key": "gap-b", "gap": "gap-b", "runs": 1}]))
+
+    def test_reads_a_map_of_runs_under_the_run(self):
+        code, err, spots = self.seed_runs({"gap-a": 3}, where="run")
+        self.assertEqual((code, err, spots), (0, "", [{"key": "gap-a", "gap": "gap-a", "runs": 3}]))
+
+    def test_reads_a_list_of_runs_under_the_run(self):
+        code, err, spots = self.seed_runs([{"key": "channels", "gap": "no history", "runs": 2}], where="run")
+        self.assertEqual((code, err, spots), (0, "", [{"key": "channels", "gap": "no history", "runs": 2}]))
+
+    def test_prefers_the_top_level_runs_to_those_under_the_run(self):
+        run_state = make_run_state()
+        run_state["blind_spot_runs"] = {"gap-a": 1}
+        run_state["run"]["blind_spot_runs"] = {"gap-b": 4}
+        self.assertEqual(self.seeded(run_state)["blind_spots"], [{"key": "gap-a", "gap": "gap-a", "runs": 1}])
+
+    def test_prefers_an_empty_top_level_list_to_the_runs_under_the_run(self):
+        run_state = make_run_state()
+        run_state["blind_spot_runs"] = []
+        run_state["run"]["blind_spot_runs"] = {"gap-b": 4}
+        self.assertEqual(self.seeded(run_state)["blind_spots"], [])
+
+    def test_seeds_an_empty_map_as_no_blind_spots(self):
+        self.assertEqual(self.seed_runs({}), (0, "", []))
+
+    def test_cuts_a_map_key_to_60_characters_without_control_characters_or_mentions(self):
+        _, _, spots = self.seed_runs({"a\nb@c" + "x" * 100: 1})
+        key = "a b c" + "x" * 55
+        self.assertEqual(spots, [{"key": key, "gap": key, "runs": 1}])
+
+    def test_skips_and_notes_an_entry_whose_runs_is_not_an_integer_of_at_least_1(self):
+        for runs in (0, -1, 1.5, "2", True, None):
+            with self.subTest(runs=runs):
+                code, err, spots = self.seed_runs({"gap-a": runs})
+                self.assertEqual((code, spots, err), (0, [], "seed: blind_spot_runs.gap-a skipped: runs is not an integer of at least 1\n"))
+
+    def test_skips_and_notes_an_entry_with_an_empty_key(self):
+        code, err, spots = self.seed_runs({"": 1, "gap-a": 1})
+        self.assertEqual((code, spots, err), (0, [{"key": "gap-a", "gap": "gap-a", "runs": 1}], "seed: blind_spot_runs. skipped: key is empty\n"))
+
+    def test_keeps_the_valid_entries_next_to_a_skipped_one(self):
+        _, err, spots = self.seed_runs({"gap-a": 0, "gap-b": 2})
+        self.assertEqual((spots, err.count("skipped")), ([{"key": "gap-b", "gap": "gap-b", "runs": 2}], 1))
+
+    def test_cuts_a_noted_key_to_60_characters_without_control_characters(self):
+        _, err, _ = self.seed_runs({"a\nb" + "x" * 100: 0})
+        self.assertEqual(err, "seed: blind_spot_runs.a b" + "x" * 57 + " skipped: runs is not an integer of at least 1\n")
+
+    def test_rejects_runs_that_are_neither_a_list_nor_a_map(self):
+        for where, path in (("top", "blind_spot_runs"), ("run", "run.blind_spot_runs")):
+            with self.subTest(where=where):
+                code, err, _ = self.seed_runs("none", where=where)
+                self.assertEqual((code, f"expected a list or an object at {path}" in err), (3, True))
+
+    def test_rejects_a_list_entry_without_a_count_under_the_run(self):
+        code, err, _ = self.seed_runs([{"key": "channels", "gap": "no history"}], where="run")
+        self.assertEqual((code, "run.blind_spot_runs[0].runs" in err), (3, True))
+
+    def test_seeded_blind_spots_pass_the_state_check(self):
+        self.seed_runs({"gap-a": 2, "a\nb@c" + "x" * 100: 1, "gap-c": 0})
+        self.assertIsNone(tribe_state.check_state(self.read("state.json")))
+
+
 class SeedSkippedPageTest(SeedCase):
     def test_skips_a_newer_page_without_a_run_state_and_names_it(self):
         code, _, err = self.seed(make_page(None), make_page(make_run_state()))

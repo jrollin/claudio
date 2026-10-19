@@ -294,7 +294,7 @@ WHEN Prod watch has collected its sources
 THE evaluator writes, per pack entry, per discovered monitor and per tracked monitor key, the observed values and the features the model needs to judge them, and decides no threshold
 
 **Acceptance Criteria:**
-- [ ] A monitor lists its state, its priority when the observability tool returns one, and, from the alert events of the window, its transition count, its first and last transition times, and its transitions per hour between them *(AC-18.1)*
+- [ ] A monitor lists its state, its priority (from the observability tool, or else from a leading `[P1]` to `[P5]` in its name), and, from the alert events of the window, its transition count, its first and last transition times, and its transitions per hour between them *(AC-18.1)*
 - [ ] A metric entry lists its value for its read mode, its window maximum with that hour, its latest value, the value stored at its previous collection, and the change since that value, in units and in percent *(AC-18.2)*
 - [ ] An hourly entry lists every hour bucket of the window with its local label and its value, and marks the buckets its excluded hours cover *(AC-18.3)*
 - [ ] A top entry lists every group the read returned, each under its own key, per BR-34, and says whether the read returned fewer groups than its limit *(AC-18.4)*

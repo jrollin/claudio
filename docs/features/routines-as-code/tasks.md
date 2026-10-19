@@ -3,7 +3,7 @@
 ---
 feature: routines-as-code
 spec_version: 1
-total_tasks: 71
+total_tasks: 73
 phases:
   - name: "Leak guard"
     tasks: [T-1, T-2, T-3]
@@ -35,6 +35,8 @@ phases:
     tasks: [T-70]
   - name: "Monitor event aggregates"
     tasks: [T-71]
+  - name: "Monitor priority and seed fixes"
+    tasks: [T-72, T-73]
 depends_on: []
 ---
 
@@ -803,6 +805,24 @@ Runs in a local session with the chat, issue tracker, document store and observa
 - **Verify**: `for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
 - **Rules**: BR-28
 - **Status**: Complete (live check over a 63-hour window: 28 monitors, 3,748 events, aggregate call 7 s, monitors script 26 s)
+
+## Phase 16: Monitor priority and seed fixes
+
+### T-72: Take a null monitor priority from the name
+- A monitor whose record priority is null takes the digit 1 to 5 of a leading `[P<n>]` in its name (case-insensitive, exact brackets, only at the start of the name); a record priority always wins, and a name without the prefix keeps a null priority. In `features.py`, shared by the watch and tribe engines; the discovery search returns no priority, so the discovered monitors rely on it.
+- Tests: the prefix read as 1 to 5, a lower-case prefix, an API priority kept over the name, no priority for `[P6]`, `[P0]`, `[P12]`, `[P2`, `[P 2]`, a prefix after other text, a leading space or a trailing prefix, and the values of a monitor without the prefix unchanged.
+- **Refs**: US-18, US-19, AC-18.1, AC-19.2, TD-26
+- **Files**: `.claude-plugin/marketplace.json` (modify), `docs/features/routines-as-code/design.md` (modify), `docs/features/routines-as-code/tasks.md` (modify), `plugins/claudio-routines/.claude-plugin/plugin.json` (modify), `plugins/claudio-routines/runtime/features.py` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify), `plugins/claudio-routines/runtime/test_features.py` (modify)
+- **Verify**: `for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
+- **Status**: Complete
+
+### T-73: Seed the blind spot runs from a map
+- `tribe.py seed` reads `blind_spot_runs` from the top level of the Run state, else from `run.blind_spot_runs`, as a list of `{key, gap, runs}` or a map `{<gap key>: <runs>}`. A map entry becomes `{key, gap, runs}` with the key cleaned and cut to 60 characters, also used as the gap; an entry with an empty key or runs that is not an integer of at least 1 is skipped with one stderr line `seed: blind_spot_runs.<key> skipped: <reason>`; a value of another type is rejected with its key path. The seeded state passes `check_state`.
+- Tests: a map at the top level and under `run`, the top level winning over `run`, a list at either place, an empty map, a key cleaned and cut, entries skipped with their stderr line next to a kept one, a value that is neither a list nor a map rejected with its path, the seeded state accepted by `check_state`.
+- **Refs**: US-33, TD-47
+- **Files**: `docs/features/routines-as-code/design.md` (modify), `docs/features/routines-as-code/tasks.md` (modify), `plugins/claudio-routines/runtime/test_tribe_seed.py` (modify), `plugins/claudio-routines/runtime/tribe_seed.py` (modify)
+- **Verify**: `for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
+- **Status**: Complete
 
 ## Related Features
 

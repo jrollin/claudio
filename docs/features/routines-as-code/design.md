@@ -654,6 +654,7 @@ Accepted risks:
     - `kind` (`monitor`, `metric` or `group`), `entry` (the pack key, or null for a discovered monitor), `source`, `title`, `link`.
     - `values`, a flat map of named features:
       - monitor: `state`, `priority`, `transitions`, `first_transition`, `last_transition`, `transitions_per_hour` (AC-18.1);
+        - `priority` is the record's when it holds one, else the digit 1 to 5 of a leading `[P<n>]` in the monitor name (case-insensitive, exact brackets, only at the start), else null;
       - metric and group: `value`, `window_max`, `window_max_at`, `latest`, `previous`, `change`, `change_percent` (AC-18.2), and for a group `groups_complete` (AC-18.4).
     - `buckets`, for an hourly entry: its values aligned with `bucket_labels`, and `excluded`, the indexes its excluded hours cover (AC-18.3); `value` and `window_max` skip excluded buckets, so a spike in an excluded hour never escalates (BR-10).
     - `days`, for a lookback entry: `[{label, value}]` daily buckets labelled with their UTC date, the last one marked `partial` (AC-18.5); its `value` and `window_max` are the largest daily value, partial day included, `window_max_at` that day's label, and `latest` the last daily value.
@@ -1130,6 +1131,7 @@ Feature rules:
   - the tracked threads, from the chat cursor section's `threads` entries (`<channel>/<root ts>`), as `threads[<chat source>]` `{channel, root_ts, links}` for each chat source that lists the channel, the link built by the chat adapter from the provider's `links_base`; an entry that is malformed or whose channel no chat source lists is skipped and noted on stderr;
   - `previous_page`, from the page's id and the Run state's `written_at`, so the first run reads the owner's edits.
 - A warning status that is not one of BR-54 is read as the BR-54 word it starts with (case-insensitive, up to the first comma or space-separated clause), else as `open`. Each remapped status is printed as `seed: warnings.<key>.status "<original, cut to 60 characters>" read as <status>`, so the owner sees it at the approval gate (AC-33.4, AC-33.5). `check_state` stays strict.
+- Blind spot runs are read from `blind_spot_runs` at the top level of the Run state, else from `run.blind_spot_runs`, as a list of `{key, gap, runs}` or a map `{<gap key>: <runs>}`. A map entry becomes `{key, gap, runs}` with the key cleaned and cut to 60 characters, also used as the gap. An entry whose key is empty or whose runs is not an integer of at least 1 is skipped and printed as `seed: blind_spot_runs.<key> skipped: <reason>`; a value of another type is rejected with its key path.
 - The retired keys start empty. `weekly_heading_week` is the page's ISO week.
 - It prints each skipped page and why, and exits 2 when no page qualifies.
 - The skill's `/routines seed <slug>` flow shows the state and pushes it to `claude/state` only after the owner's approval (AC-33.4).

@@ -63,6 +63,46 @@ class MonitorValuesTest(EvaluateCase):
     def test_monitor_without_priority_has_a_null_one(self):
         self.assertIsNone(self.values()["priority"])
 
+    def priority_of(self, name, priority=None):
+        docs = collections(alerts=alerts(monitors=[monitor(name=name, priority=priority)]))
+        return self.values(docs=docs)["priority"]
+
+    def test_priority_comes_from_a_leading_name_prefix_when_the_api_has_none(self):
+        self.assertEqual(self.priority_of("[P2][svc][prod] API Latency"), 2)
+
+    def test_priority_prefix_is_case_insensitive(self):
+        self.assertEqual(self.priority_of("[p1] API"), 1)
+
+    def test_priority_prefix_takes_the_digits_one_to_five(self):
+        priorities = [self.priority_of(f"[P{digit}] API") for digit in range(1, 6)]
+
+        self.assertEqual(priorities, [1, 2, 3, 4, 5])
+
+    def test_api_priority_wins_over_the_name_prefix(self):
+        self.assertEqual(self.priority_of("[P2] API", priority=4), 4)
+
+    def test_name_without_an_exact_leading_prefix_gives_a_null_priority(self):
+        names = ["[P6] API", "[P0] API", "[P2 API", "x [P2] API", "API [P2]", "[svc][P2] API", "[P 2] API", " [P2] API", "[P12] API"]
+
+        self.assertEqual([self.priority_of(name) for name in names], [None] * len(names))
+
+    def test_values_of_a_monitor_without_the_prefix_are_unchanged(self):
+        docs = collections(alerts=alerts(monitors=[monitor(name="Checkout latency")], transitions=[transition(600, 1800, 2)]))
+
+        values = self.values(docs=docs)
+
+        self.assertEqual(
+            values,
+            {
+                "state": "Alert",
+                "priority": None,
+                "transitions": 2,
+                "first_transition": "2026-06-02T00:40:00+02:00",
+                "last_transition": LABEL_1,
+                "transitions_per_hour": 6.0,
+            },
+        )
+
     def test_transitions_come_from_the_aggregate_of_the_monitor(self):
         transitions = [transition(600, 1800, 2), transition(900, 900, 1, OTHER)]
 

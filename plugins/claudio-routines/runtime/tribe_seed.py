@@ -30,9 +30,20 @@ RUN_STATE_PAGE = leaf(
     lambda value: isinstance(value, str) and roles.PAGE_ID.fullmatch(value) is not None, "a page id of letters, digits and dashes"
 )
 CURSOR_TIME = leaf(lambda value: isinstance(value, str) and roles.UTC_Z.fullmatch(value) is not None, "a UTC time ending in Z")
+
+
+def check_blind_spot_runs(value, path):
+    if isinstance(value, dict):
+        return
+    if not isinstance(value, list):
+        raise state.Rejected(f"expected a list or an object at {path}")
+    state.check(value, [tribe_state.BLIND_SPOT], path)
+
+
+BLIND_SPOT_RUNS = Omittable(check_blind_spot_runs)
 RUN_STATE_SPEC = {
     "digest": tribe_state.NAME,
-    "run": {"at": tribe_state.UTC_TIME, "written_at": tribe_state.UTC_TIME, "page": RUN_STATE_PAGE},
+    "run": {"at": tribe_state.UTC_TIME, "written_at": tribe_state.UTC_TIME, "page": RUN_STATE_PAGE, "blind_spot_runs": BLIND_SPOT_RUNS},
     "warnings": {
         "*": {
             "title": tribe_state.TITLE,
@@ -58,7 +69,7 @@ RUN_STATE_SPEC = {
         }
     },
     "cursors": {},
-    "blind_spot_runs": Omittable([tribe_state.BLIND_SPOT]),
+    "blind_spot_runs": BLIND_SPOT_RUNS,
 }
 
 
@@ -277,6 +288,29 @@ def seed_threads(cursors, sources):
     return threads
 
 
+def skip_blind_spot(key, reason):
+    print(f"seed: blind_spot_runs.{state.clean_text(key, tribe_state.KEY_CAP)} skipped: {reason}", file=sys.stderr)
+
+
+def blind_spot_from_map(key, runs):
+    text = state.clean_text(key, tribe_state.KEY_CAP)
+    if not text.strip():
+        skip_blind_spot(key, "key is empty")
+    elif not state.is_integer(runs) or runs < 1:
+        skip_blind_spot(key, "runs is not an integer of at least 1")
+    else:
+        return {"key": text, "gap": text, "runs": runs}
+    return None
+
+
+def seed_blind_spots(run_state):
+    runs = run_state["blind_spot_runs"] if "blind_spot_runs" in run_state else run_state["run"].get("blind_spot_runs", [])
+    if isinstance(runs, list):
+        return runs
+    spots = (blind_spot_from_map(key, count) for key, count in runs.items())
+    return [spot for spot in spots if spot is not None]
+
+
 def seed_state(run_state, sources, zone):
     state.check(run_state, RUN_STATE_SPEC, "")
     run, at = run_state["run"], run_state["run"]["at"]
@@ -286,7 +320,7 @@ def seed_state(run_state, sources, zone):
         "checks": {key: seed_check(check, at) for key, check in run_state["checks"].items() if not check["done"]},
         "cursors": seed_cursors(run_state["cursors"], sources),
         "threads": seed_threads(run_state["cursors"], sources),
-        "blind_spots": run_state.get("blind_spot_runs", []),
+        "blind_spots": seed_blind_spots(run_state),
     }
     document["run"].update(
         {
