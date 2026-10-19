@@ -10,6 +10,7 @@ MAX_KEY = 120
 SIGNIFICANT = 4
 HASH_LENGTH = 8
 SLUG_RUNS = re.compile(r"[^a-z0-9]+")
+NAME_PRIORITY = re.compile(r"\[P([1-5])\]", re.IGNORECASE)
 NO_DATAPOINTS = "no datapoints"
 EMPTY_AS_ZERO = "zero"
 MONITOR_ABSENT = "monitor absent"
@@ -78,6 +79,13 @@ def names_of_kind(sources, kind):
 def kind_read(sources, collections, kind):
     names = names_of_kind(sources, kind)
     return bool(names) and all(collections[name]["read"] for name in names)
+
+
+def monitor_priority(monitor):
+    if monitor["priority"] is not None:
+        return monitor["priority"]
+    prefix = NAME_PRIORITY.match(monitor["name"])
+    return int(prefix.group(1)) if prefix else None
 
 
 def merged(parts):
@@ -250,7 +258,7 @@ class Reading:
         hours = None if first is None else (last - first) / (state.HOUR * 1000)
         values = {
             "state": monitor["state"],
-            "priority": monitor["priority"],
+            "priority": monitor_priority(monitor),
             "transitions": count,
             "first_transition": None if first is None else local_iso(first // 1000, self.zone),
             "last_transition": None if last is None else local_iso(last // 1000, self.zone),
