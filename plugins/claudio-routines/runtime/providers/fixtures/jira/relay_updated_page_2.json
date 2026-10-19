@@ -1,0 +1,31 @@
+{
+  "data": {
+    "issues": [
+      {
+        "id": "10121",
+        "key": "PROJ-21",
+        "fields": {
+          "summary": "Rotate the staging keys",
+          "issuetype": {
+            "name": "Task"
+          },
+          "status": {
+            "name": "To Do"
+          },
+          "priority": {
+            "name": "Low"
+          },
+          "created": "2026-10-15T08:00:00.000-0700",
+          "updated": "2026-10-16T14:00:00.000+0000",
+          "assignee": {
+            "displayName": "Sample Assignee"
+          },
+          "reporter": {
+            "displayName": "Sample Reporter"
+          }
+        }
+      }
+    ],
+    "isLast": true
+  }
+}

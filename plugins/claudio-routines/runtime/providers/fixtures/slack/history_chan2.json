@@ -3,6 +3,14 @@
   "messages": [
     {
       "type": "message",
+      "subtype": "thread_broadcast",
+      "user": "U2",
+      "text": "See thread",
+      "ts": "1760004500.000450",
+      "thread_ts": "1759000000.000001"
+    },
+    {
+      "type": "message",
       "subtype": "channel_join",
       "user": "U3",
       "text": "<@U3> has joined the channel",

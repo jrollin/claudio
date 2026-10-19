@@ -620,11 +620,24 @@ class RunContextTest(EvaluateCase):
 
 class MoreSourcesPageTest(EvaluateCase):
     def test_read_document_store_without_pages_keeps_the_stored_page_values(self):
-        empty = collection("notes", "document_store", {"pages": []}, {"last_edited": None}, {})
+        empty = collection("notes", "document_store", {"pages": []}, {"pages": {}}, {})
 
         base = self.base(docs=collections(notes=empty))
 
         self.assertEqual((base["mutes"], base["sources_last_edited"]), (STORED_MUTES, "2026-05-01T08:00:00Z"))
+
+    def test_a_source_listing_pages_is_not_the_sources_page(self):
+        changed = notes([heading("Mutes"), table(["key", "until"], ["disk", "2026-07-01"])])
+        changed["source"] = "changed-pages"
+        changed["records"]["pages"][0].update(id="page-2", last_edited="2026-06-05T20:00:00Z")
+        changed["cursor"] = {"pages": {"page-2": "2026-06-05T20:00:00Z"}}
+        config = make_config(**{"changed-pages": source("pages", pages=["page-2"])})
+
+        base = self.base(config=config, docs=collections(**{"changed-pages": changed}))
+
+        self.assertEqual(
+            (base["mutes"], base["sources_last_edited"]), ([{"key": "cpu", "until": "2026-06-10"}], "2026-06-01T20:00:00Z")
+        )
 
     def test_mutes_header_cells_match_case_insensitively(self):
         base = self.base(docs=collections(notes=notes([heading("Mutes"), table(["Key", "Until"], ["cpu", "2026-06-10"])])))

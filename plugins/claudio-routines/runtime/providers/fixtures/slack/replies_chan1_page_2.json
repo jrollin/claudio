@@ -1,0 +1,17 @@
+{
+  "ok": true,
+  "messages": [
+    {
+      "type": "message",
+      "subtype": "thread_broadcast",
+      "user": "U1",
+      "text": "Fixed",
+      "ts": "1760002600.000260",
+      "thread_ts": "1760002000.000200"
+    }
+  ],
+  "has_more": false,
+  "response_metadata": {
+    "next_cursor": ""
+  }
+}

@@ -1,0 +1,4 @@
+{
+  "messages": "=== THREAD PARENT MESSAGE ===\nFrom: Ada Example <ada@example.test> (U1)\nTime: 2025-10-09 09:26:40 UTC\nMessage TS: 1760002000.000200\nRelease notes:\n- api 1.2\n- web 3.4\nReactions: :+1: 2\nFiles: notes.txt\n\n=== THREAD REPLIES (1 total) ===\n\n--- Reply 1 of 1 ---\nFrom: Ada Example <ada@example.test> (U1)\nTime: 2025-10-09 09:36:40 UTC\nMessage TS: 1760002600.000260\nFixed",
+  "pagination_info": "There are more messages in this thread. To view the next page, use cursor: `bmV4dF90czoxNzYwMDAyMzAwLjAwMDIzMA==`"
+}

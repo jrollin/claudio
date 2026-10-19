@@ -52,6 +52,11 @@ def utc_text(value):
     return utc.replace(tzinfo=None).isoformat(timespec="seconds") + "Z"
 
 
+def read_start(window, cursor_ts):
+    first = window["first_read_from_ts"]
+    return cursor_ts if cursor_ts is not None and cursor_ts > first else first
+
+
 def quote(value):
     return urllib.parse.quote(value, safe="")
 

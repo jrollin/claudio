@@ -143,7 +143,7 @@ def mutes_table(blocks):
 
 
 def sources_page(sources, collections):
-    names = [name for name, source in sources.items() if source["role"] == "document_store"]
+    names = [name for name, source in sources.items() if source["role"] == "document_store" and "page_id" in source]
     collection = collections[names[0]] if names else None
     if collection is None or not collection["read"] or not collection["records"]["pages"]:
         return None, None

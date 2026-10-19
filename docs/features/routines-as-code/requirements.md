@@ -23,6 +23,9 @@ Puts the owner's claude.ai routines (scheduled cloud agents) under version contr
 - Fixed thresholds miss what the model catches: a replay of one live Prod watch window matched 10 of its 24 open items, missing flapping monitors, monitors outside the pack and growth-based rules.
 - One config file holds every routine, and each source repeats its provider's transport.
 - Only Prod watch has a template: the other 4 live prompts have no history, diff or lint.
+- The tribe digests collect through 4 model subagents per run.
+- Each of those subagents costs 150k to 300k tokens.
+- Their logs show truncated reads and wrong default aggregators.
 **Why** it matters:
 - Drift between copies makes routines skip steps.
 - Re-derived logic costs tokens on every run.
@@ -36,6 +39,7 @@ Puts the owner's claude.ai routines (scheduled cloud agents) under version contr
 - A replay of a live Prod watch window opens the same items as the live routine, apart from states that changed between the two reads.
 - Every value of a digest item, and every value a measured claim cites, traces to a feature.
 - A provider's settings appear once in the private config, whatever the number of routines that read it.
+- A replay collection holds every issue key, document page and chat channel a reference tribe digest cites, or gives the reason it does not.
 
 ## User Stories
 
@@ -216,7 +220,7 @@ THE collector reads the source for the run window, through the transport the pri
 - [ ] A failed read never switches to the other transport, per BR-24 *(AC-13.5)*
 - [ ] A collection names its role, provider, transport and window, whether the source was read and why not, the cursor reached, and its records *(AC-13.6)*
 - [ ] All providers of one role write the same record schema, so a routine never depends on the provider *(AC-13.7)*
-- [ ] Adapters ship for the observability tool, the document store, the chat channel and the code host, each with both transports and fixture tests *(AC-13.8)*
+- [ ] Adapters ship for the observability tool, the document store, the chat channel, the code host and the issue tracker (US-27), each with both transports and fixture tests *(AC-13.8)*
 - [ ] `collect` runs one configured source of a routine for a given window, outside a routine run, and writes its collection *(AC-13.9)*
 - [ ] The run record names the place and, per source, the transport and the reason it was not read *(AC-13.10)*
 - [ ] The run record names the commit of the private config and whether the config had uncommitted changes *(AC-13.11)*
@@ -435,6 +439,77 @@ THE skill renders the plugin's structure-only skeleton for it, marked not runnab
 - [ ] The skeletons pass the public lint *(AC-26.9)*
 - [ ] The plugin README lists every skeleton and says whether it runs *(AC-26.10)*
 
+### Read the issue tracker {#US-27}
+
+WHEN a run collects an issue tracker source
+THE collector reads the issues of the source's saved filter updated since its cursor, through the source's transport, and writes them in the issue tracker record schema
+
+**Acceptance Criteria:**
+- [ ] The issue tracker is a role, with an adapter for the issue tracker of the private config, over both transports, per BR-24 and BR-30 *(AC-27.1)*
+- [ ] A source names a saved filter, and may add a query that narrows its updated read *(AC-27.2)*
+- [ ] The collector reads the filter's issues updated after the cursor minus 1 hour, and keeps one record per issue key, the newest update winning, per BR-49 *(AC-27.3)*
+- [ ] A source may also read every issue of the filter's open sprints, whatever their update time and the query; with no open sprint it reads none and reports no blind spot *(AC-27.4)*
+- [ ] An issue record holds its key, title, type, status, priority, creation and update times, link, and whether it sits in an open sprint, per BR-52 *(AC-27.5)*
+- [ ] The cursor is the newest update time read, unchanged when no issue is read *(AC-27.6)*
+- [ ] An issue absent from a read, moved out of the filter or deleted, is never read as resolved or closed *(AC-27.7)*
+- [ ] A read that reaches the page cap marks the source not read, per BR-28 *(AC-27.8)*
+
+### Read chat threads {#US-28}
+
+WHEN a run collects a chat source
+THE collector also reads the replies of the threads started in the window, and keeps one record per message
+
+**Acceptance Criteria:**
+- [ ] A message record holds the root timestamp of its thread, or null for a message outside any thread *(AC-28.1)*
+- [ ] The replies of a thread whose root is in the window are read, up to the window end *(AC-28.2)*
+- [ ] Replies to a thread whose root is older than the window are not read *(AC-28.3)*
+- [ ] A message returned both by the channel history and by a thread read gives one record, keyed by channel and timestamp *(AC-28.4)*
+- [ ] The collector reads every channel the source lists, whatever the cursors hold, per BR-48 *(AC-28.5)*
+- [ ] A listed channel with no cursor is read over the routine's first-read span, per BR-50 *(AC-28.6)*
+- [ ] A channel the chat tool reports as not found, archived or not joined is a failed entry of the source, and the other channels are still read *(AC-28.7)*
+- [ ] Any other failure marks the source not read, per AC-13.3 *(AC-28.8)*
+- [ ] A channel with no message in the window keeps a cursor equal to the window end, in the timestamp format of the chat tool, per BR-14 *(AC-28.9)*
+
+### Read changed documents {#US-29}
+
+WHEN a run collects a document store source that lists pages
+THE collector reads only the pages edited since their cursor
+
+**Acceptance Criteria:**
+- [ ] A source sets either the single sources page of US-17 or a list of pages, never both *(AC-29.1)*
+- [ ] The collector reads each listed page's edit time, then the content of the pages whose edit time, at minute precision, differs from their cursor, per BR-51 *(AC-29.2)*
+- [ ] A page record holds its id, title, edit time, link and blocks, as in the document store schema *(AC-29.3)*
+- [ ] The cursor holds the edit time per page; a page with no cursor is read whole once, whatever its edit time *(AC-29.4)*
+- [ ] A page that is deleted or no longer shared is a failed entry of the source, and the other pages are still read *(AC-29.5)*
+- [ ] A source that reaches its request cap is not read, per BR-28 *(AC-29.6)*
+
+### Read trend windows {#US-30}
+
+WHEN a metric entry of the query pack sets a trend span
+THE collector also reads that entry as a daily series over the span ending at the window end
+
+**Acceptance Criteria:**
+- [ ] A `scalar` or `hourly` metric entry may set a trend span of 7 to 31 days, on either schedule *(AC-30.1)*
+- [ ] A trend span on a `top` entry, on a monitor entry, or next to a lookback, is invalid, per AC-17.2 *(AC-30.2)*
+- [ ] The entry's record holds a trend series of one value per local day of the configured timezone, next to its window value *(AC-30.3)*
+- [ ] A day with no datapoint is absent from the series, never zero *(AC-30.4)*
+- [ ] Days follow the configured timezone across clock changes, as hour buckets do, per AC-10.3 *(AC-30.5)*
+- [ ] A trend read that fails, or returns no datapoint, is a blind spot of its entry, per BR-53 *(AC-30.6)*
+
+### Collect the tribe digest sources {#US-31}
+
+WHEN the owner runs a collection for a tribe digest routine
+THE collector reads every source the routine file lists, by role, for a window
+
+**Acceptance Criteria:**
+- [ ] A tribe digest routine file lists its chat channels, issue tracker filters, document pages and observability sources, and query pack entries with trend spans *(AC-31.1)*
+- [ ] The routine file sets its first-read span, per BR-50 *(AC-31.2)*
+- [ ] Each source of a tribe digest routine collects outside a run: `fetch` for an `api` source, plan, saved responses and parse for an `mcp` source, per AC-13.9 and US-15 *(AC-31.3)*
+- [ ] Each new adapter gives byte-identical records and cursor over both transports from the same provider data, per AC-13.2 *(AC-31.4)*
+- [ ] Sources added to a mirrored routine change neither its render nor its live prompt *(AC-31.5)*
+- [ ] A replay compare script lists, for the window of each reference digest, every issue key, document page and chat channel the reference cites, each as found in the collections or with one reason: outside the configured sources, outside the window, moved out of the filter, deleted or unshared, or capped *(AC-31.6)*
+- [ ] The compare script exits 1 when a cited record is neither found nor given a reason *(AC-31.7)*
+
 ## Business Rules
 
 - No private name, identifier, URL host or secret is committed to this public repository *(BR-1)*
@@ -466,7 +541,7 @@ THE skill renders the plugin's structure-only skeleton for it, marked not runnab
 - State moves only by fast-forward pushes to `claude/state`; a rejected push is reported, never forced or merged *(BR-27)*
 - A source read only in part counts as not read, so no item resolves on partial data *(BR-28)*
 - A provider adapter calls only the HTTPS host the config sets for that provider *(BR-29)*
-- Public prose and skeletons name roles (observability tool, chat channel, document store, code host), never providers; provider names appear only under `providers/`, in the private repository and in live routines *(BR-30)*
+- Public prose and skeletons name roles (observability tool, chat channel, document store, code host, issue tracker), never providers; provider names appear only under `providers/`, in the private repository and in live routines *(BR-30)*
 - Each routine's query pack (queries, read modes, lookbacks, rules, schedules) lives in the private config *(BR-31)*
 - An entry that is not due, is a known gap not retried this run, has no data, or fails on its own is deferred, and so is a tracked metric key whose entry left the query pack: its item is held unchanged, and the rest of its source still counts as read *(BR-32)*
 - Judgment rules, per pack entry and routine-wide, are prose in the private config; public skeletons and the sources page hold none *(BR-33)*
@@ -484,15 +559,28 @@ THE skill renders the plugin's structure-only skeleton for it, marked not runnab
 - A value that several routines use is defined once, in the shared values of `config.json` *(BR-45)*
 - A template marked not runnable is never pushed to a live routine, nor run *(BR-46)*
 - A live routine id belongs to one configured routine *(BR-47)*
+- Collectors read the channels, filters and pages the config lists; cursors only say where each read starts *(BR-48)*
+- An issue tracker read overlaps its cursor by 1 hour and keeps one record per issue key, since the tracker's query dates use the reader's timezone *(BR-49)*
+- A channel or issue filter with no cursor is read over the routine's first-read span ending at the window end, never its full history; the run window keeps BR-13 and BR-20 *(BR-50)*
+- Document edit times compare at minute precision, since the document store rounds search times to the minute; a second edit in the same minute as the stored one is read with the next edit *(BR-51)*
+- Collections keep people only as the opaque ids a source returns for message and change authors; issue tracker records keep no person; message and page text is kept as written *(BR-52)*
+- A failed trend read is a blind spot of its entry and never defers the entry's window value *(BR-53)*
 
 ## Out of Scope
 
 - Digest structure check: a later spec
 - Scheduling local runs (cron, launchd): `/routines run` runs on demand
-- Running the tribe digests on the runtime: the next increment, with an issue tracker role, chat thread replies, 7-day and 30-day trend windows, changed documents, a digest page and a chat message as outputs
+- Running the tribe digests on the runtime: the increment after the collectors, with the tribe judgment, reported keys citing record links, the digest page in today's layout and the chat message, rendered by scripts
   - Its acceptance is content parity with two reference digests kept in the private repository: over the same window, the same warnings, severities, urgencies, decisions, checks and blind spots, apart from data that changed since; layout and output target are free
 - Running the chat recap and weekly status on the runtime: after the tribe digests, reusing their collectors
 - Changing the 4 mirrored live prompts: the mirrors reproduce them as they are
+- With the tribe judgment, after the collectors:
+  - new replies in threads that the state cites
+  - pull requests cited by issues
+  - dashboards' widget queries
+  - sprint dates
+  - month-end comparisons
+- Excluding chat conversations from search-based reads: with the chat recap and the weekly status
 - A shared source catalog: each routine defines its own sources and names providers
 - Drafting issues or tracker comments from items
 - Letting the model decide whether to post: the post rule stays in the scripts
@@ -522,3 +610,5 @@ None open. Settled before design:
 - Routine forms: inline under `routines` and one file per routine both load, so single-file configs keep working.
 - Values: a routine's value overrides the shared one of the same key, and the lint warns on a value repeated across routines.
 - Not runnable: an exact first-line marker, refused by `sync`, `body` and `/routines run`.
+- Tribe digests: collectors first (issue tracker, chat threads, changed documents, trend windows), then judgment and rendering; the digest keeps today's page layout (owner, 2026-10-18).
+- Settings-enforced rules (no push notification, no sleep): with the runtime rollout, through the private repository's settings (owner, 2026-10-18).

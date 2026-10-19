@@ -2,6 +2,53 @@
   "id": "<tribe-digest-routine-id>",
   "template": "tribe-digest",
   "cron": "CRON_TZ=Europe/Paris 0 8 * * 1,3,5",
+  "first_read_days": 7,
+  "sources": {
+    "channels": {
+      "provider": "chat",
+      "channels": [
+        "<chat-channel-id-1>",
+        "<chat-channel-id-2>"
+      ]
+    },
+    "issues": {
+      "provider": "issue-tracker",
+      "filter": "10000",
+      "query": "<issue-query>",
+      "open_sprints": true
+    },
+    "changed-pages": {
+      "provider": "document-store",
+      "pages": [
+        "<document-page-id-1>",
+        "<document-page-id-2>"
+      ]
+    },
+    "monitors": {
+      "provider": "observability",
+      "kind": "monitors",
+      "scope_filter": "<alert-event-query>"
+    },
+    "metrics": {
+      "provider": "observability",
+      "kind": "metrics",
+      "scope_filter": ""
+    }
+  },
+  "query_pack": [
+    {
+      "key": "<trend-metric-key>",
+      "source": "metrics",
+      "title": "<trend-metric-title>",
+      "link": "<trend-metric-link>",
+      "rule": "<rule-for-this-metric>",
+      "schedule": "every_run",
+      "query": "<trend-metric-query>",
+      "read": "hourly",
+      "aggregator": "avg",
+      "trend_days": 30
+    }
+  ],
   "values": {
     "digest": {
       "name": "<tribe-name>"

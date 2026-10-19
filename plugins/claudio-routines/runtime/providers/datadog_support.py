@@ -83,12 +83,41 @@ DAY = 86400
 LOOKBACK = {"from_ts": WINDOW["to_ts"] - 7 * DAY, "to_ts": WINDOW["to_ts"]}
 LOOKBACK_FROM_MS = LOOKBACK["from_ts"] * 1000
 
+PARIS = "Europe/Paris"
+TREND_WINDOW = {**WINDOW, "timezone": PARIS}
+TREND_SPAN = {"from_ts": 1759442400, "to_ts": WINDOW["to_ts"]}
+TREND_FROM_MS = TREND_SPAN["from_ts"] * 1000
+FIRST_DAY = 1759615200
+SPRING_FORWARD_DAY = 1774738800
+FALL_BACK_DAY = 1792879200
+HOUR = 3600
+
 DISCOVERING = {**MONITORS, "discovery_query": "status:alert env:prod"}
 NOT_FOUND = {"status": "missing", "reason": "not found"}
 
 
 def lookback(entry):
     return {**entry, "schedule": "daily", "lookback_days": 7, "span": LOOKBACK}
+
+
+def trended(entry, aggregator):
+    return {**entry, "aggregator": aggregator, "trend_span": TREND_SPAN}
+
+
+def at(day, hour, value):
+    return FIRST_DAY + (day * 24 + hour) * HOUR, value
+
+
+def series(*points):
+    return {"times": [ts * 1000 for ts, _ in points], "values": [[value for _, value in points]]}
+
+
+def clock_change_series(day_start, hours):
+    around = [(day_start - HOUR, 100.0), (day_start + hours * HOUR, 200.0)]
+    return series(*around, *((day_start + hour * HOUR, 1.0) for hour in range(hours)))
+
+
+TREND_SERIES = series(at(2, 6, 1.0), at(0, 23, 2.0), at(0, 0, 4.0), at(2, 0, 7.0), at(0, 1, 9.0), at(2, 5, None), at(2, 7, None))
 
 
 class FakeResponse:
@@ -131,6 +160,10 @@ def served(document):
     return FakeResponse(json.dumps(document).encode("utf-8"))
 
 
+def series_response(document):
+    return served({"data": {"type": "timeseries_response", "attributes": document}})
+
+
 def status(code):
     return urllib.error.HTTPError(BASE, code, "status", email.message.Message(), io.BytesIO(fixture(f"error_{code}.json")))
 
@@ -139,9 +172,9 @@ def client(opener, environ=ENVIRON):
     return datadog.api_client(PROVIDER, opener=opener, environ=environ, sleep=lambda seconds: None)
 
 
-def run(source, entries, cursor, *outcomes):
+def run(source, entries, cursor, *outcomes, window=WINDOW):
     opener = FakeOpener(outcomes)
-    return opener, datadog.fetch(source, WINDOW, cursor, entries, client(opener))
+    return opener, datadog.fetch(source, window, cursor, entries, client(opener))
 
 
 def configured(source, provider_config):

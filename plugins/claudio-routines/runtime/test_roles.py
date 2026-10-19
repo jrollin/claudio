@@ -10,6 +10,7 @@ ADAPTER_ROLES = {
     "docvendor": "document_store",
     "chatvendor": "chat",
     "codevendor": "code_host",
+    "trackervendor": "issue_tracker",
 }
 WINDOW_END = 1_780_000_000
 MONITOR_ID = str(4000 + 2)
@@ -194,6 +195,8 @@ def metrics_records():
                 "hourly": [{"ts": WINDOW_END - 3600, "value": 7.5}, {"ts": WINDOW_END, "value": None}],
                 "daily": [{"ts": WINDOW_END - 86400, "value": 6.0}, {"ts": WINDOW_END, "value": None}],
                 "groups": [{"group": "endpoint:/a", "value": 3}, {"group": "endpoint:/b", "value": None}],
+                "trend": [{"day": "2026-09-30", "value": 6.5}, {"day": "2026-10-01", "value": 7.5}],
+                "trend_reason": None,
             }
         ]
     }
@@ -206,6 +209,7 @@ def pages_records():
                 "id": page_id(),
                 "title": "Sources",
                 "last_edited": UTC_EDIT,
+                "link": "https://docs.example.test/" + page_id().replace("-", ""),
                 "blocks": [
                     {"type": "heading", "text": "Mutes", "rows": None},
                     {"type": "table", "text": "", "rows": [["key", "until"], ["error-rate", "2026-11-01"]]},
@@ -215,12 +219,62 @@ def pages_records():
     }
 
 
+def pages_cursor():
+    return {"pages": {page_id(): UTC_EDIT}}
+
+
+def issues_records():
+    return {
+        "issues": [
+            {
+                "key": "PROJ-12",
+                "title": "Checkout fails",
+                "type": "Bug",
+                "status": "In Progress",
+                "priority": "High",
+                "created": "2026-09-01T08:00:00Z",
+                "updated": "2026-10-02T09:30:00Z",
+                "link": "https://tracker.example.test/browse/PROJ-12",
+                "in_open_sprint": True,
+            },
+            {
+                "key": "PROJ-13",
+                "title": "Tidy the backlog",
+                "type": "Task",
+                "status": "To Do",
+                "priority": None,
+                "created": "2026-09-02T08:00:00Z",
+                "updated": "2026-10-01T09:30:00Z",
+                "link": "https://tracker.example.test/browse/PROJ-13",
+                "in_open_sprint": False,
+            },
+        ]
+    }
+
+
+def tracker_config():
+    config = make_config()
+    config["providers"]["tracker"] = {
+        "adapter": "trackervendor",
+        "api": {"base_url": "https://api.tracker.example.test", "credentials": {"email": "TRACKER_EMAIL", "token": "TRACKER_TOKEN"}},
+    }
+    routine_sources(config)["issues"] = {
+        "provider": "tracker",
+        "transport": {"cloud": "api", "local": "api"},
+        "filter": "10042",
+        "query": "labels = digest",
+        "open_sprints": True,
+    }
+    return config
+
+
 def messages_records():
     return {
         "messages": [
             {
                 "channel": "chan-alerts",
                 "ts": "1780000000.000100",
+                "thread_ts": None,
                 "author": "someone",
                 "text": "deploy done",
                 "link": "https://chat.example.test/archives/chan-alerts/p1",
@@ -658,6 +712,78 @@ class RoleOptionsTest(ConfigCase):
         self.assert_config_error(config, "routines.prod-watch.sources.metrics.discovery_query")
 
 
+class DocumentPagesOptionTest(ConfigCase):
+    SOURCE_PATH = "routines.prod-watch.sources.sources-page"
+
+    def pages_config(self, pages):
+        config = make_config()
+        source = routine_sources(config)["sources-page"]
+        del source["page_id"]
+        source["pages"] = pages
+        return config
+
+    def test_accepts_a_source_listing_pages(self):
+        self.assertIsNone(roles.validate_config(self.pages_config([page_id(), "page-cdcdcdcd"]), ROUTINE, "local", role_of))
+
+    def test_rejects_a_source_setting_both_page_id_and_pages(self):
+        config = self.pages_config([page_id()])
+        routine_sources(config)["sources-page"]["page_id"] = page_id()
+        self.assert_config_error(config, self.SOURCE_PATH)
+
+    def test_rejects_a_source_setting_neither_page_id_nor_pages(self):
+        config = make_config()
+        del routine_sources(config)["sources-page"]["page_id"]
+        self.assert_config_error(config, self.SOURCE_PATH)
+
+    def test_rejects_an_empty_page_list(self):
+        self.assert_config_error(self.pages_config([]), self.SOURCE_PATH + ".pages")
+
+    def test_rejects_pages_that_is_not_a_list(self):
+        self.assert_config_error(self.pages_config(page_id()), self.SOURCE_PATH + ".pages")
+
+    def test_rejects_a_listed_page_id_outside_letters_digits_and_dashes(self):
+        self.assert_config_error(self.pages_config([page_id(), "../v1/users"]), self.SOURCE_PATH + ".pages[1]")
+
+    def test_rejects_a_listed_page_id_that_is_not_a_string(self):
+        self.assert_config_error(self.pages_config([7]), self.SOURCE_PATH + ".pages[0]")
+
+
+class FirstReadDaysTest(ConfigCase):
+    KEY_PATH = "routines.prod-watch.first_read_days"
+
+    def with_days(self, days):
+        config = make_config()
+        config["routines"][ROUTINE]["first_read_days"] = days
+        return config
+
+    def test_accepts_a_routine_without_first_read_days(self):
+        self.assertIsNone(roles.validate_config(make_config(), ROUTINE, "local", role_of))
+
+    def test_accepts_one_day(self):
+        self.assertIsNone(roles.validate_config(self.with_days(1), ROUTINE, "local", role_of))
+
+    def test_accepts_31_days(self):
+        self.assertIsNone(roles.validate_config(self.with_days(31), ROUTINE, "local", role_of))
+
+    def test_rejects_zero_days(self):
+        self.assert_config_error(self.with_days(0), self.KEY_PATH)
+
+    def test_rejects_32_days(self):
+        self.assert_config_error(self.with_days(32), self.KEY_PATH)
+
+    def test_rejects_a_boolean(self):
+        self.assert_config_error(self.with_days(True), self.KEY_PATH)
+
+    def test_rejects_a_fractional_number_of_days(self):
+        self.assert_config_error(self.with_days(7.5), self.KEY_PATH)
+
+    def test_rejects_a_string(self):
+        self.assert_config_error(self.with_days("7"), self.KEY_PATH)
+
+    def test_rejects_null(self):
+        self.assert_config_error(self.with_days(None), self.KEY_PATH)
+
+
 class PackCase(unittest.TestCase):
     def assert_pack_error(self, pack, path, rules=None):
         with self.assertRaises(roles.PackError) as caught:
@@ -1088,6 +1214,72 @@ class LookbackDaysTest(PackCase):
         self.assert_pack_error(pack, "routines.prod-watch.query_pack[0].lookback_days")
 
 
+class TrendDaysTest(PackCase):
+    def with_trend(self, index, days=7, **fields):
+        pack = make_pack()
+        pack[index].update(trend_days=days, **fields)
+        return pack
+
+    def test_accepts_the_smallest_trend_on_a_scalar_entry(self):
+        self.assert_pack_accepted(self.with_trend(1, 7))
+
+    def test_accepts_the_largest_trend_on_a_scalar_entry(self):
+        self.assert_pack_accepted(self.with_trend(1, 31))
+
+    def test_accepts_a_trend_on_an_hourly_entry(self):
+        self.assert_pack_accepted(self.with_trend(3, 30))
+
+    def test_accepts_a_trend_on_a_daily_entry_without_lookback(self):
+        self.assert_pack_accepted(self.with_trend(1, 30, schedule="daily"))
+
+    def test_accepts_the_max_aggregator(self):
+        self.assert_pack_accepted(self.with_trend(1, aggregator="max"))
+
+    def test_accepts_the_min_aggregator(self):
+        self.assert_pack_accepted(self.with_trend(1, aggregator="min"))
+
+    def test_accepts_the_sum_aggregator(self):
+        self.assert_pack_accepted(self.with_trend(1, aggregator="sum"))
+
+    def test_accepts_the_avg_aggregator(self):
+        self.assert_pack_accepted(self.with_trend(1, aggregator="avg"))
+
+    def test_accepts_the_last_aggregator(self):
+        self.assert_pack_accepted(self.with_trend(1, aggregator="last"))
+
+    def test_accepts_any_aggregator_without_a_trend(self):
+        pack = make_pack()
+        pack[1]["aggregator"] = "p95"
+        self.assert_pack_accepted(pack)
+
+    def test_rejects_a_trend_of_6_days(self):
+        self.assert_pack_error(self.with_trend(1, 6), "routines.prod-watch.query_pack[1].trend_days")
+
+    def test_rejects_a_trend_of_32_days(self):
+        self.assert_pack_error(self.with_trend(1, 32), "routines.prod-watch.query_pack[1].trend_days")
+
+    def test_rejects_a_boolean_trend(self):
+        self.assert_pack_error(self.with_trend(1, True), "routines.prod-watch.query_pack[1].trend_days")
+
+    def test_rejects_a_fractional_trend(self):
+        self.assert_pack_error(self.with_trend(1, 7.5), "routines.prod-watch.query_pack[1].trend_days")
+
+    def test_rejects_a_trend_on_a_top_entry(self):
+        pack = self.with_trend(2, 7)
+        del pack[2]["lookback_days"]
+        self.assert_pack_error(pack, "routines.prod-watch.query_pack[2].trend_days")
+
+    def test_rejects_a_trend_on_a_monitor_entry(self):
+        self.assert_pack_error(self.with_trend(0, 7), "routines.prod-watch.query_pack[0].trend_days")
+
+    def test_rejects_a_trend_next_to_a_lookback(self):
+        pack = self.with_trend(1, 7, schedule="daily", lookback_days=7)
+        self.assert_pack_error(pack, "routines.prod-watch.query_pack[1].trend_days")
+
+    def test_rejects_a_trend_with_an_aggregator_outside_the_five(self):
+        self.assert_pack_error(self.with_trend(1, 7, aggregator="p95"), "routines.prod-watch.query_pack[1].aggregator")
+
+
 class GroupKeyPrefixTest(PackCase):
     def test_rejects_a_key_after_a_top_entry_that_starts_with_its_key_and_a_dash(self):
         pack = make_pack()
@@ -1170,7 +1362,7 @@ class ValidateCollectionTest(CollectionCase):
         self.assertIsNone(roles.validate_collection(doc))
 
     def test_accepts_a_document_store_collection(self):
-        doc = make_collection("document_store", pages_records(), {"last_edited": UTC_EDIT}, transport="mcp")
+        doc = make_collection("document_store", pages_records(), pages_cursor(), transport="mcp")
         self.assertIsNone(roles.validate_collection(doc))
 
     def test_accepts_a_chat_collection(self):
@@ -1295,6 +1487,9 @@ class ValidateCollectionTest(CollectionCase):
 
 
 class ObservabilityRecordsTest(CollectionCase):
+    def metrics_collection(self):
+        return make_collection("observability", metrics_records(), {"metrics": {"error-rate": 7.5}})
+
     def test_rejects_observability_records_of_neither_kind(self):
         self.assert_collection_error(monitors_collection(records={"monitors": []}), "records")
 
@@ -1307,6 +1502,56 @@ class ObservabilityRecordsTest(CollectionCase):
         doc = monitors_collection()
         doc["records"]["monitors"][0]["tags"] = []
         self.assert_collection_error(doc, "records.monitors[0].tags")
+
+    def test_accepts_a_metric_with_a_trend_of_days(self):
+        doc = make_collection("observability", metrics_records(), {"metrics": {"error-rate": 7.5}})
+        self.assertIsNone(roles.validate_collection(doc))
+
+    def test_accepts_a_metric_with_no_trend_and_a_reason(self):
+        doc = self.metrics_collection()
+        doc["records"]["metrics"][0].update(trend=None, trend_reason="HTTP 503 POST /timeseries")
+        self.assertIsNone(roles.validate_collection(doc))
+
+    def test_accepts_a_metric_with_an_empty_trend(self):
+        doc = self.metrics_collection()
+        doc["records"]["metrics"][0]["trend"] = []
+        self.assertIsNone(roles.validate_collection(doc))
+
+    def test_accepts_a_metric_without_trend_and_trend_reason(self):
+        doc = self.metrics_collection()
+        del doc["records"]["metrics"][0]["trend"]
+        del doc["records"]["metrics"][0]["trend_reason"]
+        self.assertIsNone(roles.validate_collection(doc))
+
+    def test_rejects_a_trend_that_is_not_a_list(self):
+        doc = self.metrics_collection()
+        doc["records"]["metrics"][0]["trend"] = {"2026-10-01": 7.5}
+        self.assert_collection_error(doc, "records.metrics[0].trend")
+
+    def test_rejects_a_trend_day_that_is_not_a_calendar_day(self):
+        doc = self.metrics_collection()
+        doc["records"]["metrics"][0]["trend"][0]["day"] = "2026-13-01"
+        self.assert_collection_error(doc, "records.metrics[0].trend[0].day")
+
+    def test_rejects_a_trend_day_with_a_time(self):
+        doc = self.metrics_collection()
+        doc["records"]["metrics"][0]["trend"][1]["day"] = "2026-10-01T00:00:00Z"
+        self.assert_collection_error(doc, "records.metrics[0].trend[1].day")
+
+    def test_rejects_a_trend_value_that_is_null(self):
+        doc = self.metrics_collection()
+        doc["records"]["metrics"][0]["trend"][1]["value"] = None
+        self.assert_collection_error(doc, "records.metrics[0].trend[1].value")
+
+    def test_rejects_a_trend_point_with_an_extra_field(self):
+        doc = self.metrics_collection()
+        doc["records"]["metrics"][0]["trend"][0]["count"] = 3
+        self.assert_collection_error(doc, "records.metrics[0].trend[0].count")
+
+    def test_rejects_a_trend_reason_that_is_not_a_string(self):
+        doc = self.metrics_collection()
+        doc["records"]["metrics"][0]["trend_reason"] = 5
+        self.assert_collection_error(doc, "records.metrics[0].trend_reason")
 
     def test_rejects_a_boolean_event_timestamp(self):
         doc = monitors_collection()
@@ -1535,7 +1780,7 @@ class DiscoveryRecordsTest(CollectionCase):
 
 class DocumentStoreRecordsTest(CollectionCase):
     def pages_collection(self):
-        return make_collection("document_store", pages_records(), {"last_edited": UTC_EDIT})
+        return make_collection("document_store", pages_records(), pages_cursor())
 
     def test_rejects_a_last_edited_without_utc_z(self):
         doc = self.pages_collection()
@@ -1562,10 +1807,55 @@ class DocumentStoreRecordsTest(CollectionCase):
         doc["records"]["pages"][0]["blocks"][1]["rows"][1][1] = None
         self.assert_collection_error(doc, "records.pages[0].blocks[1].rows[1][1]")
 
-    def test_rejects_a_cursor_last_edited_without_utc_z(self):
+    def test_rejects_a_cursor_edit_time_without_utc_z(self):
         doc = self.pages_collection()
-        doc["cursor"]["last_edited"] = "2026-10-01"
-        self.assert_collection_error(doc, "cursor.last_edited")
+        doc["cursor"]["pages"][page_id()] = "2026-10-01"
+        self.assert_collection_error(doc, "cursor.pages." + page_id())
+
+    def test_rejects_the_former_single_edit_time_cursor(self):
+        doc = self.pages_collection()
+        doc["cursor"] = {"last_edited": UTC_EDIT}
+        self.assert_collection_error(doc, "cursor.pages")
+
+    def test_rejects_a_page_without_a_link(self):
+        doc = self.pages_collection()
+        del doc["records"]["pages"][0]["link"]
+        self.assert_collection_error(doc, "records.pages[0].link")
+
+    def test_rejects_a_link_that_is_not_a_string(self):
+        doc = self.pages_collection()
+        doc["records"]["pages"][0]["link"] = None
+        self.assert_collection_error(doc, "records.pages[0].link")
+
+    def test_accepts_a_cursor_with_an_edit_time_per_page(self):
+        doc = self.pages_collection()
+        doc["cursor"] = {"pages": {page_id(): UTC_EDIT, "page-cdcdcdcd": "2026-10-02T08:00:00Z"}}
+        self.assertIsNone(roles.validate_collection(doc))
+
+    def test_accepts_one_entry_per_page_with_the_existing_statuses(self):
+        doc = self.pages_collection()
+        doc["entries"] = {
+            page_id(): {"status": "ok", "reason": None},
+            "page-cdcdcdcd": {"status": "deferred", "reason": "unchanged"},
+            "page-efefefef": {"status": "failed", "reason": "not found or not shared"},
+        }
+        self.assertIsNone(roles.validate_collection(doc))
+
+    def test_rejects_an_ok_page_entry_with_a_reason(self):
+        doc = self.pages_collection()
+        doc["entries"] = {page_id(): {"status": "ok", "reason": "read"}}
+        self.assert_collection_error(doc, f"entries.{page_id()}.reason")
+
+    def test_rejects_a_failed_page_entry_without_a_reason(self):
+        doc = self.pages_collection()
+        doc["entries"] = {page_id(): {"status": "failed", "reason": None}}
+        self.assert_collection_error(doc, f"entries.{page_id()}.reason")
+
+    def test_rejects_an_ok_page_entry_when_the_source_was_not_read(self):
+        doc = self.pages_collection()
+        doc.update(read=False, reason="HTTP 503", records={"pages": []})
+        doc["entries"] = {page_id(): {"status": "ok", "reason": None}}
+        self.assert_collection_error(doc, f"entries.{page_id()}.status")
 
 
 class ChatRecordsTest(CollectionCase):
@@ -1577,10 +1867,50 @@ class ChatRecordsTest(CollectionCase):
         doc["records"]["messages"][0]["replies"] = 2
         self.assert_collection_error(doc, "records.messages[0].replies")
 
-    def test_rejects_a_message_carrying_a_thread_ts(self):
+    def test_accepts_a_reply_carrying_the_ts_of_its_root(self):
         doc = self.messages_collection()
-        doc["records"]["messages"][0]["thread_ts"] = None
+        doc["records"]["messages"][0]["thread_ts"] = "1779999000.000100"
+        self.assertIsNone(roles.validate_collection(doc))
+
+    def test_rejects_a_message_without_a_thread_ts(self):
+        doc = self.messages_collection()
+        del doc["records"]["messages"][0]["thread_ts"]
         self.assert_collection_error(doc, "records.messages[0].thread_ts")
+
+    def test_rejects_a_thread_ts_that_is_not_a_string(self):
+        doc = self.messages_collection()
+        doc["records"]["messages"][0]["thread_ts"] = 1779999000
+        self.assert_collection_error(doc, "records.messages[0].thread_ts")
+
+    def test_accepts_one_entry_per_channel_with_the_existing_statuses(self):
+        doc = self.messages_collection()
+        doc["entries"] = {
+            "chan-alerts": {"status": "ok", "reason": None},
+            "chan-deploys": {"status": "failed", "reason": "channel_not_found"},
+            "chan-old": {"status": "deferred", "reason": "archived"},
+        }
+        self.assertIsNone(roles.validate_collection(doc))
+
+    def test_rejects_an_ok_channel_entry_with_a_reason(self):
+        doc = self.messages_collection()
+        doc["entries"] = {"chan-alerts": {"status": "ok", "reason": "read"}}
+        self.assert_collection_error(doc, "entries.chan-alerts.reason")
+
+    def test_rejects_a_failed_channel_entry_without_a_reason(self):
+        doc = self.messages_collection()
+        doc["entries"] = {"chan-alerts": {"status": "failed", "reason": None}}
+        self.assert_collection_error(doc, "entries.chan-alerts.reason")
+
+    def test_rejects_a_channel_status_outside_the_existing_four(self):
+        doc = self.messages_collection()
+        doc["entries"] = {"chan-alerts": {"status": "archived", "reason": "archived"}}
+        self.assert_collection_error(doc, "entries.chan-alerts.status")
+
+    def test_rejects_a_missing_channel_entry_when_the_source_was_not_read(self):
+        doc = self.messages_collection()
+        doc.update(read=False, reason="HTTP 503", records={"messages": []})
+        doc["entries"] = {"chan-alerts": {"status": "missing", "reason": "not found"}}
+        self.assert_collection_error(doc, "entries.chan-alerts.status")
 
     def test_rejects_a_cursor_ts_that_is_not_a_string(self):
         doc = self.messages_collection()
@@ -1616,6 +1946,94 @@ class CodeHostRecordsTest(CollectionCase):
         doc = self.code_collection()
         doc["cursor"]["updated_at"] = 0
         self.assert_collection_error(doc, "cursor.updated_at")
+
+
+class IssueTrackerContractTest(ConfigCase, CollectionCase):
+    SOURCE_PATH = "routines.prod-watch.sources.issues"
+
+    def invalid_option(self, option, value):
+        config = tracker_config()
+        routine_sources(config)["issues"][option] = value
+        return config
+
+    def test_accepts_a_source_with_a_filter_a_query_and_open_sprints(self):
+        self.assertIsNone(roles.validate_config(tracker_config(), ROUTINE, "local", role_of))
+
+    def test_accepts_a_source_with_only_a_filter(self):
+        config = tracker_config()
+        del routine_sources(config)["issues"]["query"], routine_sources(config)["issues"]["open_sprints"]
+        self.assertIsNone(roles.validate_config(config, ROUTINE, "local", role_of))
+
+    def test_rejects_a_filter_that_is_not_digits_only(self):
+        self.assert_config_error(self.invalid_option("filter", "10042; drop"), self.SOURCE_PATH + ".filter")
+
+    def test_rejects_an_empty_filter(self):
+        self.assert_config_error(self.invalid_option("filter", ""), self.SOURCE_PATH + ".filter")
+
+    def test_rejects_a_numeric_filter(self):
+        self.assert_config_error(self.invalid_option("filter", 10042), self.SOURCE_PATH + ".filter")
+
+    def test_rejects_a_source_without_a_filter(self):
+        config = tracker_config()
+        del routine_sources(config)["issues"]["filter"]
+        self.assert_config_error(config, self.SOURCE_PATH + ".filter")
+
+    def test_rejects_a_query_that_is_not_a_string(self):
+        self.assert_config_error(self.invalid_option("query", ["labels = digest"]), self.SOURCE_PATH + ".query")
+
+    def test_rejects_open_sprints_that_is_not_a_boolean(self):
+        self.assert_config_error(self.invalid_option("open_sprints", "yes"), self.SOURCE_PATH + ".open_sprints")
+
+    def issues_collection(self, **overrides):
+        doc = make_collection("issue_tracker", issues_records(), {"updated": "2026-10-02T09:30:00Z"})
+        doc.update(overrides)
+        return doc
+
+    def test_accepts_an_issue_collection_with_and_without_a_priority(self):
+        self.assertIsNone(roles.validate_collection(self.issues_collection()))
+
+    def test_accepts_a_null_cursor_updated(self):
+        self.assertIsNone(roles.validate_collection(self.issues_collection(cursor={"updated": None})))
+
+    def test_accepts_a_source_not_read_with_no_issues(self):
+        doc = self.issues_collection(read=False, reason="HTTP 503", records={"issues": []}, cursor=None)
+        self.assertIsNone(roles.validate_collection(doc))
+
+    def test_rejects_an_issue_without_a_type(self):
+        doc = self.issues_collection()
+        del doc["records"]["issues"][0]["type"]
+        self.assert_collection_error(doc, "records.issues[0].type")
+
+    def test_rejects_an_issue_with_a_numeric_priority(self):
+        doc = self.issues_collection()
+        doc["records"]["issues"][0]["priority"] = 2
+        self.assert_collection_error(doc, "records.issues[0].priority")
+
+    def test_rejects_a_created_time_without_utc_z(self):
+        doc = self.issues_collection()
+        doc["records"]["issues"][1]["created"] = "2026-09-02T10:00:00+02:00"
+        self.assert_collection_error(doc, "records.issues[1].created")
+
+    def test_rejects_an_updated_time_without_utc_z(self):
+        doc = self.issues_collection()
+        doc["records"]["issues"][0]["updated"] = "2026-10-02"
+        self.assert_collection_error(doc, "records.issues[0].updated")
+
+    def test_rejects_an_open_sprint_flag_that_is_not_a_boolean(self):
+        doc = self.issues_collection()
+        doc["records"]["issues"][0]["in_open_sprint"] = "yes"
+        self.assert_collection_error(doc, "records.issues[0].in_open_sprint")
+
+    def test_rejects_an_issue_carrying_an_assignee(self):
+        doc = self.issues_collection()
+        doc["records"]["issues"][0]["assignee"] = "someone"
+        self.assert_collection_error(doc, "records.issues[0].assignee")
+
+    def test_rejects_a_cursor_updated_without_utc_z(self):
+        self.assert_collection_error(self.issues_collection(cursor={"updated": "2026-10-02"}), "cursor.updated")
+
+    def test_rejects_a_cursor_without_updated(self):
+        self.assert_collection_error(self.issues_collection(cursor={}), "cursor.updated")
 
 
 class DumpTest(unittest.TestCase):

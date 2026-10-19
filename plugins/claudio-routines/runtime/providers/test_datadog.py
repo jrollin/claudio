@@ -17,6 +17,7 @@ from providers.datadog_support import (
     DISCOVERING,
     DISK,
     EXPLORER,
+    FALL_BACK_DAY,
     FRESH,
     FROM_MS,
     FakeOpener,
@@ -32,10 +33,16 @@ from providers.datadog_support import (
     PROVIDER,
     QUERY,
     QUEUE,
+    SPRING_FORWARD_DAY,
     STORED_TS,
     TO_MS,
+    TREND_FROM_MS,
+    TREND_SERIES,
+    TREND_WINDOW,
     WINDOW,
+    at,
     client,
+    clock_change_series,
     collection,
     configured,
     discover,
@@ -49,8 +56,11 @@ from providers.datadog_support import (
     ok,
     run,
     search_page,
+    series,
+    series_response,
     served,
     status,
+    trended,
 )
 SEARCH_PATH = "/api/v1/monitor/search"
 
@@ -1112,6 +1122,181 @@ class LookbackTest(unittest.TestCase):
             ok("timeseries_daily.json"),
             ok("scalar_lookback.json"),
             ok("top.json"),
+        )
+
+        self.assertIsNone(roles.validate_collection(collection(METRICS, result)))
+
+
+class TrendTest(unittest.TestCase):
+    TREND = trended(HOURLY, "max")
+    TIMESERIES = "/api/v2/query/timeseries"
+
+    def read(self, entry, *outcomes):
+        return run(METRICS, [entry], NO_METRICS, *outcomes, window=TREND_WINDOW)
+
+    def trend_of(self, aggregator, document=TREND_SERIES):
+        _, result = self.read(trended(HOURLY, aggregator), ok("timeseries.json"), series_response(document))
+        return result["records"]["metrics"][0]["trend"]
+
+    def test_trend_span_is_read_hourly_after_the_window_read(self):
+        opener, _ = self.read(self.TREND, ok("timeseries.json"), series_response(TREND_SERIES))
+
+        bodies = [sent(request)["data"]["attributes"] for request in opener.requests]
+        self.assertEqual(
+            [(body["from"], body["to"], body["interval"]) for body in bodies], [(FROM_MS, TO_MS, 3600000), (TREND_FROM_MS, TO_MS, 3600000)]
+        )
+
+    def test_trend_read_posts_the_entry_query_to_the_timeseries_endpoint(self):
+        opener, _ = self.read(self.TREND, ok("timeseries.json"), series_response(TREND_SERIES))
+
+        attributes = sent(opener.requests[1])["data"]["attributes"]
+        self.assertEqual(endpoint(opener.requests[1]), ("POST", self.TIMESERIES))
+        self.assertEqual(
+            (attributes["queries"], attributes["formulas"]), ([{"data_source": "metrics", "query": QUERY, "name": "a"}], [{"formula": "a"}])
+        )
+
+    def test_scalar_entry_reads_its_trend_as_a_timeseries_after_the_scalar_read(self):
+        opener, _ = self.read(trended(P95, "avg"), ok("scalar.json"), series_response(TREND_SERIES))
+
+        self.assertEqual(
+            [endpoint(request) for request in opener.requests], [("POST", "/api/v2/query/scalar"), ("POST", self.TIMESERIES)]
+        )
+        self.assertEqual(sent(opener.requests[1])["data"]["attributes"]["interval"], 3600000)
+
+    def test_max_takes_the_highest_hour_of_each_day(self):
+        self.assertEqual(
+            self.trend_of("max"), [{"day": "2025-10-05", "value": 9.0}, {"day": "2025-10-07", "value": 7.0}]
+        )
+
+    def test_min_takes_the_lowest_hour_of_each_day(self):
+        self.assertEqual(
+            self.trend_of("min"), [{"day": "2025-10-05", "value": 2.0}, {"day": "2025-10-07", "value": 1.0}]
+        )
+
+    def test_sum_adds_the_hours_of_each_day(self):
+        self.assertEqual(
+            self.trend_of("sum"), [{"day": "2025-10-05", "value": 15.0}, {"day": "2025-10-07", "value": 8.0}]
+        )
+
+    def test_avg_is_the_mean_of_the_hourly_values_of_each_day(self):
+        self.assertEqual(
+            self.trend_of("avg"), [{"day": "2025-10-05", "value": 5.0}, {"day": "2025-10-07", "value": 4.0}]
+        )
+
+    def test_last_takes_the_latest_hour_with_a_value_of_each_day(self):
+        self.assertEqual(
+            self.trend_of("last"), [{"day": "2025-10-05", "value": 2.0}, {"day": "2025-10-07", "value": 1.0}]
+        )
+
+    def test_day_without_a_point_is_absent(self):
+        self.assertNotIn("2025-10-06", [point["day"] for point in self.trend_of("max")])
+
+    def test_point_lands_in_its_local_day(self):
+        trend = self.trend_of("sum", series(at(1, 23, 5.0), at(2, 0, 6.0)))
+
+        self.assertEqual(trend, [{"day": "2025-10-06", "value": 5.0}, {"day": "2025-10-07", "value": 6.0}])
+
+    def test_spring_forward_day_aggregates_its_23_hours(self):
+        trend = self.trend_of("sum", clock_change_series(SPRING_FORWARD_DAY, 23))
+
+        self.assertEqual(
+            trend,
+            [{"day": "2026-03-28", "value": 100.0}, {"day": "2026-03-29", "value": 23.0}, {"day": "2026-03-30", "value": 200.0}],
+        )
+
+    def test_fall_back_day_aggregates_its_25_hours(self):
+        trend = self.trend_of("sum", clock_change_series(FALL_BACK_DAY, 25))
+
+        self.assertEqual(
+            trend,
+            [{"day": "2026-10-24", "value": 100.0}, {"day": "2026-10-25", "value": 25.0}, {"day": "2026-10-26", "value": 200.0}],
+        )
+
+    def test_trend_sits_next_to_the_window_value_and_hourly_points(self):
+        _, result = self.read(self.TREND, ok("timeseries.json"), series_response(TREND_SERIES))
+
+        record = result["records"]["metrics"][0]
+        self.assertEqual((record["value"], len(record["hourly"]), record["trend_reason"]), (7.25, 3, None))
+
+    def test_trend_read_leaves_the_entry_ok(self):
+        _, result = self.read(self.TREND, ok("timeseries.json"), series_response(TREND_SERIES))
+
+        self.assertEqual(result["entries"], {"queue-hourly": OK})
+
+    def test_series_without_a_point_has_no_trend(self):
+        _, result = self.read(self.TREND, ok("timeseries.json"), series_response(series()))
+
+        record = result["records"]["metrics"][0]
+        self.assertEqual((record["trend"], record["trend_reason"]), (None, "no datapoints"))
+
+    def test_series_of_null_values_has_no_trend(self):
+        _, result = self.read(self.TREND, ok("timeseries.json"), series_response(series(at(0, 0, None), at(0, 1, None))))
+
+        record = result["records"]["metrics"][0]
+        self.assertEqual((record["trend"], record["trend_reason"]), (None, "no datapoints"))
+
+    def test_failed_trend_read_names_the_status_and_keeps_the_window_value(self):
+        _, result = self.read(self.TREND, ok("timeseries.json"), status(500), status(500))
+
+        record = result["records"]["metrics"][0]
+        self.assertEqual((record["value"], record["trend"], record["trend_reason"]), (7.25, None, "HTTP 500 POST " + self.TIMESERIES))
+
+    def test_failed_trend_read_leaves_the_entry_ok(self):
+        _, result = self.read(self.TREND, ok("timeseries.json"), status(500), status(500))
+
+        self.assertEqual(result["entries"], {"queue-hourly": OK})
+
+    def test_trend_response_time_that_is_not_a_number_sets_the_reason(self):
+        document = {"times": ["noon"], "values": [[1.0]]}
+        _, result = self.read(self.TREND, ok("timeseries.json"), series_response(document))
+
+        record = result["records"]["metrics"][0]
+        self.assertEqual((record["trend"], record["trend_reason"]), (None, "POST " + self.TIMESERIES + ": response time is not a number"))
+
+    def test_unauthorized_trend_read_fails_the_source(self):
+        with self.assertRaises(_http.SourceUnreadable) as caught:
+            self.read(self.TREND, ok("timeseries.json"), status(401))
+
+        self.assertEqual((str(caught.exception), caught.exception.status), ("HTTP 401 POST " + self.TIMESERIES, 401))
+
+    def test_forbidden_trend_read_fails_the_source(self):
+        with self.assertRaises(_http.SourceUnreadable) as caught:
+            self.read(self.TREND, ok("timeseries.json"), status(403))
+
+        self.assertEqual(caught.exception.status, 403)
+
+    def test_network_error_on_the_trend_read_fails_the_source(self):
+        with self.assertRaises(_http.SourceUnreadable) as caught:
+            self.read(self.TREND, ok("timeseries.json"), urllib.error.URLError("unreachable"))
+
+        self.assertIsNone(caught.exception.status)
+
+    def test_failed_window_read_skips_the_trend_read(self):
+        opener, result = self.read(self.TREND, status(400))
+
+        self.assertEqual(len(opener.requests), 1)
+        self.assertEqual(result["entries"], {"queue-hourly": failed("HTTP 400 POST " + self.TIMESERIES)})
+
+    def test_entry_without_a_trend_span_carries_no_trend_keys_and_reads_once(self):
+        opener, result = self.read(HOURLY, ok("timeseries.json"))
+
+        self.assertEqual(len(opener.requests), 1)
+        self.assertEqual(set(result["records"]["metrics"][0]), {"key", "value", "hourly", "groups"})
+
+    def test_collection_passes_the_role_schema_with_trends(self):
+        entries = [self.TREND, {**trended(P95, "avg"), "key": "scalar-trend"}, {**self.TREND, "key": "empty-trend"}]
+        _, result = run(
+            METRICS,
+            entries,
+            NO_METRICS,
+            ok("timeseries.json"),
+            series_response(TREND_SERIES),
+            ok("scalar.json"),
+            status(500),
+            status(500),
+            ok("timeseries.json"),
+            series_response(series()),
+            window=TREND_WINDOW,
         )
 
         self.assertIsNone(roles.validate_collection(collection(METRICS, result)))

@@ -1,4 +1,4 @@
 {
-  "messages": "Channel: #ops (CHAN1)\n\n=== Message from Bea Example bea@example.test (U2) at 2025-10-09 09:43:20 UTC === \nMessage TS: 1760003000.000300\nDeploy done\n\n=== Message from Ada Example ada@example.test (U1) at 2025-10-09 09:26:40 UTC === \nMessage TS: 1760002000.000200\nRelease notes:\n- api 1.2\n- web 3.4\n",
+  "messages": "Channel: #ops (CHAN1)\n\n=== Message from Bea Example bea@example.test (U2) at 2025-10-09 09:43:20 UTC === \nMessage TS: 1760003000.000300\nDeploy done\nReactions: :tada: 1\n\n=== Message from Ada Example ada@example.test (U1) at 2025-10-09 09:36:40 UTC === \nMessage TS: 1760002600.000260\nFixed\n\n=== Message from Ada Example ada@example.test (U1) at 2025-10-09 09:26:40 UTC === \nMessage TS: 1760002000.000200\nRelease notes:\n- api 1.2\n- web 3.4\nThread: 2 replies (latest: 2025-10-09 09:36:40 UTC)\nReactions: :+1: 2\nFiles: notes.txt\n",
   "pagination_info": "There are more messages available. To view the next page, use cursor: `cursor-chan1-2`"
 }
