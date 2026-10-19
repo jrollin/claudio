@@ -1302,6 +1302,14 @@ class RelayThreadTest(unittest.TestCase):
 
         self.assertEqual([item["ts"] for item in result["records"]["messages"]], [ROOT_TS])
 
+    def test_parent_followed_by_the_no_thread_text_without_a_replies_line_has_no_replies(self):
+        for parent_text in (("Release notes",), ()):
+            with self.subTest(parent_text=parent_text):
+                page = relay_text(thread_parent(parent_text=parent_text) + "\nNo thread messsages\n", "There are no more messages in this thread.")
+                result = relay({"team-chat-1": root_page(), "team-chat-2": page}, source=one_channel())
+
+                self.assertEqual([item["ts"] for item in result["records"]["messages"]], [ROOT_TS])
+
     def test_pages_that_come_newest_first_are_read_with_the_thread_wording(self):
         pages = {
             "team-chat-1": root_page(),
