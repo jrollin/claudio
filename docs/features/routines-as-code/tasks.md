@@ -169,16 +169,16 @@ Owner-gated: needs the merged pull request, a release tag, the setup script past
 2. Paste the `setup-script` output into the default environment.
 3. Attach the private repository to the Prod watch routine as a source, and set `places.cloud.state_dir` to its checkout path in the run session.
 4. For each `api` source of the cloud place, set its credential variables in the environment's settings, and allow its hosts in the environment's network settings (`providers/README.md`).
-5. Seed `state/prod-watch.json` on the `claude/state` branch from the current state page, with its provider-named cursor key renamed to `cursors.observability`.
-6. Run `/routines run prod-watch` without `--post`: the record reaches `claude/state`, the state does not change, the digest is printed.
-7. Switch `routines.prod-watch.template` to `prod-watch-runtime`.
+5. Seed `state/prod-watch.json` on the `claude/state` branch from the current state page: rename its provider-named cursor key to `cursors.observability`, drop the free-text `reason` of items (the runtime stores a list of tagged claims) and the blind spots without a key, then check it with `state.py validate`.
+6. Switch `routines.prod-watch.template` to `prod-watch-runtime`; the live routine changes only at the sync.
+7. Run `/routines run prod-watch` without `--post`, right after a live run with `--since` its window start, so both read the same window: the record reaches `claude/state`, the state does not change, the digest is printed. Compare it with the live run, and repeat over a few days.
 8. Run `/routines sync prod-watch`.
 - **Refs**: US-8, US-11, TD-12, TD-15
 - **Files**: none in this repository; the private repository's `config.json` changes
 - **Verify**: `python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --private "$CLAUDIO_PRIVATE_DIR" && python3 plugins/claudio-routines/skills/routines/scripts/routines.py diff prod-watch`
 - **Blocked by**: T-15, T-17, T-18, T-31, T-43
 - **Rules**: BR-6, BR-7, BR-15, BR-23, BR-25
-- **Status**: Not Started
+- **Status**: In Progress (tag pinned, local runtime installed, state seeded from the live page of 2026-10-16T16:46Z, template switched in the private config; one baseline shadow run done; the cloud setup script, aligned shadow runs and the sync remain)
 
 ## Phase 5: State store and neutral roles
 
