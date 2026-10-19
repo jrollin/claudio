@@ -1,5 +1,6 @@
+import calendar
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import roles
 import state
@@ -29,6 +30,7 @@ TODO = re.compile(r"^- \[( |x)\] (.*)$")
 TODO_TAG = re.compile(r'^<span color="gray_bg">.*?</span> ')
 TODO_MARKER = re.compile(rf' <span color="gray">({tribe_state.KEY.pattern})</span>\s*$')
 TABLE_START = re.compile(r"^<table[ >]")
+DATED_MONTH_END = re.compile(r"Before the ([0-9]{4}-[0-9]{2}-[0-9]{2}) month-end")
 
 
 def clock(moment):
@@ -194,12 +196,35 @@ def topic_position(topics):
     return lambda topic: (order.get(topic, len(order)), topic)
 
 
+def month_end(run_at, zone):
+    local = state.parse_time(run_at).astimezone(zone)
+    return date(local.year, local.month, calendar.monthrange(local.year, local.month)[1])
+
+
+def is_month_end(text):
+    try:
+        day = date.fromisoformat(text)
+    except ValueError:
+        return False
+    return day.day == calendar.monthrange(day.year, day.month)[1]
+
+
+def group_heading(group, last_day):
+    return f"Before the {last_day.isoformat()} month-end" if group == tribe_state.MONTH_END_GROUP else group
+
+
+def stored_group(heading):
+    dated = DATED_MONTH_END.fullmatch(heading)
+    return tribe_state.MONTH_END_GROUP if dated and is_month_end(dated.group(1)) else heading
+
+
 def todo_line(key, check):
     return f'- [ ] {gray_bg(check["topic"])} {check["text"]} {gray(key)}'
 
 
-def checks_lines(summary, topics):
+def checks_lines(summary, topics, zone):
     position = topic_position(topics)
+    last_day = month_end(summary["run_at"], zone)
     checks = summary["checks"]
     for key in sorted(checks):
         if checks[key]["group"] not in tribe_state.CHECK_GROUPS:
@@ -208,7 +233,7 @@ def checks_lines(summary, topics):
     for group in tribe_state.CHECK_GROUPS:
         keys = sorted((k for k in checks if checks[k]["group"] == group), key=lambda k: (position(checks[k]["topic"]), k))
         if keys:
-            lines.append(f"### {group}")
+            lines.append(f"### {group_heading(group, last_day)}")
             lines += [todo_line(key, checks[key]) for key in keys]
     return lines or ["- No open check."]
 
@@ -261,13 +286,13 @@ def run_state_lines(summary, values):
     )
 
 
-def render(summary, routine_values):
+def render(summary, routine_values, zone):
     topics = by_topic(summary["warnings"])
     sections = {
         "Since last run": since_last_run(summary),
         "Decisions this week": decisions_lines(summary["decisions"]),
         "Warnings": warnings_lines(summary, routine_values),
-        "What to check": checks_lines(summary, topics),
+        "What to check": checks_lines(summary, topics, zone),
         "Details": details_lines(summary, topics),
         "Blind spots": blind_spots_lines(summary),
         "Corrections to earlier numbers": corrections_lines(summary),
@@ -394,7 +419,7 @@ def check_decisions(lines):
 def check_todos(lines):
     failures = []
     groups = [line[4:] for line in lines if line.startswith("### ")]
-    bad_groups = [group for group in groups if group not in tribe_state.CHECK_GROUPS]
+    bad_groups = [group for group in groups if stored_group(group) not in tribe_state.CHECK_GROUPS]
     if bad_groups:
         failures.append(f"check groups: {', '.join(bad_groups)}")
     untagged = sum('<span color="gray_bg">' not in line for line in lines if TODO.match(line))

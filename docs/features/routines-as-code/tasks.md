@@ -3,7 +3,7 @@
 ---
 feature: routines-as-code
 spec_version: 1
-total_tasks: 73
+total_tasks: 74
 phases:
   - name: "Leak guard"
     tasks: [T-1, T-2, T-3]
@@ -36,7 +36,7 @@ phases:
   - name: "Monitor event aggregates"
     tasks: [T-71]
   - name: "Monitor priority and seed fixes"
-    tasks: [T-72, T-73]
+    tasks: [T-72, T-73, T-74]
 depends_on: []
 ---
 
@@ -821,6 +821,14 @@ Runs in a local session with the chat, issue tracker, document store and observa
 - Tests: a map at the top level and under `run`, the top level winning over `run`, a list at either place, an empty map, a key cleaned and cut, entries skipped with their stderr line next to a kept one, a value that is neither a list nor a map rejected with its path, the seeded state accepted by `check_state`.
 - **Refs**: US-33, TD-47
 - **Files**: `docs/features/routines-as-code/design.md` (modify), `docs/features/routines-as-code/tasks.md` (modify), `plugins/claudio-routines/runtime/test_tribe_seed.py` (modify), `plugins/claudio-routines/runtime/tribe_seed.py` (modify)
+- **Verify**: `for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
+- **Status**: Complete
+
+### T-74: Date the month-end check group on the page
+- `tribe.py render` titles the second check group `Before the <YYYY-MM-DD> month-end`, the last day of the month of `run_at` in the config timezone (TD-52); `tribe_page.render` takes that zone. The stored group value stays `Before the month-end`. The structure check accepts the dated heading when its date is the last day of a month, and the undated heading of pages already written; any other heading still fails. `parse_edits` and `page_markdown` read to-dos under either heading.
+- Tests: the heading of a run on 2026-10-19 in Paris, a run late on the last day in UTC that is the next month in Paris, the same run in UTC, a leap and a common February, the other groups unchanged, the check on a dated page, an undated page, a leap-day date, a date that is not a month end, a date that does not exist, another ending and a malformed date, the to-dos read under either heading in `parse_edits` and in the collection blocks, the render command in the config timezone, the golden page.
+- **Refs**: US-39, TD-52
+- **Files**: `docs/features/routines-as-code/design.md` (modify), `docs/features/routines-as-code/tasks.md` (modify), `plugins/claudio-routines/runtime/fixtures/tribe/page_golden.md` (modify), `plugins/claudio-routines/runtime/test_tribe_features.py` (modify), `plugins/claudio-routines/runtime/test_tribe_lifecycle.py` (modify), `plugins/claudio-routines/runtime/test_tribe_page.py` (modify), `plugins/claudio-routines/runtime/test_tribe_publish.py` (modify), `plugins/claudio-routines/runtime/tribe_page.py` (modify), `plugins/claudio-routines/runtime/tribe_publish.py` (modify), `plugins/claudio-routines/runtime/tribe_state.py` (modify)
 - **Verify**: `for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
 - **Status**: Complete
 

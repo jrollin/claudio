@@ -1262,7 +1262,7 @@ Stored checks absent from the judgment are kept unchanged. The correction loop i
     - one h3 per topic, in Focus order, each a 6-column table (Warning, Severity, Risk, Impact, Mitigation leads, Evidence);
     - markers: `status:` under the warning, `runway:` under the severity, and `confidence:` as the first line of the evidence;
   - Decisions this week: at most 3 rows of Decision, Deadline, Options and Topic.
-  - What to check: the 3 groups, each to-do starting with a gray topic tag and ending with its key marker.
+  - What to check: the 3 groups, each to-do starting with a gray topic tag and ending with its key marker; the second group's heading reads `Before the <YYYY-MM-DD> month-end`, the last day of the month of the run in the config timezone, while its stored value stays `Before the month-end` and the structure check and the edit parsing accept the dated heading and the undated one of pages already written.
   - Sources and Blind spots come from the collections and the summary. Each blind spot reads `key: gap (runs: n)`, and a last line gives the count the cap dropped when it is not 0.
   - Under Blind spots, after the gap lines, each coverage note reads `source: text` on its own line, and the section reads None only when there is no gap, no dropped count and no note (BR-64).
   - How this digest is built holds the lines of `page.how_built`.
