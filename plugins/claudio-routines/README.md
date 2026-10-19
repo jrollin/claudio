@@ -26,7 +26,7 @@ Manage claude.ai routines (scheduled cloud agents) as code:
 | Roles | `runtime/roles.py` | Config and query pack checks, and the record schema of each of the five roles: observability tool, document store, chat channel, code host and issue tracker |
 | Tribe engine | `runtime/tribe.py` and its `tribe_*.py` modules | The engine of a routine whose `engine` is `tribe`: window, seed, features, judgment check, lifecycle, page render and structure check, page write plan and chat message |
 | Recap engine | `runtime/recap.py` and its `recap_*.py` modules | The engine of a routine whose `engine` is `recap`: window, seed, features, judgment check, lifecycle and chat message |
-| Weekly engine | `runtime/weekly.py` and its `weekly_*.py` modules | The engine of a routine whose `engine` is `weekly`: state, window and features; the judgment check, lifecycle and message follow |
+| Weekly engine | `runtime/weekly.py` and its `weekly_*.py` modules | The engine of a routine whose `engine` is `weekly`: state, window, features, judgment check, state and run record, and chat message |
 | Provider adapters | `runtime/providers/` | One module per vendor, each with an `api` and an `mcp` transport; see [the providers README](runtime/providers/README.md) |
 
 The real templates and every value that names a company resource live in a private repository, never here.
@@ -101,7 +101,7 @@ Exit codes of `routines.py`, `state.py`, `collect.py`, `evaluate.py`, `digest.py
 - 3 (runtime scripts only): rejected state, facts, time or query pack; for `evaluate.py judge` and `annotate`, a rejected judgment or analysis, including a file that is not valid JSON.
   - `tribe.py`: a rejected judgment, state, window or cursor (`judge`, `apply`), a page that fails its structure check (`render`, `publish-plan`), and a Run state field outside its allowed values (`seed`).
   - `recap.py`: a rejected judgment, state, window or stored unit (`judge`, `apply`, `window`, `seed`), naming its key path.
-  - `weekly.py`: a rejected state, window, collection or recap file (`window`, `features`), naming the file and key path.
+  - `weekly.py`: a rejected state, window, collection or recap file (`window`, `features`, `apply`) and a rejected judgment (`judge`), naming the file and key path.
 
 ## Config reference
 
@@ -431,16 +431,34 @@ A routine with `engine: weekly` summarises the owner's week from issue tracker, 
 python3 runtime/weekly.py init     --digest SLUG --out STATE
 python3 runtime/weekly.py window   --state S --now T --tz Z [--report-only] --out W
 python3 runtime/weekly.py features --config C --routine R --window W --collections DIR [--recap RECAP_DIR] --out FEATURES
+python3 runtime/weekly.py judge    --features FEATURES --judgment JUDGMENT --out SUMMARY
+python3 runtime/weekly.py apply    --state S --summary SUMMARY --window W --out NEXT --record RECORD
+python3 runtime/weekly.py message  --summary SUMMARY --features FEATURES --out MESSAGE
 ```
 
 - `window` starts at Monday 00:00 of the week of `--now` in `--tz`, across a clock change, and ends at `--now`, which must be a UTC time ending in `Z`. It writes `from_ts`, `to_ts`, `week_start` and `report_only`; the window keeps no cursor, so `--report-only` only marks it.
-- `features` reads the collection of each source in `DIR/<source>.json` and writes one item per issue, pull request, chat thread or direct message and page with activity in the window. An item holds `source`, `role`, `kind`, `title`, `status`, `link`, `when`, `people` and `excerpts` (`by`, `at`, `text`).
+- `features` reads the collection of each source in `DIR/<source>.json` and writes one item per issue, pull request, chat thread or direct message and page with activity in the window. An item holds `source`, `role`, `kind`, `title`, `status`, `link`, `when`, `people`, `excerpts` (`by`, `at`, `text`) and `channel_name` (the chat channel's name, else null).
   - Keys: `issue:<key>`, `pr:<repo>#<number>`, `chat:<recap unit key>`, `page:<id>`.
   - Excerpts: pull request activity up to 10 and chat messages up to 15, each text cut to 500 characters, newest first; a page gives its first 1000 characters as one excerpt.
   - `--recap` is the folder of the recap routine's `state.json` and `runs/` records. A recap unit first seen or last written in the week makes a chat item with its title, status and link; the week's records give `recap_counts` (`new`, `resolved`, `handled`). A direct chat source adds its messages to the item of the same key, or makes its own.
   - Chat units in `exclude.channels` are dropped from the items and the counts.
   - `sources` lists each source with `read` and `reason`; a source with no collection file is not read, with the reason `no collection`.
-- Exit codes: 2 for an unreadable input or a `--now` that is not UTC, 3 for a state, window or collection that fails its checks, naming the file and key path.
+- `judge` checks the model's judgment, `{"schema": 1, "accomplishments": [{"text", "cites"}], "decisions": [{"text", "cites"}], "open": [{"text", "owner", "cites"}]}`, and writes the summary: the judgment with the features' `window`, `week_start`, `recap_counts` and `sources`.
+  - Counts: accomplishments 1 to 6, or none when the features hold no item; decisions 0 to 6; open 0 to 8.
+  - `text`: 1 to 200 characters, with no URL (`http://`, `https://`, `www.`), no line break and no other control character; all texts hold at most 220 words together.
+  - `owner`: null, or a non-blank name of at most 60 characters.
+  - `cites`: a non-empty list of item keys of the features, none repeated within a bullet.
+  - An unknown key, a missing key or another schema is rejected too; the rejection names the key path, such as `open[0].cites[1]`.
+- `apply` writes the next state and the run record.
+  - The next state keeps the digest and sets `last_run` to the window's end (`run_at`) and its `week_start`; a `report_only` window leaves the state as it was.
+  - The record holds `schema`, `run_at`, `window`, `week_start`, `report_only`, `counts` (cited items per role, bullets per section), `cited` (the sorted item keys) and `sources` (`source`, `read`, `reason`). It holds no bullet text, title or owner name.
+- `message` renders the summary as the chat message, with the links of each bullet taken from its cited items:
+  - Title `**Weekly status, week of Mon 12 Oct**`, then `**Key accomplishments**`, `**Decisions**` and `**Still open / next week**`; an empty section shows `- None`, or `- None recorded` for decisions.
+  - A bullet reads `- <text> (owner: <name>) ([<label>](<link>), ...)`; the owner shows on open bullets that have one.
+  - Labels: the issue key, `<repo name>#<number>` for a pull request, `thread in #<channel>` (or `thread` without a channel name) or `DM` for chat, the first 6 words of a page title.
+  - `_Sources checked: <roles read>._` lists issue tracker, code host, chat and document store in that order, chat included when the recap fed items; one `Not read: <source> (<reason>)` line follows per source not read.
+  - `--tz` must name a known zone; the title date is the Monday of the summary's `week_start`.
+- Exit codes: 2 for an unreadable input, a features or summary file that fails its checks, a cite missing from the features or a `--now` that is not UTC; 3 for a state, window, collection or judgment that fails its checks, naming the file and key path.
 
 Routine keys of the engine, validated at config load and by `routines.py lint --private`:
 
