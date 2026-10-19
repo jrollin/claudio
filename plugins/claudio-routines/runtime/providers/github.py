@@ -21,6 +21,10 @@ PULL_FIELDS = ("number", "title", "state", "draft", "html_url", "user", "created
 ISSUE_FIELDS = ("number", "title", "state", "user", "created_at", "updated_at")
 LINK = re.compile(r'<([^<>]*)>\s*;\s*rel="([^"]*)"')
 PUBLIC_LINKS = "https://github.com"
+SEARCH_PATH = "/search/issues"
+REPOSITORY_URL = re.compile(r"/repos/([^/]+/[^/]+)$")
+BOT_SUFFIX = "[bot]"
+TEXT_CAP = 1000
 
 
 def api_client(provider, opener=None, environ=None, sleep=None):
@@ -33,6 +37,8 @@ def _auth(values):
 
 def fetch(source, window, cursor, entries, http):
     _check_query(source, "api")
+    if "searches" in source:
+        return _fetch_searches(source, window, http)
     links, span = _links_base(source), _span(window, cursor)
     pulls, issues = [], []
     for repo in source["repos"]:
@@ -69,6 +75,11 @@ def parse(source, window, cursor, entries, responses, digests):
 def _check_query(source, transport):
     if source.get("query"):
         raise SourceUnreadable(f"query not supported by the {transport} transport")
+
+
+def _check_no_searches(source):
+    if "searches" in source:
+        raise SourceUnreadable("searches not supported by the mcp transport")
 
 
 def _links_base(source):
@@ -136,6 +147,93 @@ def _api_pages(http, path, params, span, records_of):
     raise PartialRead(PAGE_CAP_PARTIAL)
 
 
+def _fetch_searches(source, window, http):
+    span = (_iso(window["from_ts"]), _iso(window["to_ts"]))
+    found = []
+    for search in source["searches"]:
+        found.extend(_api_search(http, search, span[0]))
+    pulls = _unique(found)
+    excluded = set(source.get("exclude_authors", []))
+    activity = [entry for pull in pulls for entry in _api_activity(http, pull, span, excluded)]
+    return {
+        "records": {"pull_requests": pulls, "issues": [], "activity": activity},
+        "cursor": {"updated_at": None},
+        "entries": {},
+    }
+
+
+def _api_search(http, search, start):
+    params = {"q": f"{search} updated:>={start[:10]}", "per_page": str(PER_PAGE), "page": "1"}
+    items = _paged(http, SEARCH_PATH, params, "items")
+    return [_search_pull(item) for item in items if _is_pull(item)]
+
+
+def _search_pull(item):
+    where = f"GET {SEARCH_PATH}"
+    merged_at = dig(item, "pull_request", "merged_at")
+    return _pull_record(_search_repo(item, where), {**item, "merged_at": merged_at}, where)
+
+
+def _search_repo(item, where):
+    url = dig(item, "repository_url")
+    match = REPOSITORY_URL.search(urllib.parse.urlsplit(url).path) if isinstance(url, str) else None
+    if match is None:
+        raise SourceUnreadable(f"{where}: item without a valid repository_url")
+    return match.group(1)
+
+
+def _api_activity(http, pull, span, excluded):
+    repo, number = pull["repo"], pull["number"]
+    since = _list_params({"since": span[0]})
+    entries = [
+        *_activity_list(http, repo, number, "comment", f"issues/{number}/comments", "created_at", since),
+        *_activity_list(http, repo, number, "review", f"pulls/{number}/reviews", "submitted_at", _list_params()),
+        *_activity_list(http, repo, number, "review_comment", f"pulls/{number}/comments", "created_at", since),
+    ]
+    return [entry for entry in entries if _is_human(entry, excluded) and span[0] <= entry["at"] <= span[1]]
+
+
+def _activity_list(http, repo, number, kind, tail, field, params):
+    path = _repo_path(repo, tail)
+    items = _paged(http, path, params)
+    return [_activity(repo, number, kind, item, field, f"GET {path}") for item in items if dig(item, field) is not None]
+
+
+def _activity(repo, number, kind, item, field, where):
+    state = dig(item, "state") if kind == "review" else None
+    return {
+        "repo": repo,
+        "number": number,
+        "kind": kind,
+        "author": _author(item),
+        "at": _time(item, field, where),
+        "state": state if isinstance(state, str) else None,
+        "text": _text(item, "body")[:TEXT_CAP],
+    }
+
+
+def _is_human(entry, excluded):
+    return not entry["author"].endswith(BOT_SUFFIX) and entry["author"] not in excluded
+
+
+def _list_params(extra=None):
+    return {**(extra or {}), "per_page": str(PER_PAGE), "page": "1"}
+
+
+def _paged(http, path, params, key=None):
+    kept, url = [], None
+    for _ in range(PAGE_CAP):
+        body = http.get(path, params) if url is None else http.get_url(url)
+        items = body if key is None else dig(body, key)
+        if not isinstance(items, list):
+            raise SourceUnreadable(f"GET {path}: " + ("response is not a list" if key is None else f"response without an {key} list"))
+        kept.extend(items)
+        url = _next_link(http.response_headers)
+        if len(items) < PER_PAGE or url is None:
+            return kept
+    raise PartialRead(PAGE_CAP_PARTIAL)
+
+
 def _next_link(headers):
     header = headers.get("Link") if headers is not None else None
     links = LINK.findall(header) if isinstance(header, str) else []
@@ -144,6 +242,7 @@ def _next_link(headers):
 
 def _relay(source, window, cursor, responses):
     _check_query(source, "mcp")
+    _check_no_searches(source)
     links, span = _links_base(source), _span(window, cursor)
     ids = (f"{source['name']}-{number}" for number in itertools.count(1))
     pulls, issues = [], []

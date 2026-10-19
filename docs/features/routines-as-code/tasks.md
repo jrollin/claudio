@@ -1096,7 +1096,7 @@ Owner-gated: needs the merged pull request, a release tag, the transport and its
 - **Refs**: US-53, TD-67
 - **Files**: `plugins/claudio-routines/runtime/providers/github.py` (modify), `plugins/claudio-routines/runtime/providers/test_github.py` (modify), `plugins/claudio-routines/runtime/roles.py` (modify), `plugins/claudio-routines/runtime/test_roles.py` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify)
 - **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
-- **Status**: Not Started
+- **Status**: Complete
 
 ### T-101: Document store pages edited by a user
 - A document store source sets one of `page_id`, `pages` and `edited_by`, and may set `edited_cap` (1 to 20, default 10) with `edited_by`. With `edited_by`, the api collector searches pages by `last_edited_time` descending until a page is older than the window start, keeps those last edited by that user, and reads each with the existing page reader.

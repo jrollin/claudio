@@ -763,6 +763,298 @@ class RelayFailureTest(unittest.TestCase):
         self.assertEqual(str(error), "query not supported by the mcp transport")
 
 
+SEARCH_QUERY = "is:pr org:example-org author:dev"
+SEARCH_SOURCE = {
+    **{key: value for key, value in SOURCE.items() if key != "repos"},
+    "searches": [SEARCH_QUERY],
+}
+SEARCH_RELAY_SOURCE = {**SEARCH_SOURCE, "transport": {"cloud": "mcp", "local": "mcp"}}
+IN_WINDOW = "2026-09-04T10:00:00Z"
+START_DATE = "2026-09-04"
+
+
+def search_item(number, repo="acme/app", **changes):
+    item = {
+        "number": number,
+        "title": f"Change {number}",
+        "user": {"login": "erin-dev"},
+        "state": "open",
+        "draft": False,
+        "created_at": "2026-09-03T09:00:00Z",
+        "updated_at": IN_WINDOW,
+        "html_url": f"{LINKS}/{repo}/pull/{number}",
+        "repository_url": f"{BASE}/repos/{repo}",
+        "pull_request": {"merged_at": None},
+    }
+    return {**item, **changes}
+
+
+def search_page(*items, link=None):
+    return body({"total_count": len(items), "incomplete_results": False, "items": list(items)}, link=link)
+
+
+def comment(login, created_at=IN_WINDOW, text="Please rename this"):
+    return {"user": {"login": login}, "created_at": created_at, "body": text}
+
+
+def review(login, state="APPROVED", submitted_at=IN_WINDOW, text="Looks good"):
+    return {"user": {"login": login}, "state": state, "submitted_at": submitted_at, "body": text}
+
+
+def search_run(*outcomes, source=SEARCH_SOURCE):
+    return run(*outcomes, source=source)
+
+
+def one_pull_activity(issue_comments=(), reviews=(), review_comments=(), source=SEARCH_SOURCE):
+    return search_run(
+        search_page(search_item(7)), body(list(issue_comments)), body(list(reviews)), body(list(review_comments)), source=source
+    )
+
+
+def activity_of(*args, **kwargs):
+    _, result = one_pull_activity(*args, **kwargs)
+    return result["records"]["activity"]
+
+
+class SearchTest(unittest.TestCase):
+    def test_search_request_carries_the_query_and_the_start_date(self):
+        opener, _ = search_run(search_page())
+
+        self.assertEqual(
+            (endpoint(opener.requests[0]), query(opener.requests[0])),
+            (("GET", "/search/issues"), {"q": [f"{SEARCH_QUERY} updated:>={START_DATE}"], "per_page": ["100"], "page": ["1"]}),
+        )
+
+    def test_every_search_is_run_in_config_order(self):
+        source = {**SEARCH_SOURCE, "searches": ["is:pr author:dev", "is:pr reviewed-by:dev"]}
+
+        opener, _ = search_run(search_page(), search_page(), source=source)
+
+        self.assertEqual(
+            [query(request)["q"][0] for request in opener.requests],
+            [f"is:pr author:dev updated:>={START_DATE}", f"is:pr reviewed-by:dev updated:>={START_DATE}"],
+        )
+
+    def test_a_pull_request_found_by_two_searches_appears_once(self):
+        source = {**SEARCH_SOURCE, "searches": ["is:pr author:dev", "is:pr reviewed-by:dev"]}
+
+        _, result = search_run(
+            search_page(search_item(7)), search_page(search_item(7)), body([]), body([]), body([]), source=source
+        )
+
+        self.assertEqual([(item["repo"], item["number"]) for item in result["records"]["pull_requests"]], [("acme/app", 7)])
+
+    def test_an_issue_found_by_a_search_is_skipped(self):
+        issue_item = {key: value for key, value in search_item(8).items() if key != "pull_request"}
+
+        _, result = search_run(search_page(issue_item, search_item(7)), body([]), body([]), body([]))
+
+        self.assertEqual([item["number"] for item in result["records"]["pull_requests"]], [7])
+
+    def test_a_skipped_issue_is_not_read_for_activity(self):
+        issue_item = {key: value for key, value in search_item(8).items() if key != "pull_request"}
+
+        opener, _ = search_run(search_page(issue_item, search_item(7)), body([]), body([]), body([]))
+
+        self.assertEqual(len(opener.requests), 4)
+
+    def test_a_pull_request_keeps_the_fields_of_the_pull_request_records(self):
+        merged = search_item(
+            9, repo="acme/infra", state="closed", draft=True, pull_request={"merged_at": "2026-09-04T11:00:00Z"}
+        )
+
+        _, result = search_run(search_page(merged), body([]), body([]), body([]))
+
+        self.assertEqual(
+            result["records"]["pull_requests"],
+            [
+                {
+                    "repo": "acme/infra",
+                    "number": 9,
+                    "title": "Change 9",
+                    "author": "erin-dev",
+                    "state": "closed",
+                    "draft": True,
+                    "created_at": "2026-09-03T09:00:00Z",
+                    "updated_at": IN_WINDOW,
+                    "merged_at": "2026-09-04T11:00:00Z",
+                    "link": LINKS + "/acme/infra/pull/9",
+                }
+            ],
+        )
+
+    def test_a_search_source_has_no_issue_records(self):
+        _, result = search_run(search_page(search_item(7)), body([]), body([]), body([]))
+
+        self.assertEqual(result["records"]["issues"], [])
+
+    def test_the_cursor_stays_null_because_the_window_bounds_the_read(self):
+        _, result = search_run(search_page(search_item(7)), body([]), body([]), body([]))
+
+        self.assertEqual(result["cursor"], {"updated_at": None})
+
+    def test_a_search_page_cap_ends_the_read_partial(self):
+        link = f'<{BASE}/search/issues?page=2>; rel="next"'
+        page = [search_item(number) for number in range(1, github.PER_PAGE + 1)]
+
+        error = unreadable(
+            self, *[search_page(*page, link=link) for _ in range(_http.PAGE_CAP)], source=SEARCH_SOURCE, error=_http.PartialRead
+        )
+
+        self.assertEqual(str(error), "partial: page cap")
+
+    def test_a_search_response_without_items_makes_the_source_unreadable(self):
+        error = unreadable(self, body({"message": "moved"}), source=SEARCH_SOURCE)
+
+        self.assertEqual(str(error), "GET /search/issues: response without an items list")
+
+    def test_a_search_item_without_a_repository_makes_the_source_unreadable(self):
+        error = unreadable(self, search_page(search_item(7, repository_url="")), source=SEARCH_SOURCE)
+
+        self.assertEqual(str(error), "GET /search/issues: item without a valid repository_url")
+
+    def test_a_search_is_refused_at_the_plan(self):
+        self.assertEqual(relay_plan({}, source=SEARCH_RELAY_SOURCE), {"done": True, "partial": None, "calls": []})
+
+    def test_a_search_is_refused_at_the_parse(self):
+        error = relay_failure(self, {}, source=SEARCH_RELAY_SOURCE)
+
+        self.assertEqual(str(error), "searches not supported by the mcp transport")
+
+
+class ActivityTest(unittest.TestCase):
+    def test_each_pull_request_reads_its_comments_reviews_and_review_comments(self):
+        opener, _ = one_pull_activity()
+
+        self.assertEqual(
+            [endpoint(request) for request in opener.requests[1:]],
+            [
+                ("GET", "/repos/acme/app/issues/7/comments"),
+                ("GET", "/repos/acme/app/pulls/7/reviews"),
+                ("GET", "/repos/acme/app/pulls/7/comments"),
+            ],
+        )
+
+    def test_comments_are_asked_since_the_window_start(self):
+        opener, _ = one_pull_activity()
+
+        self.assertEqual(
+            [query(request).get("since") for request in opener.requests[1:]], [[WINDOW_START], None, [WINDOW_START]]
+        )
+
+    def test_activity_lists_are_paged(self):
+        opener, _ = one_pull_activity()
+
+        self.assertEqual([(query(request)["per_page"], query(request)["page"]) for request in opener.requests[1:]], [(["100"], ["1"])] * 3)
+
+    def test_a_comment_keeps_its_fields_and_has_no_state(self):
+        entries = activity_of(issue_comments=[comment("frank-dev")])
+
+        self.assertEqual(
+            entries,
+            [
+                {
+                    "repo": "acme/app",
+                    "number": 7,
+                    "kind": "comment",
+                    "author": "frank-dev",
+                    "at": IN_WINDOW,
+                    "state": None,
+                    "text": "Please rename this",
+                }
+            ],
+        )
+
+    def test_a_review_keeps_its_state(self):
+        entries = activity_of(reviews=[review("gina-dev", state="CHANGES_REQUESTED")])
+
+        self.assertEqual([(entry["kind"], entry["state"]) for entry in entries], [("review", "CHANGES_REQUESTED")])
+
+    def test_a_review_comment_has_its_own_kind_and_no_state(self):
+        entries = activity_of(review_comments=[comment("gina-dev")])
+
+        self.assertEqual([(entry["kind"], entry["state"]) for entry in entries], [("review_comment", None)])
+
+    def test_a_pending_review_without_a_submission_time_is_skipped(self):
+        self.assertEqual(activity_of(reviews=[review("gina-dev", state="PENDING", submitted_at=None)]), [])
+
+    def test_activity_before_the_window_is_dropped(self):
+        self.assertEqual(activity_of(issue_comments=[comment("frank-dev", created_at="2026-09-04T07:59:59Z")]), [])
+
+    def test_activity_after_the_window_is_dropped(self):
+        self.assertEqual(activity_of(reviews=[review("gina-dev", submitted_at="2026-09-04T20:00:01Z")]), [])
+
+    def test_activity_at_the_window_edges_is_kept(self):
+        entries = activity_of(
+            issue_comments=[comment("frank-dev", created_at=WINDOW_START), comment("frank-dev", created_at="2026-09-04T20:00:00Z")]
+        )
+
+        self.assertEqual(len(entries), 2)
+
+    def test_activity_by_a_bot_is_dropped(self):
+        self.assertEqual(activity_of(issue_comments=[comment("ci-helper[bot]")]), [])
+
+    def test_activity_by_an_excluded_author_is_dropped(self):
+        source = {**SEARCH_SOURCE, "exclude_authors": ["release-manager"]}
+
+        self.assertEqual(activity_of(issue_comments=[comment("release-manager")], source=source), [])
+
+    def test_activity_by_another_author_is_kept_when_authors_are_excluded(self):
+        source = {**SEARCH_SOURCE, "exclude_authors": ["release-manager"]}
+
+        self.assertEqual(len(activity_of(issue_comments=[comment("frank-dev")], source=source)), 1)
+
+    def test_a_text_over_1000_characters_is_cut(self):
+        entries = activity_of(issue_comments=[comment("frank-dev", text="x" * 1001)])
+
+        self.assertEqual(entries[0]["text"], "x" * 1000)
+
+    def test_a_missing_text_reads_as_an_empty_string(self):
+        entries = activity_of(reviews=[{**review("gina-dev"), "body": None}])
+
+        self.assertEqual(entries[0]["text"], "")
+
+    def test_activity_times_are_utc_without_fraction(self):
+        entries = activity_of(issue_comments=[comment("frank-dev", created_at="2026-09-04T12:00:00.123+02:00")])
+
+        self.assertEqual(entries[0]["at"], IN_WINDOW)
+
+    def test_an_activity_page_follows_the_next_link(self):
+        path = "/repos/acme/app/issues/7/comments"
+        page = [comment("frank-dev")] * github.PER_PAGE
+
+        opener, result = search_run(
+            search_page(search_item(7)),
+            body(page, link=f'<{BASE}{path}?page=2>; rel="next"'),
+            body([comment("gina-dev")]),
+            body([]),
+            body([]),
+        )
+
+        self.assertEqual(len(result["records"]["activity"]), github.PER_PAGE + 1)
+        self.assertEqual(opener.requests[2].full_url, f"{BASE}{path}?page=2")
+
+    def test_an_activity_page_cap_ends_the_read_partial(self):
+        link = f'<{BASE}/repos/acme/app/issues/7/comments?page=2>; rel="next"'
+        pages = [body([comment("frank-dev")] * github.PER_PAGE, link=link) for _ in range(_http.PAGE_CAP)]
+
+        error = unreadable(self, search_page(search_item(7)), *pages, source=SEARCH_SOURCE, error=_http.PartialRead)
+
+        self.assertEqual(str(error), "partial: page cap")
+
+    def test_a_comment_without_a_valid_time_makes_the_source_unreadable(self):
+        error = unreadable(
+            self, search_page(search_item(7)), body([comment("frank-dev", created_at="soon")]), source=SEARCH_SOURCE
+        )
+
+        self.assertEqual(str(error), "GET /repos/acme/app/issues/7/comments: item without a valid created_at")
+
+    def test_the_collection_passes_the_role_schema(self):
+        _, result = one_pull_activity(issue_comments=[comment("frank-dev")], reviews=[review("gina-dev")])
+
+        self.assertIsNone(roles.validate_collection(collection(result)))
+
+
 class LinkHeaderTest(unittest.TestCase):
     def test_follows_the_next_link_after_a_64_kb_run_of_angle_brackets(self):
         crafted = "<" * 65536 + next_link(2)
