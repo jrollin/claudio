@@ -1557,7 +1557,9 @@ A degraded run's message is one line that starts with `degraded:` and names the 
   - an `activity` entry per comment, review or review comment created or submitted in the window: `repo`, `number`, `kind` (`comment`, `review`, `review_comment`), `author`, `at`, `state` (the review state or null) and `text` (at most 1000 characters);
   - authors ending in `[bot]` and the source's `exclude_authors` are dropped.
 - Document store: `edited_by`, a user id, replaces `pages` for that source (AC-53.3). Over `api`, `POST /v1/search` with the page filter, sorted by `last_edited_time` descending, paged until a page is older than the window start; the pages whose `last_edited_by.id` is `edited_by` are read with the existing page reader, up to `edited_cap` pages (default 20).
-- Chat: the recap's `searches` with the routine's `owner` (AC-53.4).
+- Chat, two inputs (AC-53.4):
+  - the recap: the routine's `recap` names the chat recap routine; Step 2 extracts `state/<recap>.json` and `runs/<recap>/` from the state branch into `<run>/recap/`, with `git show` and `git archive`;
+  - a direct read: an optional chat source with the recap's `searches` and the routine's `owner`, collected like any source; it needs a usable transport, so the owner adds it once a chat token exists.
 - Config load refuses `searches` on a code host or `edited_by` on a document store whose transport for a place includes `mcp`, naming the key path (AC-53.5).
 
 **Alternatives considered**:
@@ -1571,7 +1573,9 @@ A degraded run's message is one line that starts with `degraded:` and names the 
 **Choice**: `weekly.py` with `init`, `window`, `features`, `judge`, `apply` and `message`; `roles.ENGINES` gains `weekly`, whose routines take issue tracker, code host, chat and document store sources.
 - `window --now --tz`: `from_ts` is Monday 00:00 of the week of `now` in `tz`, `to_ts` is `now`; `--report-only` is accepted and changes nothing, as the window keeps no cursor.
 - `features`: one item per issue, pull request, chat thread and page with activity in the window (AC-54.1):
-  - keys `issue:<key>`, `pr:<repo>#<number>`, `chat:<channel>:<root ts>`, `page:<id>`;
+  - keys `issue:<key>`, `pr:<repo>#<number>`, `chat:<recap unit key>` (`dm-<channel>` or `thread-<channel>-<root ts>`), `page:<id>`;
+  - a recap unit makes an item when its `first_seen` or `last_ts` falls in the window: title, recap status, person, channel name, a link built from `workspace`, no excerpt; the week's recap run records add `recap_counts` (new, resolved and handled keys in the window);
+  - a direct chat unit with the same key adds its messages as excerpts to that item;
   - fields `source`, `role`, `kind`, `title`, `status` (or null), `link`, `when` (the latest activity in the window), `people` (display names) and `excerpts` (`by`, `at`, `text` of at most 500 characters: pull request activity up to 10, thread messages up to 15, the first 1000 characters of a page's blocks as one excerpt);
   - chat units in the routine's `exclude.channels` and the digest channel are dropped (BR-74);
   - `sources`: per source, `read` and `reason`.
@@ -1599,7 +1603,7 @@ A degraded run's message is one line that starts with `degraded:` and names the 
 
 **Choice**:
 - `templates/weekly-status.md` becomes runnable, with the chat recap's steps: runtime check, load state, window, environment check, collect, features, judge, apply, save, message, report (AC-55.1).
-- `config/routines/<slug>.json` with `engine: weekly` holds `owner` (the chat user id), `exclude.channels`, `digest` (`name`, `slug`) and the sources, each with its owner identity: `jql`, `searches` with the code host login, `edited_by`, chat `searches` (AC-55.2).
+- `config/routines/<slug>.json` with `engine: weekly` holds `owner` (the chat user id), `workspace` (the chat host for links), `recap` (the chat recap routine's slug), `exclude.channels`, `digest` (`name`, `slug`) and the sources, each with its owner identity: `jql`, `searches` with the code host login, `edited_by`, and an optional chat source with `searches` (AC-55.2).
 - The save step commits the state and the run record like the other templates; a report-only run commits the record only (AC-55.3).
 
 **Rationale**: the fourth engine follows the template and routine file conventions of the other three, so the lint, render, sync and private copies work unchanged.
