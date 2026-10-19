@@ -772,7 +772,7 @@ Runs in a local session with the chat, issue tracker, document store and observa
 - **Verify**: `python3 "$CLAUDIO_PRIVATE_DIR/reference/compare_judgment.py" --digest connect --replay <replay dir>/connect && python3 "$CLAUDIO_PRIVATE_DIR/reference/compare_judgment.py" --digest scheduling --replay <replay dir>/scheduling`
 - **Blocked by**: T-67
 - **Rules**: BR-22, BR-27
-- **Status**: In Progress (Connect closed: its last line, an empty error-status query read as a gap, reads as 0 with T-70; Scheduling keeps one line: its main page is truncated over the connector)
+- **Status**: Complete (Connect explained in full; Scheduling keeps one line as a known limit: its main page reads truncated over the document store connector, reported as a blind spot every run, and only the api transport would read it whole)
 
 ### T-69: Coverage notes
 - `coverage_notes` in the judgment (TD-50): schema and checks in `tribe_judgment.py`, carried into the summary by `apply` (TD-51, not the state), rendered after the collector gaps under Blind spots as `source: text` (TD-52), and named in the message's blind spots line (TD-53); template Step 7 describes the field and its limits.
