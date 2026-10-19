@@ -1099,13 +1099,13 @@ Owner-gated: needs the merged pull request, a release tag, the transport and its
 - **Status**: Not Started
 
 ### T-101: Document store pages edited by a user
-- A document store source sets one of `page_id`, `pages` and `edited_by`, and may set `edited_cap` (1 to 50, default 20) with `edited_by`. With `edited_by`, the api collector searches pages by `last_edited_time` descending until a page is older than the window start, keeps those last edited by that user, and reads each with the existing page reader.
+- A document store source sets one of `page_id`, `pages` and `edited_by`, and may set `edited_cap` (1 to 20, default 10) with `edited_by`. With `edited_by`, the api collector searches pages by `last_edited_time` descending until a page is older than the window start, keeps those last edited by that user, and reads each with the existing page reader.
 - Config load refuses `edited_by` when the source's transport for a place includes `mcp`, naming the key path.
-- Tests: the search body sorts by `last_edited_time` and filters pages; paging stops at the first page older than the window start; a page edited by another user is skipped; `edited_cap` bounds the pages read and ends the read partial; `edited_by` with `mcp` fails the load.
+- Tests: the search body sorts by `last_edited_time` and filters pages; paging stops at the first page older than the window start; a page edited by another user is skipped; `edited_cap` keeps the newest pages and stops the search; `edited_by` with `mcp` fails the load.
 - **Refs**: US-53, TD-67
 - **Files**: `plugins/claudio-routines/runtime/providers/notion.py` (modify), `plugins/claudio-routines/runtime/providers/test_notion.py` (modify), `plugins/claudio-routines/runtime/roles.py` (modify), `plugins/claudio-routines/runtime/test_roles.py` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify)
 - **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
-- **Status**: Not Started
+- **Status**: Complete
 
 ### T-102: Weekly engine: state, window and features
 - `roles.ENGINES` gains `weekly`; a weekly routine takes issue tracker, code host, chat and document store sources, `owner`, `workspace`, `recap` (a routine slug), `exclude.channels` and `digest`; the role check names the key path of an invalid value.

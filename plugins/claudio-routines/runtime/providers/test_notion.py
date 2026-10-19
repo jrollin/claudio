@@ -1431,6 +1431,199 @@ class ListedRequestCapTest(unittest.TestCase):
         self.assertEqual(str(caught.exception), "partial: request cap")
 
 
+EDITED_WINDOW = {"from_ts": 1788220800, "to_ts": 1790726400}
+EDITOR = "user-editor"
+OTHER_EDITOR = "user-other"
+EDITED_SOURCE = {"name": "docs", "provider": "docs", "transport": TRANSPORT, "edited_by": EDITOR}
+BEFORE_THE_WINDOW = "2026-08-31T23:59:59.000Z"
+AFTER_THE_WINDOW = "2026-10-01T00:00:00.000Z"
+SEARCH_PATH = "/v1/search"
+SEARCH_BODY = {
+    "filter": {"property": "object", "value": "page"},
+    "sort": {"timestamp": "last_edited_time", "direction": "descending"},
+    "page_size": 100,
+}
+
+
+def hit(page_id, edited=None, by=EDITOR):
+    edited = edited or DOCUMENTS[page_id]["edited"]
+    return {"object": "page", "id": page_id, "last_edited_time": edited, "last_edited_by": {"object": "user", "id": by}}
+
+
+def search_page(*hits, next_cursor=None):
+    return served_json({"object": "list", "results": list(hits), "has_more": next_cursor is not None, "next_cursor": next_cursor})
+
+
+def edited_over_api(*outcomes, source=EDITED_SOURCE, cursor=None):
+    opener = FakeOpener(outcomes)
+    return opener, notion.fetch(source, EDITED_WINDOW, cursor, [], client(opener))
+
+
+def search_bodies(opener):
+    return [json.loads(request.data) for request in opener.requests if endpoint(request) == ("POST", SEARCH_PATH)]
+
+
+def edited_failure(test, *outcomes, source=EDITED_SOURCE, error=_http.SourceUnreadable):
+    with test.assertRaises(error) as caught:
+        edited_over_api(*outcomes, source=source)
+    return caught.exception
+
+
+class EditedByApiTest(unittest.TestCase):
+    def test_searches_pages_by_last_edited_time_newest_first(self):
+        opener, _ = edited_over_api(search_page())
+
+        self.assertEqual(search_bodies(opener), [SEARCH_BODY])
+
+    def test_next_search_page_follows_the_cursor(self):
+        opener, _ = edited_over_api(search_page(next_cursor="cursor-1"), search_page())
+
+        self.assertEqual(search_bodies(opener), [SEARCH_BODY, {**SEARCH_BODY, "start_cursor": "cursor-1"}])
+
+    def test_paging_stops_at_the_first_page_older_than_the_window_start(self):
+        opener, _ = edited_over_api(
+            search_page(hit(THREE), hit(ONE, BEFORE_THE_WINDOW), next_cursor="cursor-1"), *api_read(THREE)
+        )
+
+        self.assertEqual(
+            [endpoint(request) for request in opener.requests],
+            [("POST", SEARCH_PATH), ("GET", "/v1/pages/page-three"), ("GET", "/v1/blocks/page-three/children")],
+        )
+
+    def test_page_edited_at_the_window_start_is_kept(self):
+        _, result = edited_over_api(search_page(hit(ONE, "2026-09-01T00:00:00.000Z")), *api_read(ONE))
+
+        self.assertEqual([page["id"] for page in result["records"]["pages"]], [ONE])
+
+    def test_page_edited_after_the_window_end_is_skipped(self):
+        opener, _ = edited_over_api(search_page(hit(THREE, AFTER_THE_WINDOW), hit(TWO)), *api_read(TWO))
+
+        self.assertEqual([endpoint(request)[1] for request in opener.requests][1:], ["/v1/pages/page-two", "/v1/blocks/page-two/children"])
+
+    def test_page_edited_by_another_user_is_skipped(self):
+        _, result = edited_over_api(search_page(hit(THREE, by=OTHER_EDITOR), hit(TWO)), *api_read(TWO))
+
+        self.assertEqual([page["id"] for page in result["records"]["pages"]], [TWO])
+
+    def test_kept_page_is_read_with_its_blocks(self):
+        _, result = edited_over_api(search_page(hit(ONE)), *api_read(ONE))
+
+        self.assertEqual(
+            result["records"]["pages"],
+            [
+                {
+                    "id": ONE,
+                    "title": "First page",
+                    "last_edited": "2026-09-04T14:30:41Z",
+                    "link": "https://www.notion.so/pageone",
+                    "blocks": blocks_of(ONE),
+                }
+            ],
+        )
+
+    def test_pages_are_read_in_search_order(self):
+        _, result = edited_over_api(search_page(hit(THREE), hit(TWO), hit(ONE)), *api_read(THREE), *api_read(TWO), *api_read(ONE))
+
+        self.assertEqual([page["id"] for page in result["records"]["pages"]], [THREE, TWO, ONE])
+
+    def test_hits_on_a_later_search_page_are_read(self):
+        _, result = edited_over_api(search_page(hit(TWO), next_cursor="cursor-1"), search_page(hit(ONE)), *api_read(TWO), *api_read(ONE))
+
+        self.assertEqual([page["id"] for page in result["records"]["pages"]], [TWO, ONE])
+
+    def test_cursor_maps_each_page_read_to_its_edit_time(self):
+        _, result = edited_over_api(search_page(hit(TWO), hit(ONE)), *api_read(TWO), *api_read(ONE))
+
+        self.assertEqual(result["cursor"], {"pages": {TWO: "2026-09-05T08:15:59Z", ONE: "2026-09-04T14:30:41Z"}})
+
+    def test_page_edited_in_its_cursor_minute_is_unchanged(self):
+        _, result = edited_over_api(search_page(hit(TWO), hit(ONE)), api_meta(TWO), *api_read(ONE), cursor=stored_pages(page_two=SAME_MINUTE_AS_TWO))
+
+        self.assertEqual(([page["id"] for page in result["records"]["pages"]], result["entries"][TWO]), ([ONE], UNCHANGED))
+
+    def test_no_matching_page_gives_no_record_and_an_empty_cursor(self):
+        _, result = edited_over_api(search_page(hit(ONE, by=OTHER_EDITOR)))
+
+        self.assertEqual((result["records"], result["cursor"]), ({"pages": []}, {"pages": {}}))
+
+    def test_collection_passes_the_role_schema(self):
+        _, result = edited_over_api(search_page(hit(ONE)), *api_read(ONE))
+
+        self.assertIsNone(roles.validate_collection({**collection(result), "source": "docs"}))
+
+
+class EditedCapTest(unittest.TestCase):
+    CAPPED = {**EDITED_SOURCE, "edited_cap": 2}
+
+    def test_reads_as_many_pages_as_the_cap(self):
+        _, result = edited_over_api(search_page(hit(THREE), hit(TWO)), *api_read(THREE), *api_read(TWO), source=self.CAPPED)
+
+        self.assertEqual([page["id"] for page in result["records"]["pages"]], [THREE, TWO])
+
+    def test_keeps_the_newest_pages_up_to_the_cap(self):
+        _, result = edited_over_api(search_page(hit(THREE), hit(TWO), hit(ONE)), *api_read(THREE), *api_read(TWO), source=self.CAPPED)
+
+        self.assertEqual([page["id"] for page in result["records"]["pages"]], [THREE, TWO])
+
+    def test_requests_no_further_search_page_once_the_cap_is_reached(self):
+        opener = FakeOpener([search_page(hit(THREE), hit(TWO), next_cursor="cursor-1"), *api_read(THREE), *api_read(TWO)])
+
+        notion.fetch(self.CAPPED, EDITED_WINDOW, None, [], client(opener))
+        self.assertEqual(len(search_bodies(opener)), 1)
+
+    def test_pages_of_other_users_do_not_count_against_the_cap(self):
+        hits = [hit(THREE), hit(TWO, by=OTHER_EDITOR), hit(ONE)]
+
+        _, result = edited_over_api(search_page(*hits), *api_read(THREE), *api_read(ONE), source=self.CAPPED)
+
+        self.assertEqual([page["id"] for page in result["records"]["pages"]], [THREE, ONE])
+
+    def test_the_cap_defaults_to_10_pages(self):
+        self.assertEqual(notion.EDITED_CAP, 10)
+
+
+class EditedSearchTest(unittest.TestCase):
+    def test_search_page_cap_ends_the_read_partial(self):
+        pages = [search_page(hit(ONE, by=OTHER_EDITOR), next_cursor=f"cursor-{number}") for number in range(20)]
+
+        error = edited_failure(self, *pages, error=_http.PartialRead)
+
+        self.assertEqual(str(error), "partial: page cap")
+
+    def test_stops_requesting_at_the_search_page_cap(self):
+        opener = FakeOpener([search_page(hit(ONE, by=OTHER_EDITOR), next_cursor=f"cursor-{number}") for number in range(20)])
+        with self.assertRaises(_http.PartialRead):
+            notion.fetch(EDITED_SOURCE, EDITED_WINDOW, None, [], client(opener))
+        self.assertEqual(len(opener.requests), 20)
+
+    def test_more_pages_without_a_cursor_make_the_read_partial(self):
+        body = served_json({"results": [], "has_more": True, "next_cursor": None})
+
+        error = edited_failure(self, body, error=_http.PartialRead)
+
+        self.assertEqual(str(error), "partial: POST /v1/search: has_more without next_cursor")
+
+    def test_response_without_results_makes_the_source_unreadable(self):
+        error = edited_failure(self, served_json({"object": "list"}))
+
+        self.assertEqual(str(error), "POST /v1/search: response without results")
+
+    def test_result_without_a_valid_edit_time_makes_the_source_unreadable(self):
+        error = edited_failure(self, search_page(hit(ONE), hit(TWO, "yesterday")))
+
+        self.assertEqual(str(error), "POST /v1/search: result 1 without a valid last_edited_time")
+
+    def test_kept_result_without_an_id_makes_the_source_unreadable(self):
+        error = edited_failure(self, search_page({**hit(ONE), "id": None}))
+
+        self.assertEqual(str(error), "POST /v1/search: result 0 without an id")
+
+    def test_search_error_makes_the_source_unreadable(self):
+        error = edited_failure(self, status(401))
+
+        self.assertEqual(str(error), "HTTP 401 POST /v1/search")
+
+
 class ListedPlanTest(unittest.TestCase):
     def test_first_step_fetches_the_first_page(self):
         self.assertEqual(

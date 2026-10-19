@@ -1,9 +1,10 @@
+import datetime
 import html
 import html.entities
 import re
 
 from . import _common
-from ._common import as_list, dig, json_object, quote, utc_text
+from ._common import UTC, as_list, dig, json_object, quote, utc_text
 from ._http import PAGE_CAP
 from ._errors import PAGE_CAP_PARTIAL, PartialRead, SourceUnreadable
 
@@ -13,6 +14,14 @@ LINKS_BASE = "https://www.notion.so"
 API_VERSION = "2026-03-11"
 PAGES_PATH = "/v1/pages/"
 BLOCKS_PATH = "/v1/blocks/"
+SEARCH_PATH = "/v1/search"
+SEARCH_BODY = {
+    "filter": {"property": "object", "value": "page"},
+    "sort": {"timestamp": "last_edited_time", "direction": "descending"},
+    "page_size": 100,
+}
+TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+EDITED_CAP = 10
 PAGE_SIZE = 100
 REQUEST_CAP = 50
 REQUEST_CAP_PARTIAL = "request cap"
@@ -120,12 +129,18 @@ class _Budget:
 
 def fetch(source, window, cursor, entries, http):
     budget = _Budget(http)
+    if "edited_by" in source:
+        return _fetch_listed_pages(source, _edited_page_ids(source, window, http), cursor, budget)
     if "pages" not in source:
         page = _read_page(source["page_id"], budget)
         return _result(source, [page], {}, {page["id"]: page["last_edited"]})
+    return _fetch_listed_pages(source, source["pages"], cursor, budget)
+
+
+def _fetch_listed_pages(source, page_ids, cursor, budget):
     stored = _stored(cursor)
-    outcomes = [_fetch_listed(page_id, stored.get(page_id), budget) for page_id in source["pages"]]
-    return _listed(source, stored, outcomes)
+    outcomes = [_fetch_listed(page_id, stored.get(page_id), budget) for page_id in page_ids]
+    return _listed(source, page_ids, stored, outcomes)
 
 
 def plan(source, window, cursor, entries, responses, connector):
@@ -158,7 +173,7 @@ def parse(source, window, cursor, entries, responses, digests):
         _parse_listed(page_id, _response(responses, _call_id(source, index)), stored.get(page_id))
         for index, page_id in enumerate(page_ids, 1)
     ]
-    return _listed(source, stored, outcomes)
+    return _listed(source, page_ids, stored, outcomes)
 
 
 def _page_from_response(page_id, body):
@@ -228,13 +243,56 @@ def _not_found(body):
     return reported and not isinstance(body.get("text"), str)
 
 
-def _listed(source, stored, outcomes):
-    page_ids = source["pages"]
+def _listed(source, page_ids, stored, outcomes):
     pages = [page for _, page in outcomes if page is not None]
     read = {page["id"]: page["last_edited"] for page in pages}
     kept = {page_id: read.get(page_id, stored.get(page_id)) for page_id in page_ids}
     entries = {page_id: entry for page_id, (entry, _) in zip(page_ids, outcomes)}
     return _result(source, pages, entries, {page_id: edited for page_id, edited in kept.items() if edited is not None})
+
+
+def _edited_page_ids(source, window, http):
+    start, end, cap = _utc(window["from_ts"]), _utc(window["to_ts"]), source.get("edited_cap", EDITED_CAP)
+    page_ids = []
+    for index, item in enumerate(_search_results(http)):
+        edited = utc_text(dig(item, "last_edited_time"))
+        if edited is None:
+            raise SourceUnreadable(f"POST {SEARCH_PATH}: result {index} without a valid last_edited_time")
+        if edited < start:
+            break
+        if edited <= end and dig(item, "last_edited_by", "id") == source["edited_by"]:
+            page_ids.append(_result_id(item, index))
+            if len(page_ids) == cap:
+                break
+    return page_ids
+
+
+def _utc(ts):
+    return datetime.datetime.fromtimestamp(ts, UTC).strftime(TIME_FORMAT)
+
+
+def _result_id(item, index):
+    page_id = dig(item, "id")
+    if not isinstance(page_id, str) or not page_id:
+        raise SourceUnreadable(f"POST {SEARCH_PATH}: result {index} without an id")
+    return page_id
+
+
+def _search_results(http):
+    request = SEARCH_BODY
+    for _ in range(PAGE_CAP):
+        body = http.post(SEARCH_PATH, request)
+        results = dig(body, "results")
+        if not isinstance(results, list):
+            raise SourceUnreadable(f"POST {SEARCH_PATH}: response without results")
+        yield from results
+        if dig(body, "has_more") is not True:
+            return
+        after = dig(body, "next_cursor")
+        if not isinstance(after, str) or not after:
+            raise PartialRead(f"POST {SEARCH_PATH}: has_more without next_cursor")
+        request = {**SEARCH_BODY, "start_cursor": after}
+    raise PartialRead(PAGE_CAP_PARTIAL)
 
 
 def _result(source, pages, entries, cursor):
