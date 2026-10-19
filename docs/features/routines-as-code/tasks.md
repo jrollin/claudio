@@ -182,7 +182,7 @@ Owner-gated: needs the merged pull request, a release tag, the setup script past
 - **Verify**: `python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --private "$CLAUDIO_PRIVATE_DIR" && python3 plugins/claudio-routines/skills/routines/scripts/routines.py diff prod-watch`
 - **Blocked by**: T-15, T-17, T-18, T-31, T-43
 - **Rules**: BR-6, BR-7, BR-15, BR-23, BR-25
-- **Status**: In Progress (tag pinned, local runtime installed, state seeded from the live page of 2026-10-16T16:46Z, template switched in the private config; one baseline shadow run done; the cloud setup script, aligned shadow runs and the sync remain)
+- **Status**: In Progress (synced to the runtime on 2026-10-19 after an aligned shadow run: 22 of 26 live items matched, the other 4 explained by timing and by the runtime keeping an open item's severity; first runtime runs to check)
 
 ## Phase 5: State store and neutral roles
 
