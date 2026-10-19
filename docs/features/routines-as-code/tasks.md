@@ -3,7 +3,7 @@
 ---
 feature: routines-as-code
 spec_version: 1
-total_tasks: 91
+total_tasks: 92
 phases:
   - name: "Leak guard"
     tasks: [T-1, T-2, T-3]
@@ -38,7 +38,7 @@ phases:
   - name: "Monitor priority and seed fixes"
     tasks: [T-72, T-73, T-74]
   - name: "Cloud run fixes"
-    tasks: [T-75, T-76, T-77, T-87, T-88, T-89, T-90, T-91]
+    tasks: [T-75, T-76, T-77, T-87, T-88, T-89, T-90, T-91, T-92]
   - name: "Chat recap engine"
     tasks: [T-78, T-79, T-80, T-81, T-82, T-83, T-84, T-85, T-86]
 depends_on: []
@@ -899,6 +899,16 @@ Runs in a local session with the chat, issue tracker, document store and observa
 - Tests: a toggle heading with paragraphs under it; a toggle; a callout; an original and a reference synced block; a column list with two columns; a list item with nested items; the depth cap; a child page and a child database left as `other`; the children reads paged by `next_cursor`; the call cap shared by nested reads.
 - **Refs**: US-29, TD-22
 - **Files**: `docs/features/routines-as-code/tasks.md` (modify), `plugins/claudio-routines/runtime/providers/notion.py` (modify), `plugins/claudio-routines/runtime/providers/test_notion.py` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify)
+- **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime && python3 scripts/leak_check.py --tree`
+- **Status**: Complete
+
+### T-92: Read only the new replies of a thread
+- A thread read relays the whole thread, so a long thread puts thousands of characters of chat text through the model and trips its safeguard. Every thread read of a chat source passes `oldest`, the start of the replies the run needs: the channel read start for a channel-source thread (the stored channel cursor, else the first-read start), the window start for a cited thread. The connector then returns the root and only the replies after `oldest`, numbered among themselves (`=== THREAD REPLIES (3 total) ===`, `Reply 1 of 3`), which the parser reads as it is. The `api` transport passes the same `oldest` to `conversations.replies`, so both transports give the same records.
+- A search unit or recap re-read thread whose response is the parent block and `No thread messsages` keeps its root text without that sentence.
+- Deferred: recap search units and re-reads keep reading the whole thread, since the recap facts need the owner's earlier messages; bounding them needs the owner's last message ts carried in the recap state.
+- Tests: the planned thread call carries `oldest` from the stored channel cursor, from the window start (a channel without cursor and a cited thread) and from the first-read start; the `api` request carries the same `oldest`; a response holding the root and only later replies parses with its own count, for a channel thread and a cited thread; both transports give the same records; a unit thread answered by the parent block and `No thread messsages` keeps its root text.
+- **Refs**: US-28, US-45, TD-22, TD-40, TD-59
+- **Files**: `docs/features/routines-as-code/tasks.md` (modify), `docs/features/routines-as-code/design.md` (modify), `plugins/claudio-routines/runtime/providers/_slack_read.py` (modify), `plugins/claudio-routines/runtime/providers/_slack_search.py` (modify), `plugins/claudio-routines/runtime/providers/test_slack.py` (modify), `plugins/claudio-routines/runtime/providers/test_slack_search.py` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify)
 - **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime && python3 scripts/leak_check.py --tree`
 - **Status**: Complete
 

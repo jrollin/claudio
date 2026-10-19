@@ -66,6 +66,7 @@ MORE = "There are more messages available. To view the next page, use cursor: `{
 THREAD_MORE = "There are more messages in this thread. To view the next page, use cursor: `{}`"
 THREAD_NO_MORE = "There are no more messages in this thread."
 THREAD_CURSOR = "bmV4dF90czoxNzYwMDAyMzAwLjAwMDIzMA=="
+STORED_TS = STORED["ts"]["CHAN1"]
 
 
 def message(channel, ts, author, text, thread_ts=None):
@@ -149,8 +150,8 @@ def endless_pages(channel, count):
     return {f"team-chat-{n}": relay_page(channel, pagination=MORE.format(f"c{n}")) for n in range(1, count + 1)}
 
 
-def thread_call(call_id, channel, root, cursor=None):
-    arguments = {"channel_id": channel, "message_ts": root, "response_format": "detailed"}
+def thread_call(call_id, channel, root, oldest, cursor=None):
+    arguments = {"channel_id": channel, "message_ts": root, "oldest": oldest, "response_format": "detailed"}
     if cursor is not None:
         arguments["cursor"] = cursor
     return {"id": call_id, "connector": CONNECTOR, "tool": THREAD_TOOL, "arguments": arguments, "digest": None}
@@ -393,8 +394,18 @@ class ThreadFetchTest(unittest.TestCase):
 
         self.assertEqual(
             query(requests_to(opener, REPLIES_PATH)[0]),
-            {"channel": ["CHAN1"], "ts": [ROOT_TS], "latest": ["1760010800"], "limit": ["200"]},
+            {"channel": ["CHAN1"], "ts": [ROOT_TS], "oldest": [STORED_TS], "latest": ["1760010800"], "limit": ["200"]},
         )
+
+    def test_asks_the_replies_after_the_window_start_for_a_channel_without_stored_ts(self):
+        opener, _ = api_thread(reply_item("1760002300.000230"), cursor=None)
+
+        self.assertEqual(query(requests_to(opener, REPLIES_PATH)[0])["oldest"], ["1760000000"])
+
+    def test_asks_the_replies_after_the_first_read_start_when_it_precedes_the_window(self):
+        opener, _ = api_thread(reply_item("1760002300.000230"), cursor=None, window=window_from(1759000000))
+
+        self.assertEqual(query(requests_to(opener, REPLIES_PATH)[0])["oldest"], ["1759000000"])
 
     def test_history_and_replies_reads_are_exclusive_at_both_ends(self):
         opener, _ = api_thread(reply_item("1760002300.000230"))
@@ -629,17 +640,32 @@ class PlanTest(unittest.TestCase):
     def test_last_page_of_a_channel_reads_the_thread_of_its_root(self):
         responses = {"team-chat-1": saved("read_chan1_page_1.json"), "team-chat-2": saved("read_chan1_page_2.json")}
 
-        self.assertEqual(relay_plan(responses)["calls"], [thread_call("team-chat-3", "CHAN1", ROOT_TS)])
+        self.assertEqual(relay_plan(responses)["calls"], [thread_call("team-chat-3", "CHAN1", ROOT_TS, STORED_TS)])
 
     def test_next_thread_page_passes_the_saved_cursor(self):
         responses = {name: saved(file) for name, file in list(SHARED_OVER_RELAY.items())[:3]}
 
-        self.assertEqual(relay_plan(responses)["calls"], [thread_call("team-chat-4", "CHAN1", ROOT_TS, THREAD_CURSOR)])
+        self.assertEqual(relay_plan(responses)["calls"], [thread_call("team-chat-4", "CHAN1", ROOT_TS, STORED_TS, THREAD_CURSOR)])
 
     def test_last_thread_page_moves_to_the_next_channel(self):
         responses = {name: saved(file) for name, file in list(SHARED_OVER_RELAY.items())[:4]}
 
         self.assertEqual(relay_plan(responses)["calls"], [call("team-chat-5", "CHAN2", "1760000000")])
+
+    def test_thread_read_asks_the_replies_after_the_stored_ts_of_its_channel(self):
+        plan = slack.plan(one_channel(), WINDOW, STORED, [], {"team-chat-1": root_page()}, CONNECTOR)
+
+        self.assertEqual(plan["calls"][0]["arguments"]["oldest"], STORED_TS)
+
+    def test_thread_read_asks_the_replies_after_the_window_start_for_a_channel_without_stored_ts(self):
+        plan = slack.plan(one_channel(), WINDOW, None, [], {"team-chat-1": root_page()}, CONNECTOR)
+
+        self.assertEqual(plan["calls"], [thread_call("team-chat-2", "CHAN1", ROOT_TS, "1760000000")])
+
+    def test_thread_read_asks_the_replies_after_the_first_read_start_when_it_precedes_the_window(self):
+        plan = slack.plan(one_channel(), window_from(1759000000), None, [], {"team-chat-1": root_page()}, CONNECTOR)
+
+        self.assertEqual(plan["calls"][0]["arguments"]["oldest"], "1759000000")
 
     def test_channel_without_a_root_moves_to_the_next_channel_after_its_history(self):
         responses = {"team-chat-1": relay_page("CHAN1", relay_message("U1", "1760004000.000400", "plain"))}
@@ -707,6 +733,28 @@ class TransportEqualityTest(unittest.TestCase):
         self.assertEqual(state.dump(relay(responses, source=one_channel())), state.dump(over_api))
 
 
+class ThreadSinceOldestEqualityTest(unittest.TestCase):
+    LATER = (("U2", "1760002300.000230", "Thanks"), ("U1", "1760002600.000260", "Fixed"), ("U2", "1760003500.000350", "Done"))
+
+    def over_api(self):
+        replies = [reply_item(ts, text, user) for user, ts, text in self.LATER]
+        _, result = run(history(root_item(replies=51)), history(root_item(replies=51), *replies), source=one_channel())
+        return result
+
+    def over_relay(self):
+        blocks = [thread_reply(user, ts, text, index=number, total=3) for number, (user, ts, text) in enumerate(self.LATER, 1)]
+        return relay({"team-chat-1": root_page("Thread: 51 replies (latest: 2025-10-09 09:43:20 UTC)"), "team-chat-2": thread_page(*blocks, total=3)}, source=one_channel())
+
+    def test_both_transports_read_the_root_and_the_replies_after_oldest_the_same(self):
+        self.assertEqual(state.dump(self.over_relay()), state.dump(self.over_api()))
+
+    def test_the_root_and_the_replies_after_oldest_are_the_records(self):
+        self.assertEqual(
+            [item["ts"] for item in self.over_relay()["records"]["messages"]],
+            [ROOT_TS, *(ts for _, ts, _ in self.LATER)],
+        )
+
+
 CITED_ROOT = "1759990000.000100"
 GONE_ROOT = "1759980000.000100"
 OLD_REPLY = "1759995000.000500"
@@ -751,6 +799,11 @@ def relay_cited(*pages, source=None):
 class CitedThreadFetchTest(unittest.TestCase):
     def test_reads_only_the_replies_newer_than_the_previous_window_end(self):
         _, result = api_cited(cited_api_thread())
+
+        self.assertEqual(result["records"]["messages"], CITED_MESSAGES)
+
+    def test_reads_a_response_holding_only_the_replies_after_oldest(self):
+        _, result = api_cited(cited_api_thread(replies=CITED_REPLIES[1:3]))
 
         self.assertEqual(result["records"]["messages"], CITED_MESSAGES)
 
@@ -874,10 +927,20 @@ class CitedThreadRelayTest(unittest.TestCase):
 
         self.assertEqual(result["records"]["messages"], CITED_MESSAGES)
 
+    def test_reads_a_response_holding_only_the_replies_after_oldest(self):
+        result = relay_cited(cited_relay_thread(replies=CITED_REPLIES[1:3]))
+
+        self.assertEqual(result["records"]["messages"], CITED_MESSAGES)
+
+    def test_plans_no_second_call_for_a_response_holding_only_the_replies_after_oldest(self):
+        responses = {"team-chat-1": relay_page("CHAN1"), "team-chat-2": cited_relay_thread(replies=CITED_REPLIES[1:3])}
+
+        self.assertEqual(slack.plan(cited_source(CITED_ROOT), WINDOW, STORED, [], responses, CONNECTOR)["done"], True)
+
     def test_plan_reads_the_cited_thread_after_its_channel(self):
         step = slack.plan(cited_source(CITED_ROOT), WINDOW, STORED, [], {"team-chat-1": relay_page("CHAN1")}, CONNECTOR)
 
-        self.assertEqual(step, {"done": False, "partial": None, "calls": [thread_call("team-chat-2", "CHAN1", CITED_ROOT)]})
+        self.assertEqual(step, {"done": False, "partial": None, "calls": [thread_call("team-chat-2", "CHAN1", CITED_ROOT, "1760000000")]})
 
     def test_plan_of_a_complete_read_with_a_cited_thread_is_done(self):
         responses = {"team-chat-1": relay_page("CHAN1"), "team-chat-2": cited_relay_thread()}
@@ -890,7 +953,7 @@ class CitedThreadRelayTest(unittest.TestCase):
 
         step = slack.plan(cited_source(CITED_ROOT), WINDOW, STORED, [], responses, CONNECTOR)
 
-        self.assertEqual(step["calls"], [thread_call("team-chat-3", "CHAN1", CITED_ROOT, THREAD_CURSOR)])
+        self.assertEqual(step["calls"], [thread_call("team-chat-3", "CHAN1", CITED_ROOT, "1760000000", THREAD_CURSOR)])
 
     def test_stops_at_the_page_that_reaches_the_previous_window_end(self):
         newest = cited_relay_thread(replies=CITED_REPLIES[1:3], pagination=THREAD_MORE.format(THREAD_CURSOR))
@@ -1454,7 +1517,7 @@ class RelayThreadTest(unittest.TestCase):
     def test_plan_reads_the_thread_of_a_root_with_the_message_ts(self):
         plan = slack.plan(one_channel(), WINDOW, STORED, [], {"team-chat-1": root_page()}, CONNECTOR)
 
-        self.assertEqual(plan["calls"], [thread_call("team-chat-2", "CHAN1", ROOT_TS)])
+        self.assertEqual(plan["calls"], [thread_call("team-chat-2", "CHAN1", ROOT_TS, STORED_TS)])
 
     def test_plan_of_a_complete_read_with_threads_is_done(self):
         self.assertEqual(relay_plan(shared_responses()), {"done": True, "partial": None, "calls": []})

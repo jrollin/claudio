@@ -964,6 +964,7 @@ Feature rules:
 - For each root whose ts lies in the window, the collector reads its replies up to the window end:
   - `api`: the chat API's thread replies call, bounded by the window end, following its page cursor;
   - `mcp`: one thread read call of the connector per page, in its detailed format.
+- Both calls pass `oldest`, the start of the replies the run needs: the channel read start for a root read from the history, the window start for a cited thread. A long thread's older replies stay out of the read, and the connector numbers the replies it returns among themselves.
 - The connector's thread text is parsed with the history parser's guards: a reply's ts is later than its root and not later than the window end, and each ts is new. Thread pages come newest first, each repeating the parent block, so replies ascend within a page and only need to be new across pages. The providers README describes the format.
 - Records are keyed by channel and ts. A reply also shown in the channel history gives one record, and the thread read's copy wins, so it carries its root's ts. A reply seen only in the history carries null on both transports (AC-28.4).
 - The author is the user or bot id. Names and emails in the connector text are dropped (BR-52).
