@@ -443,7 +443,7 @@ Bump procedure, documented in the plugin README:
 **Choice**: the run state and the run records are JSON files on the `claude/state` branch of the private repository, which the routine attaches as a source:
 - `state/<slug>.json`: the state the next run starts from.
 - `runs/<slug>/<run-at>.json`: one record per run (window, counts, keys new, escalated and resolved, muted keys, blind spots, sources read), kept for stats.
-- At the start of a run, the model fetches `claude/state`. A missing branch or file means a baseline run.
+- At the start of a run, the model fetches `claude/state` with `--no-prune`: in a checkout whose git config prunes on fetch, an explicit refspec into the remote-tracking namespace deletes the ref it fetches whenever the ref already exists, so every other local run would find no state. A missing branch or file means a baseline run.
 - At the end, it commits both files and pushes to `claude/state`. A failed push is reported in the digest as state not saved.
 - The public repository is never attached to a routine.
 
