@@ -1,15 +1,15 @@
 import argparse
 import copy
 from collections import namedtuple
-from datetime import datetime, timezone
 from decimal import Decimal
 
 import recap_features
+import recap_judgment
 import recap_state
 import recap_window
 import state
 import tribe_state
-from state import InputError, Nullable, Rejected
+from state import Rejected
 
 DEFAULT_LATE_AFTER = 3
 DEFAULT_DROP_AFTER = 14
@@ -35,69 +35,17 @@ STATUS_OF_KIND = {
 }
 SETTLED_KINDS = (recap_features.ALREADY_HANDLED, recap_features.NOISE)
 ASKED_STATUSES = ("waiting", "team_ask")
-KINDS = tuple(recap_features.KIND_DEFINITIONS)
+MAX_DAYS = 365
 NO_PEOPLE = {"participants": [], "authors": []}
 
 PEOPLE = [{"id": state.TEXT, "name": state.TEXT}]
-FEATURES_SPEC = {
-    "owner": state.TEXT,
-    "units": {
-        "*": {
-            "kind": recap_state.UNIT_KIND,
-            "channel": recap_state.NAME,
-            "name": state.TEXT,
-            "messages": [{"user": state.TEXT, "name": state.TEXT, "ts": recap_state.MESSAGE_TS, "root_ts": Nullable(state.TEXT)}],
-            "facts": {"unanswered_from": Nullable(recap_state.MESSAGE_TS), "owner_answered": state.BOOLEAN},
-        }
-    },
-    "blind_spots": [{"key": recap_state.BLIND_SPOT_KEY, "gap": state.LABEL}],
-}
 BASE_SPEC = {"units": {"*": {"participants": PEOPLE, "authors": PEOPLE}}}
-DUE = state.leaf(lambda value: state.parses(state.parse_time, value), "an ISO 8601 time with a UTC offset")
-JUDGMENT_SPEC = {
-    "units": {
-        "*": {
-            "kind": recap_state.one_of(KINDS),
-            "title": recap_state.TITLE,
-            "summary": state.TEXT,
-            "blocking": state.BOOLEAN,
-            "due": Nullable(DUE),
-        }
-    },
-    "reading": [{"text": state.TEXT, "cites": [state.TEXT]}],
-}
-
 History = namedtuple("History", "late_after drop_after")
 Run = namedtuple("Run", "to_ts at zone history owner")
 
 
-def load_features(path):
-    document = tribe_state.load_input(path, "features", FEATURES_SPEC)
-    for key, unit in document["units"].items():
-        if not unit["messages"]:
-            raise InputError(f"features: {state.join(recap_state.key_path('units', key), 'messages')}: expected at least one message")
-    return document
-
-
 def load_base(path):
     return tribe_state.load_input(path, "base", BASE_SPEC)
-
-
-def check_judgment(document, features_doc):
-    state.check(document, JUDGMENT_SPEC, "")
-    for key in sorted(features_doc["units"]):
-        if key not in document["units"]:
-            raise Rejected(f"{recap_state.key_path('units', key)}: missing, every unit of the features needs one entry")
-    for key in sorted(document["units"]):
-        if key not in features_doc["units"]:
-            raise Rejected(f"{recap_state.key_path('units', key)}: not a unit of the features")
-
-
-def load_judgment(path, features_doc):
-    try:
-        return state.load(path, "judgment", lambda document: check_judgment(document, features_doc))
-    except state.InvalidJson as error:
-        raise Rejected(str(error)) from error
 
 
 def check_window_order(previous, window):
@@ -114,24 +62,44 @@ def days_since(moment, run):
     return recap_window.working_days_between(int(moment), run.to_ts, run.zone)
 
 
-def late_age(status, facts, first_seen, due, run):
-    if status == "waiting" and facts["unanswered_from"] is not None:
-        age = days_since(Decimal(facts["unanswered_from"]), run)
-        return age if age > run.history.late_after else None
-    if status != "promise":
+def waiting_late(facts, run):
+    if facts["unanswered_from"] is None:
         return None
+    age = days_since(Decimal(facts["unanswered_from"]), run)
+    return age if age > run.history.late_after else None
+
+
+def promise_late(first_seen, due, run):
     if due is None:
         age = days_since(state.parse_time(first_seen).timestamp(), run)
-        return age if age > PROMISE_GRACE_DAYS else None
+        return age if age >= PROMISE_GRACE_DAYS else None
     due_ts = state.parse_time(due).timestamp()
     return days_since(due_ts, run) if run.to_ts > due_ts else None
 
 
+def late_age(status, facts, first_seen, due, run):
+    if status == "waiting":
+        return waiting_late(facts, run)
+    return promise_late(first_seen, due, run) if status == "promise" else None
+
+
+def is_resolved(kind, facts, stored):
+    if stored is None:
+        return False
+    settled = kind in SETTLED_KINDS
+    if stored["status"] == "waiting":
+        return settled or facts["owner_answered"]
+    return stored["status"] == "promise" and settled
+
+
 def status_of(kind, facts, stored):
-    held = stored is not None and stored["status"] in recap_state.HELD_STATUSES
-    if held and (kind in SETTLED_KINDS or facts["owner_answered"]):
+    if is_resolved(kind, facts, stored):
         return "handled", True
     return STATUS_OF_KIND.get(kind), False
+
+
+def is_fresh(status, stored):
+    return stored is None or (status in recap_state.HELD_STATUSES and stored["status"] not in recap_state.HELD_STATUSES)
 
 
 def label_of(text):
@@ -172,28 +140,42 @@ def counterpart_of(document, people, owner):
     return next((item["user"] for item in reversed(document["messages"]) if item["user"] != owner), None)
 
 
-def person_of(status, document, people, owner, stored):
+def who_of(status, document, people, owner):
     if status in ASKED_STATUSES:
-        who = asker_of(document)
-    elif status == "waiting_on_others":
-        who = counterpart_of(document, people, owner)
-    else:
-        who = None
-    found = None if who is None else as_person(who, display_name(who, document["messages"], people))
+        return asker_of(document)
+    if status == "waiting_on_others":
+        return counterpart_of(document, people, owner)
+    return None
+
+
+def person_of(status, document, people, owner, stored):
+    who = who_of(status, document, people, owner)
+    if who is None:
+        return None
+    found = as_person(who, display_name(who, document["messages"], people))
     if found is not None:
         return found
-    return None if stored is None else stored["person"]
+    kept = None if stored is None else stored["person"]
+    return kept if kept is not None and kept["id"] == who else None
 
 
 def newest_ts(messages):
     return max((item["ts"] for item in messages), key=Decimal)
 
 
+def due_of(entry, status, stored):
+    if status != "promise":
+        return None
+    if entry["due"] is not None:
+        return due_text(entry["due"])
+    return stored["due"] if stored is not None and stored["status"] == "promise" else None
+
+
 def unit_of(document, entry, stored, status, people, run):
-    facts = document["facts"]
-    first_seen = run.at if stored is None else stored["first_seen"]
-    due = due_text(entry["due"]) if status == "promise" and entry["due"] is not None else None
-    runs_waiting = (0 if stored is None else stored["runs_waiting"]) + 1
+    fresh = is_fresh(status, stored)
+    first_seen = run.at if fresh else stored["first_seen"]
+    due = due_of(entry, status, stored)
+    runs_waiting = (0 if fresh else stored["runs_waiting"]) + 1
     return {
         "kind": document["kind"],
         "channel": document["channel"],
@@ -204,7 +186,7 @@ def unit_of(document, entry, stored, status, people, run):
         "last_ts": newest_ts(document["messages"]),
         "status": status,
         "runs_waiting": runs_waiting if status in recap_state.HELD_STATUSES else 0,
-        "late": late_age(status, facts, first_seen, due, run),
+        "late": late_age(status, document["facts"], first_seen, due, run),
         "due": due,
     }
 
@@ -237,36 +219,41 @@ def line_of(key, unit, document, entry, resolved, is_new):
     }
 
 
-def judge_unit(key, document, entry, stored, people, run):
+def lifecycle_of(key, document, entry, stored, people, run):
     status, resolved = status_of(entry["kind"], document["facts"], stored)
     if status is None:
         return None, None
     unit = unit_of(document, entry, stored, status, people, run)
     already_handled = status == "handled" and stored is not None and stored["status"] == "handled"
-    line = None if already_handled else line_of(key, unit, document, entry, resolved, stored is None)
+    line = None if already_handled else line_of(key, unit, document, entry, resolved, is_fresh(status, stored))
     return unit, line
 
 
-def stale_keys(units, run):
+def kept_absent(unit, run):
+    return {**unit, "late": promise_late(unit["first_seen"], unit["due"], run)} if unit["status"] == "promise" else unit
+
+
+def settle_absent(units, present, run):
     cutoff = Decimal(run.to_ts) - run.history.drop_after * SECONDS_PER_DAY
-    return sorted(key for key, unit in units.items() if Decimal(unit["last_ts"]) < cutoff)
+    dropped = sorted(key for key, unit in units.items() if key not in present and Decimal(unit["last_ts"]) < cutoff)
+    for key in dropped:
+        del units[key]
+    for key in sorted(set(units) - set(present)):
+        units[key] = kept_absent(units[key], run)
+    return dropped
 
 
 def merge_units(previous, features_doc, judged, base, run):
     units, lines = copy.deepcopy(previous["units"]), {}
     for key in sorted(features_doc["units"]):
-        unit, line = judge_unit(key, features_doc["units"][key], judged["units"][key], previous["units"].get(key), base["units"].get(key, NO_PEOPLE), run)
+        unit, line = lifecycle_of(key, features_doc["units"][key], judged["units"][key], previous["units"].get(key), base["units"].get(key, NO_PEOPLE), run)
         if unit is None:
             units.pop(key, None)
         else:
             units[key] = unit
         if line is not None:
             lines[key] = line
-    dropped = stale_keys(units, run)
-    for key in dropped:
-        del units[key]
-        lines.pop(key, None)
-    return units, lines, dropped
+    return units, lines, settle_absent(units, features_doc["units"], run)
 
 
 def next_blind_spots(previous, spots):
@@ -334,10 +321,10 @@ def next_state_of(previous, units, spots, window, run_at):
     }
 
 
-def apply(previous, features_doc, base, judged, window, now, zone, history):
+def apply(previous, features_doc, base, judged, window, zone, history):
     check_window_order(previous, window)
     run_at = state.utc_text(window["to_ts"])
-    run = Run(int(now.timestamp()), state.utc_text(int(now.timestamp())), zone, history, features_doc["owner"])
+    run = Run(window["to_ts"], run_at, zone, history, features_doc["owner"])
     units, lines, dropped = merge_units(previous, features_doc, judged, base, run)
     spots = next_blind_spots(previous["blind_spots"], features_doc["blind_spots"])
     sections = sections_of(lines)
@@ -352,8 +339,8 @@ def whole_days(low):
             value = int(text)
         except ValueError:
             value = low - 1
-        if not low <= value <= recap_window.MAX_LOOKBACK_WORKING_DAYS:
-            raise argparse.ArgumentTypeError(f"expected an integer from {low} to {recap_window.MAX_LOOKBACK_WORKING_DAYS}, got {text}")
+        if not low <= value <= MAX_DAYS:
+            raise argparse.ArgumentTypeError(f"expected an integer from {low} to {MAX_DAYS}, got {text}")
         return value
 
     return parse
@@ -369,13 +356,12 @@ def add_apply_arguments(parser):
 def run_apply(args):
     zone = state.load_zone(args.tz)
     raw, previous = state.load_raw(args.state, "state", recap_state.check_state)
-    features_doc = load_features(args.features)
+    features_doc = recap_judgment.load_features(args.features)
     base = load_base(args.base)
     window = state.load(args.window, "window", recap_window.check_window)
-    judged = load_judgment(args.judgment, features_doc)
-    now = datetime.fromtimestamp(window["to_ts"], timezone.utc)
+    judged = recap_judgment.load_judgment(args.judgment, features_doc)
     history = History(args.late_after_working_days, args.drop_after_days)
-    next_state, summary, record = apply(previous, features_doc, base, judged, window, now, zone, history)
+    next_state, summary, record = apply(previous, features_doc, base, judged, window, zone, history)
     try:
         recap_state.check_state(next_state)
     except Rejected as error:

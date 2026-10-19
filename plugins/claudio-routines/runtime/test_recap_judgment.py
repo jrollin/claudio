@@ -10,6 +10,7 @@ import unittest
 import recap
 import recap_judgment
 import state
+from support import ts
 
 ASK_KEY = "dm-C0001"
 OWN_KEY = "thread-C0002-1790000000.000100"
@@ -19,6 +20,7 @@ STRANGER = "U" + "3" * 6
 ASK_KIND = "waiting on you"
 OWN_KIND = "promise"
 DUE = "2026-06-05T17:00:00+02:00"
+WINDOW_END = ts("2026-06-05T09:00:00Z")
 
 
 def make_message(user, ts):
@@ -28,13 +30,15 @@ def make_message(user, ts):
 def make_features():
     return {
         "owner": OWNER,
+        "window": {"from_ts": WINDOW_END - 86400, "to_ts": WINDOW_END, "limited": None, "explicit": False},
+        "blind_spots": [],
         "units": {
             ASK_KEY: {
                 "kind": "dm",
                 "channel": "C0001",
                 "name": "DM",
                 "messages": [make_message(AUTHOR, "1790000000.000100")],
-                "facts": {},
+                "facts": {"unanswered_from": None, "owner_answered": False},
                 "allowed": [ASK_KIND, "noise"],
             },
             OWN_KEY: {
@@ -42,7 +46,7 @@ def make_features():
                 "channel": "C0002",
                 "name": "general",
                 "messages": [make_message(OWNER, "1790000000.000100")],
-                "facts": {},
+                "facts": {"unanswered_from": None, "owner_answered": False},
                 "allowed": ["you're waiting on", OWN_KIND, "already handled", "noise"],
             },
         },
@@ -137,6 +141,18 @@ class ValidJudgmentTest(CheckTestCase):
         reading = [{"text": f"Point {number}", "cites": [ASK_KEY]} for number in range(4)]
 
         self.assertIsNone(recap_judgment.check_judgment(changed("reading", reading), make_features()))
+
+    def test_a_reading_of_1_bullet_passes(self):
+        self.assertIsNone(recap_judgment.check_judgment(changed("reading", [{"text": "One point", "cites": [ASK_KEY]}]), make_features()))
+
+    def test_no_bullet_on_a_run_with_units_passes(self):
+        self.assertIsNone(recap_judgment.check_judgment(changed("reading", []), make_features()))
+
+    def test_a_run_with_no_unit_and_no_bullet_passes(self):
+        features_doc = make_features()
+        features_doc["units"] = {}
+
+        self.assertIsNone(recap_judgment.check_judgment({"units": {}, "reading": []}, features_doc))
 
     def test_a_unit_without_a_message_has_no_author_to_hold_back(self):
         features_doc = make_features()
@@ -305,10 +321,39 @@ class SummaryTest(CheckTestCase):
     def test_a_summary_holding_a_chat_id_shape_is_rejected(self):
         self.assertIn("must not hold a chat author id", self.rejection(unit_field("summary", f"{STRANGER} asks for a review")))
 
+    def test_a_summary_with_a_lowercase_word_after_an_abbreviation_is_accepted(self):
+        for summary in ("Ada asks for a tool e.g. the planner", "Dr. smith asks for the plan", "Ada waits... then asks for the plan"):
+            with self.subTest(summary=summary):
+                self.assertIsNone(recap_judgment.check_judgment(unit_field("summary", summary), make_features()))
+
+    def test_a_summary_of_two_sentences_whose_second_starts_with_a_digit_is_rejected(self):
+        self.assertIn("must be one sentence", self.rejection(unit_field("summary", "Ada asks for a review. 2 people wait")))
+
+    def test_a_summary_of_two_short_sentences_is_rejected(self):
+        self.assertIn("must be one sentence", self.rejection(unit_field("summary", "Needs it. Today.")))
+
     def test_a_summary_with_an_all_caps_word_is_accepted(self):
         for word in ("UPDATED", "WARNING"):
             with self.subTest(word=word):
                 self.assertIsNone(recap_judgment.check_judgment(unit_field("summary", f"Ada says the doc is {word} now"), make_features()))
+
+    def test_a_summary_holding_the_author_id_of_another_unit_is_rejected(self):
+        self.assertIn("must not hold a chat author id", self.rejection(unit_field("summary", f"{OWNER} asks for a review")))
+
+    def test_a_title_holding_the_author_id_of_another_unit_is_rejected(self):
+        self.assertEqual(self.rejection(unit_field("title", f"Reply to {OWNER}")), f"units.{ASK_KEY}.title: must not hold a chat author id")
+
+    def test_a_title_holding_the_owner_id_is_rejected_when_the_owner_wrote_nothing(self):
+        features_doc = make_features()
+        features_doc["owner"] = "usr_boss"
+        features_doc["units"][OWN_KEY]["messages"] = [make_message(AUTHOR, "1790000000.000100")]
+
+        self.assertIn("must not hold a chat author id", self.rejection(unit_field("title", "Reply to usr_boss"), features_doc))
+
+    def test_an_id_shaped_word_of_letters_and_digits_is_rejected_whatever_it_means(self):
+        for word in ("UAT2024", "WEB1234"):
+            with self.subTest(word=word):
+                self.assertIn("must not hold a chat author id", self.rejection(unit_field("summary", f"Ada waits for {word} results")))
 
     def test_a_summary_holding_a_workspace_id_shape_is_rejected(self):
         self.assertIn("must not hold a chat author id", self.rejection(unit_field("summary", "W" + "4" * 6 + " asks for a review")))
@@ -336,6 +381,25 @@ class DueTest(CheckTestCase):
         self.assertIn("expected null or an ISO 8601 time", self.rejection(unit_field("due", "soon")))
 
 
+class DueRangeTest(CheckTestCase):
+    def test_a_due_time_400_days_after_the_window_end_passes(self):
+        self.assertIsNone(recap_judgment.check_judgment(own_field("due", "2027-07-10T09:00:00Z"), make_features()))
+
+    def test_a_due_time_more_than_400_days_after_the_window_end_is_rejected(self):
+        self.assertEqual(
+            self.rejection(own_field("due", "2027-07-10T09:00:01Z")), f"units.{OWN_KEY}.due: must lie within 400 days of the window end"
+        )
+
+    def test_a_due_time_more_than_400_days_before_the_window_end_is_rejected(self):
+        self.assertIn("must lie within 400 days of the window end", self.rejection(own_field("due", "2025-05-01T08:59:59Z")))
+
+    def test_a_due_time_in_year_9999_whose_offset_breaks_the_utc_conversion_is_rejected(self):
+        self.assertIn("must lie within 400 days of the window end", self.rejection(own_field("due", "9999-12-31T23:59:59-12:00")))
+
+    def test_a_due_time_in_year_1_whose_offset_breaks_the_utc_conversion_is_rejected(self):
+        self.assertIn("must lie within 400 days of the window end", self.rejection(own_field("due", "0001-01-01T00:00:00+14:00")))
+
+
 class BlockingTest(CheckTestCase):
     def test_blocking_true_on_another_kind_is_rejected_with_its_key_path(self):
         message = self.rejection(own_field("blocking", True))
@@ -356,18 +420,17 @@ class BlockingTest(CheckTestCase):
 
 
 class ReadingTest(CheckTestCase):
-    def test_a_reading_of_1_bullet_is_rejected_with_the_count(self):
-        document = changed("reading", [{"text": "One point", "cites": [ASK_KEY]}])
-
-        self.assertEqual(self.rejection(document), "reading: expected 2 to 4 entries, got 1")
-
     def test_a_reading_of_5_bullets_is_rejected_with_the_count(self):
         document = changed("reading", [{"text": f"Point {number}", "cites": [ASK_KEY]} for number in range(5)])
 
-        self.assertEqual(self.rejection(document), "reading: expected 2 to 4 entries, got 5")
+        self.assertEqual(self.rejection(document), "reading: expected at most 4 entries, got 5")
 
-    def test_an_empty_reading_is_rejected(self):
-        self.assertEqual(self.rejection(changed("reading", [])), "reading: expected 2 to 4 entries, got 0")
+    def test_a_bullet_on_a_run_with_no_unit_is_rejected_for_its_cite(self):
+        features_doc = make_features()
+        features_doc["units"] = {}
+        document = {"units": {}, "reading": [{"text": "One point", "cites": [ASK_KEY]}]}
+
+        self.assertEqual(self.rejection(document, features_doc), f"reading[0].cites[0]: {ASK_KEY} is not a unit of the run")
 
     def test_a_reading_that_is_not_a_list_is_rejected(self):
         self.assertEqual(self.rejection(changed("reading", "text")), "reading: expected a list")
@@ -424,7 +487,7 @@ class ReadingTest(CheckTestCase):
         self.assertEqual(self.rejection(changed("reading", 0, "text only")), "reading[0]: expected an object")
 
     def test_a_unit_failure_is_reported_before_a_reading_failure(self):
-        document = changed("reading", [])
+        document = changed("reading", "text")
         document["units"][ASK_KEY]["title"] = ""
 
         self.assertIn(f"units.{ASK_KEY}.title", self.rejection(document))
@@ -518,7 +581,9 @@ class JudgeCommandTest(FileCase):
         self.assertIn("features: invalid JSON", err)
 
     def test_features_without_a_units_object_exit_2_with_the_key_path(self):
-        code, err = self.run_judge(features_document={"owner": OWNER})
+        features_document = {name: value for name, value in make_features().items() if name != "units"}
+
+        code, err = self.run_judge(features_document=features_document)
 
         self.assertEqual(code, 2)
         self.assertIn("features: missing key units", err)
@@ -531,6 +596,24 @@ class JudgeCommandTest(FileCase):
 
         self.assertEqual(code, 2)
         self.assertIn(f"features: missing key units.{ASK_KEY}.allowed", err)
+
+    def test_features_without_a_window_exit_2_with_the_key_path(self):
+        features_document = make_features()
+        del features_document["window"]
+
+        code, err = self.run_judge(features_document=features_document)
+
+        self.assertEqual(code, 2)
+        self.assertIn("features: missing key window", err)
+
+    def test_features_with_a_unit_without_a_message_exit_2_with_the_key_path(self):
+        features_document = make_features()
+        features_document["units"][ASK_KEY]["messages"] = []
+
+        code, err = self.run_judge(features_document=features_document)
+
+        self.assertEqual(code, 2)
+        self.assertIn(f"features: units.{ASK_KEY}.messages: expected at least one message", err)
 
     def test_the_command_needs_both_files(self):
         parser = argparse.ArgumentParser()

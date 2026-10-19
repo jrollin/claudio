@@ -1448,7 +1448,9 @@ A degraded run's message is one line that starts with `degraded:` and names the 
   - `title` has at most 8 words, `summary` one sentence of at most 200 characters, with no control character, `<`, `>`, `@`, `://` or chat author id (AC-47.3);
   - `due` is null or a time with an offset, and only on a `promise` (AC-47.4);
   - `blocking` is a boolean, true only on `waiting on you`;
-  - `reading` has 2 to 4 entries, each citing at least one unit key of the run (AC-47.5).
+  - `reading` has at most 4 entries, each citing at least one unit key of the run (AC-47.5); a run with no unit has none.
+  - `due`, converted to UTC, is a valid time within 400 days of the window end.
+  - `apply` loads the judgment through the same checks, so it never stores a kind the facts forbid.
 - The template allows one correction, then posts the degraded message and writes no state (AC-47.6), as the tribe template does.
 - The person a line names is chosen by the script, never written by the model: the author of `unanswered_from` for `waiting on you` and `team ask`, the other participant of a direct conversation or the last other author of a thread for `you're waiting on`.
 
@@ -1462,9 +1464,9 @@ A degraded run's message is one line that starts with `degraded:` and names the 
 **Choice**:
 - State: `{"schema": 1, "digest", "run": {"at", "previous_at", "window": {"from_ts", "to_ts"}}, "units": {"<key>": {"kind", "channel", "channel_name", "person", "title", "first_seen", "last_ts", "status", "runs_waiting", "late", "due"}}, "blind_spots": [...]}`. `channel_name` and `person` (the id and display name the message names, TD-61) are kept so a unit read again outside any search still renders its label and person; both are null when unknown, as in a seeded unit. No message text, no summary (BR-67).
 - `apply` maps each judged kind to a status: `waiting on you` to `waiting`, `promise` to `promise`, `you're waiting on` to `waiting_on_others`, `team ask` to `team_ask`, `already handled` to `handled`, `announcement` to `announcement`; a `noise` unit is not stored.
-- `runs_waiting` counts the runs a unit stays `waiting` or `promise`; `late` is the age in working days once it exceeds `late_after_working_days` (default 3) for `waiting`, or once `due` has passed, or 1 business day after `first_seen` with no `due`, for `promise` (AC-48.2, AC-47.4).
-- A stored `waiting` or `promise` unit that turns `handled`, or whose facts show the owner answered, is resolved: listed once in the summary's `resolved`, then stored as `handled` (AC-48.3).
-- A unit whose `last_ts` is older than `drop_after_days` (default 14) leaves the state (AC-48.4).
+- `runs_waiting` counts the runs a unit stays `waiting` or `promise`; `late` is the age in working days once it exceeds `late_after_working_days` (default 3) for `waiting`, or once `due` has passed, or from the working day after `first_seen` with no `due`, for `promise` (AC-48.2, AC-47.4); a promise re-judged without a due keeps its stored due.
+- A stored `waiting` or `promise` unit judged `already handled` or `noise`, or a stored `waiting` unit whose facts show the owner answered, is resolved: listed once in the summary's `resolved`, then stored as `handled` (AC-48.3). A promise is made as a reply, so the owner having answered never resolves it.
+- A unit absent from the run whose `last_ts` is older than `drop_after_days` (default 14) leaves the state; a unit read in the run stays, since stored waiting and promise units are read again every run (AC-48.4).
 - The window: from `run.at` to now. A baseline run, or a gap of more than `lookback_working_days` (default 3) working days, starts at local midnight of the `lookback_working_days`-th working day before the local date of now: on a Thursday with 3, Monday 00:00; on a Saturday, Wednesday 00:00 (AC-45.4).
 - Working days are Monday to Friday in the config timezone, counted on local dates, so a daylight saving change counts the same days (AC-46.3). The calendar helpers sit in `recap_window.py`.
 - The window file: `{"from_ts", "to_ts", "limited": null | "baseline" | "gap", "explicit"}`; `limited` feeds the summary line.

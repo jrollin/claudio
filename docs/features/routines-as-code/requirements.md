@@ -720,8 +720,8 @@ THE model writes one kind and one short summary per unit, plus the reading, and 
 - [ ] Every unit gets exactly one kind: `waiting on you`, `promise`, `team ask`, `you're waiting on`, `already handled`, `announcement` or `noise` *(AC-47.1)*
 - [ ] The checker rejects a missing or unknown unit, and a kind the facts forbid: `waiting on you` on a unit whose last ask the owner answered, `you're waiting on` on a unit whose last message is not the owner's, `team ask` on a unit with no group that lands in Good to know, `announcement` on a unit outside the announcement channels *(AC-47.2)*
 - [ ] A summary is one sentence of at most 200 characters, a title at most 8 words; neither holds a control character, `<`, `>`, `@`, `://` or a chat author id *(AC-47.3)*
-- [ ] A promise carries its due time, or none; it is late once that time has passed, or after 1 business day when it names none *(AC-47.4)*
-- [ ] The reading holds 2 to 4 bullets, each citing at least one unit of the run *(AC-47.5)*
+- [ ] A promise carries its due time, or none; it is late once that time has passed, or from the next business day when it names none *(AC-47.4)*
+- [ ] The reading holds at most 4 bullets, each citing at least one unit of the run; a bullet that changes nothing for the next 48 hours is left out, so a quiet run has none *(AC-47.5)*
 - [ ] As for the other engines, one correction is allowed; a second rejection posts the degraded message and writes no state *(AC-47.6)*
 
 ### Keep the unit history {#US-48}
@@ -733,7 +733,7 @@ THE lifecycle script updates each unit's history from the stored state and the f
 - [ ] A unit keeps `first_seen`, `last_ts`, `runs_waiting`, `status` and, when late, its age *(AC-48.1)*
 - [ ] A waiting unit unanswered for more than the configured working days is late *(AC-48.2)*
 - [ ] A stored waiting or promise unit that the owner answered, or that the judgment marks handled, is resolved and shows once under Already handled *(AC-48.3)*
-- [ ] A unit not seen for the configured days leaves the state *(AC-48.4)*
+- [ ] A unit absent from the run whose last message is older than the configured days leaves the state; a unit read in the run stays *(AC-48.4)*
 
 ### Post the recap message {#US-49}
 

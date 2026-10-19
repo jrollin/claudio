@@ -5,24 +5,40 @@ import judgment
 import recap_features
 import recap_state
 import state
+from state import Nullable
 
 KINDS = tuple(recap_features.KIND_DEFINITIONS)
 WAITING_ON_YOU = recap_features.WAITING_ON_YOU
 PROMISE = recap_features.PROMISE
 SUMMARY_CHARS = 200
 READING_CHARS = state.LABEL_CAP
-READING_ENTRIES = (2, 4)
-NAME_CAP = 80
-SENTENCE_END = re.compile(r"[.!?]\s+\S")
+READING_MAX = 4
+DUE_SPAN_DAYS = 400
+SECONDS_PER_DAY = 86400
+SENTENCE_END = re.compile(r"[.!?]\s+(?=\S)")
 CHAT_ID = re.compile(r"\b[UW](?=[A-Z0-9]*[0-9])[A-Z0-9]{6,}\b")
 JUDGMENT_FIELDS = ("units", "reading")
 UNIT_FIELDS = ("kind", "title", "summary", "blocking", "due")
 READING_FIELDS = ("text", "cites")
-FEATURES_SPEC = {"units": {"*": {"allowed": [state.TEXT], "messages": [{"user": state.TEXT}]}}}
+FEATURES_SPEC = {
+    "owner": state.TEXT,
+    "window": {"to_ts": state.INTEGER},
+    "units": {
+        "*": {
+            "kind": recap_state.UNIT_KIND,
+            "channel": recap_state.NAME,
+            "name": state.TEXT,
+            "allowed": [state.TEXT],
+            "messages": [{"user": state.TEXT, "name": state.TEXT, "ts": recap_state.MESSAGE_TS, "root_ts": Nullable(state.TEXT)}],
+            "facts": {"unanswered_from": Nullable(recap_state.MESSAGE_TS), "owner_answered": state.BOOLEAN},
+        }
+    },
+    "blind_spots": [{"key": recap_state.BLIND_SPOT_KEY, "gap": state.LABEL}],
+}
 
 
 def named(value):
-    return state.clean_text(str(value), NAME_CAP)
+    return state.clean_text(str(value), recap_state.KEY_CAP)
 
 
 def reject(path, why):
@@ -42,6 +58,14 @@ def unit_authors(unit):
     return {message["user"] for message in unit["messages"]}
 
 
+def chat_authors(features_doc):
+    return {features_doc["owner"], *(user for unit in features_doc["units"].values() for user in unit_authors(unit))}
+
+
+def has_second_sentence(text):
+    return any(text[found.end()].isupper() or text[found.end()].isdigit() for found in SENTENCE_END.finditer(text))
+
+
 def check_fields(value, fields, path):
     if not isinstance(value, dict):
         reject(path, "expected an object")
@@ -50,7 +74,7 @@ def check_fields(value, fields, path):
             reject(state.join(path, field), "missing")
     for field in sorted(value):
         if field not in fields:
-            reject(state.join(path, named(field)), "unknown field")
+            reject(recap_state.key_path(path, field), "unknown field")
 
 
 def check_text(value, path, authors, cap):
@@ -63,7 +87,7 @@ def check_text(value, path, authors, cap):
     both = forms(value)
     if any(len(form) > cap for form in both):
         reject(path, f"must be at most {cap} characters")
-    if any(judgment.INERT.search(form) for form in both):
+    if judgment.has_inert(value):
         reject(path, "must not contain <, >, @ or ://")
     if any(CHAT_ID.search(form) or (authors and authors.search(form)) for form in both):
         reject(path, "must not hold a chat author id")
@@ -77,7 +101,7 @@ def check_title(value, path, authors):
 
 def check_summary(value, path, authors):
     check_text(value, path, authors, SUMMARY_CHARS)
-    if any(SENTENCE_END.search(form) for form in forms(value)):
+    if any(has_second_sentence(form) for form in forms(value)):
         reject(path, "must be one sentence")
 
 
@@ -95,37 +119,39 @@ def check_blocking(value, path, kind):
         reject(path, f"may be true only on {WAITING_ON_YOU}")
 
 
-def check_due(value, path, kind):
+def check_due(value, path, kind, window_end):
     if value is None:
         return
     if not state.parses(state.parse_time, value):
         reject(path, "expected null or an ISO 8601 time with a UTC offset")
     if kind != PROMISE:
         reject(path, f"is allowed only on {PROMISE}")
+    if abs(state.parse_time(value).timestamp() - window_end) > DUE_SPAN_DAYS * SECONDS_PER_DAY:
+        reject(path, f"must lie within {DUE_SPAN_DAYS} days of the window end")
 
 
-def check_unit(key, entry, unit):
-    path = f"units.{named(key)}"
+def check_unit(key, entry, unit, authors, window_end):
+    path = recap_state.key_path("units", key)
     check_fields(entry, UNIT_FIELDS, path)
-    authors = author_pattern(unit_authors(unit))
     check_kind(entry["kind"], f"{path}.kind", unit["allowed"])
     check_title(entry["title"], f"{path}.title", authors)
     check_summary(entry["summary"], f"{path}.summary", authors)
     check_blocking(entry["blocking"], f"{path}.blocking", entry["kind"])
-    check_due(entry["due"], f"{path}.due", entry["kind"])
+    check_due(entry["due"], f"{path}.due", entry["kind"], window_end)
 
 
-def check_units(judged, units):
+def check_units(judged, features_doc, authors):
+    units = features_doc["units"]
     if not isinstance(judged, dict):
         reject("units", "expected an object")
     for key in sorted(units):
         if key not in judged:
-            reject(f"units.{named(key)}", "missing, every unit of the features needs one entry")
+            reject(recap_state.key_path("units", key), "missing, every unit of the features needs one entry")
     for key in sorted(judged):
         if key not in units:
-            reject(f"units.{named(key)}", "not a unit of the features")
+            reject(recap_state.key_path("units", key), "not a unit of the features")
     for key in sorted(units):
-        check_unit(key, judged[key], units[key])
+        check_unit(key, judged[key], units[key], authors, features_doc["window"]["to_ts"])
 
 
 def check_cites(value, path, units):
@@ -136,13 +162,11 @@ def check_cites(value, path, units):
             reject(f"{path}[{index}]", f"{named(cite)} is not a unit of the run")
 
 
-def check_reading(reading, units):
-    low, high = READING_ENTRIES
+def check_reading(reading, units, authors):
     if not isinstance(reading, list):
         reject("reading", "expected a list")
-    if not low <= len(reading) <= high:
-        reject("reading", f"expected {low} to {high} entries, got {len(reading)}")
-    authors = author_pattern({user for unit in units.values() for user in unit_authors(unit)})
+    if len(reading) > READING_MAX:
+        reject("reading", f"expected at most {READING_MAX} entries, got {len(reading)}")
     for index, entry in enumerate(reading):
         path = f"reading[{index}]"
         check_fields(entry, READING_FIELDS, path)
@@ -152,13 +176,21 @@ def check_reading(reading, units):
 
 def check_judgment(document, features_doc):
     check_fields(document, JUDGMENT_FIELDS, "")
-    check_units(document["units"], features_doc["units"])
-    check_reading(document["reading"], features_doc["units"])
+    authors = author_pattern(chat_authors(features_doc))
+    check_units(document["units"], features_doc, authors)
+    check_reading(document["reading"], features_doc["units"], authors)
+
+
+def check_features(document):
+    state.check(document, FEATURES_SPEC, "")
+    for key, unit in document["units"].items():
+        if not unit["messages"]:
+            raise state.Rejected(f"{state.join(recap_state.key_path('units', key), 'messages')}: expected at least one message")
 
 
 def load_features(path):
     try:
-        return state.load(path, "features", lambda document: state.check(document, FEATURES_SPEC, ""))
+        return state.load(path, "features", check_features)
     except state.Rejected as error:
         raise state.InputError(str(error)) from error
 
