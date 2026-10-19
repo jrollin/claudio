@@ -2033,7 +2033,9 @@ sequenceDiagram
 | `plugins/claudio-routines/runtime/test_recap_seed.py` | new | Recap seed |
 | `plugins/claudio-routines/runtime/test_recap_pipeline.py` | new | Recap pipeline from a fake collection to the message |
 | `plugins/claudio-routines/runtime/fixtures/recap/message_golden.md` | new | Golden recap message |
-| `plugins/claudio-routines/runtime/support.py`, `evaluate_support.py`, `providers/datadog_support.py` | new | Test support: shared state, evaluator and adapter fixtures, so no test module imports another |
+| `plugins/claudio-routines/runtime/support.py`, `evaluate_support.py`, `providers/datadog_support.py`, `providers/slack_support.py` | new | Test support: shared state, evaluator and adapter fixtures, so no test module imports another |
+| `plugins/claudio-routines/runtime/providers/_slack_read.py`, `providers/_slack_search.py` | new | Chat adapter internals: channel and thread reads on both transports, and the search, unit and reactions reads (TD-59); `slack.py` keeps the adapter entry points |
+| `plugins/claudio-routines/runtime/providers/test_slack_search.py` | new | Chat searches, unit reads, reactions, caps and transport equality (TD-59) |
 | `plugins/claudio-routines/runtime/test_pipeline.py` | new | Judgment: one fixture run through `features`, `judge`, a preview apply, `annotate` and `apply`, checking rank order and the stored analysis |
 | `plugins/claudio-routines/skills/routines/templates/prod-watch.md` | modify | Judgment: features, judgment, preview apply, analysis and rank-ordered digest steps |
 | `plugins/claudio-routines/config.example.json` | modify | Judgment: pack entries with prose rules, routine rules, `discovery_query` |
