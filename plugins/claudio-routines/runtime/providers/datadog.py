@@ -14,6 +14,7 @@ from ._errors import GROUP_CAP_PARTIAL, PAGE_CAP_PARTIAL, PartialRead, SourceUnr
 
 ROLE = "observability"
 CREDENTIALS = ("api_key", "app_key")
+ACCESS_TOKEN = "token"
 MONITOR_PATH = "/api/v1/monitor/"
 SEARCH_PATH = MONITOR_PATH + "search"
 EVENTS_PATH = "/api/v2/events"
@@ -206,11 +207,20 @@ class EntryMissing(Exception):
 
 
 def api_client(provider, opener=None, environ=None, sleep=None):
-    return _common.api_client(provider, CREDENTIALS, _auth, opener, environ, sleep)
+    named = provider["api"]["credentials"]
+    if ACCESS_TOKEN not in named:
+        return _common.api_client(provider, CREDENTIALS, _auth, opener, environ, sleep)
+    if any(name in named for name in CREDENTIALS):
+        raise SourceUnreadable(f"api.credentials: name either {ACCESS_TOKEN}, or {' and '.join(CREDENTIALS)}")
+    return _common.api_client(provider, (ACCESS_TOKEN,), _bearer, opener, environ, sleep)
 
 
 def _auth(values):
     return {"DD-API-KEY": values["api_key"], "DD-APPLICATION-KEY": values["app_key"]}
+
+
+def _bearer(values):
+    return {"Authorization": "Bearer " + values[ACCESS_TOKEN]}
 
 
 def fetch(source, window, cursor, entries, http):

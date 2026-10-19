@@ -34,6 +34,8 @@ from providers.datadog_support import (
     QUEUE,
     SPRING_FORWARD_DAY,
     STORED_TS,
+    TOKEN_VALUE,
+    TOKEN_VAR,
     TO_MS,
     TREND_FROM_MS,
     TREND_SERIES,
@@ -115,6 +117,22 @@ class ClientTest(unittest.TestCase):
 
         request = opener.requests[0]
         self.assertEqual((request.get_header("Dd-api-key"), request.get_header("Dd-application-key")), (API_VALUE, APP_VALUE))
+
+    def test_sends_an_access_token_as_a_bearer_token_without_keys(self):
+        provider = {"api": {"base_url": BASE, "credentials": {"token": TOKEN_VAR}}}
+        opener = FakeOpener([ok("events_empty.json")])
+        http = datadog.api_client(provider, opener=opener, environ={TOKEN_VAR: TOKEN_VALUE}, sleep=lambda seconds: None)
+
+        http.get(datadog.EVENTS_PATH)
+        request = opener.requests[0]
+        self.assertEqual((request.get_header("Authorization"), request.get_header("Dd-api-key")), (f"Bearer {TOKEN_VALUE}", None))
+
+    def test_rejects_a_provider_naming_the_token_and_the_keys(self):
+        provider = {"api": {"base_url": BASE, "credentials": {"token": TOKEN_VAR, "api_key": API_VAR, "app_key": APP_VAR}}}
+
+        with self.assertRaises(_http.SourceUnreadable) as caught:
+            datadog.api_client(provider, opener=FakeOpener([]))
+        self.assertEqual(str(caught.exception), "api.credentials: name either token, or api_key and app_key")
 
     def test_rejects_a_provider_without_the_application_key(self):
         provider = {"api": {"base_url": BASE, "credentials": {"api_key": API_VAR}}}

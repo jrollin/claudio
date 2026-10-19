@@ -21,8 +21,7 @@
       "api": {
         "base_url": "https://<observability-api-host>",
         "credentials": {
-          "api_key": "OBSERVABILITY_API_KEY",
-          "app_key": "OBSERVABILITY_APP_KEY"
+          "token": "OBSERVABILITY_ACCESS_TOKEN"
         }
       },
       "mcp": {

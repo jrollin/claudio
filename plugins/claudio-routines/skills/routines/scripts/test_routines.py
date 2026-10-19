@@ -3615,7 +3615,7 @@ class ShippedFilesTest(Case):
     def test_example_loads_through_the_secret_guard_with_secret_named_credential_keys(self):
         providers = self.example()["providers"]
         names = sorted(name for provider in providers.values() for name in provider["api"]["credentials"])
-        self.assertEqual(names, ["api_key", "app_key", "email", "token", "token", "token"])
+        self.assertEqual(names, ["email", "token", "token", "token", "token"])
 
     def test_example_holds_one_provider_per_role(self):
         self.assertEqual(sorted(self.example_file("config.json")["providers"]), ["chat", "document-store", "issue-tracker", "observability"])
