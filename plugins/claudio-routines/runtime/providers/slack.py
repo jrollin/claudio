@@ -4,6 +4,8 @@ import json
 import re
 import urllib.parse
 
+from state import clean_text
+
 from . import _common
 from ._common import dig
 from ._http import PAGE_CAP
@@ -17,13 +19,19 @@ API_PAGE_SIZE = 200
 RELAY_PAGE_SIZE = 100
 SKIPPED_SUBTYPES = frozenset(("channel_join", "channel_leave"))
 FAILED_CHANNEL_CODES = ("channel_not_found", "is_archived", "not_in_channel")
+THREAD_NOT_FOUND = "thread_not_found"
+NOT_LISTED = "channel not listed"
+INVALID_ROOT = "invalid root ts"
 LINKS_BASE = "https://slack.com"
 TOOL = "slack_read_channel"
 THREAD_TOOL = "slack_read_thread"
 CURSOR_REPEATED = "cursor repeated"
 TS = re.compile(r"[0-9]+\.[0-9]+")
+ROOT_TS = re.compile(r"[0-9]{1,16}\.[0-9]{1,9}")
+KEY_PART_CAP = 64
 ERROR_CODE = re.compile(r"[a-z0-9_]{1,64}")
 CHANNEL_FAILURE = re.compile(r"(?<![a-z0-9_])(" + "|".join(FAILED_CHANNEL_CODES) + r")(?![a-z0-9_])")
+THREAD_FAILURE = re.compile(r"(?<![a-z0-9_])" + THREAD_NOT_FOUND + r"(?![a-z0-9_])")
 LINE_BREAK = re.compile(r"\r\n|\r|\n")
 CHANNEL_OPEN = "Channel: "
 HEADER_OPEN = "=== Message from "
@@ -44,10 +52,16 @@ TIME_OPEN = "Time: "
 PARENT_LINES = 4
 
 Item = collections.namedtuple("Item", "channel ts thread_ts author text")
-Read = collections.namedtuple("Read", "channel history replies failure")
+Read = collections.namedtuple("Read", "channel history replies failure lost")
 
 
 class ChannelFailed(SourceUnreadable):
+    def __init__(self, channel, code):
+        super().__init__(f"{channel}: {code}")
+        self.code = code
+
+
+class ThreadNotFound(SourceUnreadable):
     def __init__(self, channel, code):
         super().__init__(f"{channel}: {code}")
         self.code = code
@@ -71,8 +85,9 @@ def _auth(values):
 
 def fetch(source, window, cursor, entries, http):
     stored, calls = _stored(cursor), _Calls()
-    reads = [_api_read(channel, window, stored, http, calls) for channel in source["channels"]]
-    return _result(source, window, stored, reads)
+    cited, refused = _cited(source)
+    reads = [_api_read(channel, window, stored, http, calls, cited[channel]) for channel in source["channels"]]
+    return _result(source, window, stored, reads, refused)
 
 
 def plan(source, window, cursor, entries, responses, connector):
@@ -91,10 +106,10 @@ def plan(source, window, cursor, entries, responses, connector):
 def parse(source, window, cursor, entries, responses, digests):
     stored = _stored(cursor)
     try:
-        reads = _walk(source, window, stored, responses)
+        reads, refused = _walk(source, window, stored, responses)
     except _Pending as pending:
         raise SourceUnreadable(f"{pending.tool}: no response {pending.call_id}") from None
-    return _result(source, window, stored, reads)
+    return _result(source, window, stored, reads, refused)
 
 
 class _Calls:
@@ -107,21 +122,62 @@ class _Calls:
         self.left -= 1
 
 
-def _api_read(channel, window, stored, http, calls):
+def _cited(source):
+    pairs = dict.fromkeys((thread["channel"], thread["root_ts"]) for thread in source.get("threads") or [])
+    cited, refused = {channel: [] for channel in source["channels"]}, {}
+    for channel, root in pairs:
+        if channel not in cited:
+            refused[_refused_key(channel, root)] = NOT_LISTED
+        elif ROOT_TS.fullmatch(root) is None:
+            refused[_refused_key(channel, root)] = INVALID_ROOT
+        else:
+            cited[channel].append(root)
+    return cited, refused
+
+
+def _thread_key(channel, root):
+    return f"{channel}:{root}"
+
+
+def _refused_key(channel, root):
+    return _thread_key(clean_text(channel, KEY_PART_CAP), clean_text(root, KEY_PART_CAP))
+
+
+def _unread_roots(roots, history):
+    read = {decimal.Decimal(root) for root in _roots(history)}
+    return [root for root in roots if decimal.Decimal(root) not in read]
+
+
+def _cited_replies(channel, roots, history, read):
+    found, lost = [], {}
+    for root in _unread_roots(roots, history):
+        try:
+            found.extend(read(root))
+        except (ThreadNotFound, ChannelFailed) as failure:
+            lost[_thread_key(channel, root)] = failure.code
+    return found, lost
+
+
+def _api_read(channel, window, stored, http, calls, roots):
     start = _start(window, stored, channel)
     params = {"channel": channel, "oldest": str(start), "latest": str(window["to_ts"]), "limit": str(API_PAGE_SIZE)}
     try:
         history = _in_window(_api_pages(channel, HISTORY_PATH, params, http, calls), start, window)
         replies = [reply for root in _roots(history) for reply in _api_replies(channel, root, window, http, calls)]
     except ChannelFailed as failure:
-        return Read(channel, [], [], failure.code)
-    return Read(channel, history, replies, None)
+        return Read(channel, [], [], failure.code, {})
+    found, lost = _cited_replies(channel, roots, history, lambda root: _api_replies(channel, root, window, http, calls, window["from_ts"]))
+    return Read(channel, history, [*replies, *found], None, lost)
 
 
-def _api_replies(channel, root, window, http, calls):
+def _api_replies(channel, root, window, http, calls, newer_than=None):
     params = {"channel": channel, "ts": root, "latest": str(window["to_ts"]), "limit": str(API_PAGE_SIZE)}
+    start = decimal.Decimal(root)
+    if newer_than is not None:
+        params["oldest"] = str(newer_than)
+        start = max(start, decimal.Decimal(newer_than))
     items = _api_pages(channel, REPLIES_PATH, params, http, calls)
-    return [item._replace(thread_ts=root) for item in _in_window(items, decimal.Decimal(root), window)]
+    return [item._replace(thread_ts=root) for item in _in_window(items, start, window)]
 
 
 def _api_pages(channel, path, params, http, calls):
@@ -146,7 +202,9 @@ def _api_pages(channel, path, params, http, calls):
 
 def _api_failure(channel, body):
     code = _error_code(body)
-    return ChannelFailed(channel, code) if code in FAILED_CHANNEL_CODES else SourceUnreadable(f"{channel}: {code}")
+    if code in FAILED_CHANNEL_CODES:
+        return ChannelFailed(channel, code)
+    return ThreadNotFound(channel, code) if code == THREAD_NOT_FOUND else SourceUnreadable(f"{channel}: {code}")
 
 
 def _error_code(body):
@@ -182,10 +240,11 @@ class _Relay:
 
 def _walk(source, window, stored, responses):
     relay = _Relay(source["name"], responses)
-    return [_relay_read(relay, channel, window, stored) for channel in source["channels"]]
+    cited, refused = _cited(source)
+    return [_relay_read(relay, channel, window, stored, cited[channel]) for channel in source["channels"]], refused
 
 
-def _relay_read(relay, channel, window, stored):
+def _relay_read(relay, channel, window, stored, roots):
     start = _start(window, stored, channel)
     arguments = {"channel_id": channel, "oldest": str(start), "latest": str(window["to_ts"]), "limit": RELAY_PAGE_SIZE, "response_format": "detailed"}
     seen_ts = set()
@@ -194,14 +253,28 @@ def _relay_read(relay, channel, window, stored):
         history = _in_window(items, start, window)
         replies = [reply for root in _roots(history) for reply in _relay_replies(relay, channel, root, window)]
     except ChannelFailed as failure:
-        return Read(channel, [], [], failure.code)
-    return Read(channel, history, replies, None)
+        return Read(channel, [], [], failure.code, {})
+    found, lost = _cited_replies(channel, roots, history, lambda root: _relay_new_replies(relay, channel, root, window))
+    return Read(channel, history, [*replies, *found], None, lost)
 
 
 def _relay_replies(relay, channel, root, window):
     arguments = {"channel_id": channel, "message_ts": root, "response_format": "detailed"}
     seen_ts = set()
     return _relay_pages(relay, THREAD_TOOL, arguments, lambda call_id, text: _thread_page(channel, call_id, text, root, window, seen_ts))
+
+
+def _relay_new_replies(relay, channel, root, window):
+    arguments = {"channel_id": channel, "message_ts": root, "response_format": "detailed"}
+    start, seen_ts = max(decimal.Decimal(root), decimal.Decimal(window["from_ts"])), set()
+    items = _relay_pages(relay, THREAD_TOOL, arguments, lambda call_id, text: _newer_page(channel, call_id, text, root, window, seen_ts, start))
+    return [item for item in items if decimal.Decimal(item.ts) > start]
+
+
+def _newer_page(channel, call_id, text, root, window, seen_ts, start):
+    replies, after = _thread_page(channel, call_id, text, root, window, seen_ts)
+    reached = any(decimal.Decimal(reply.ts) <= start for reply in replies)
+    return replies, None if reached else after
 
 
 def _relay_pages(relay, tool, arguments, parse_page):
@@ -235,9 +308,11 @@ def _relay_body(tool, call_id, channel, text, page_open):
 
 
 def _raise_failure(channel, carriers, page_open):
-    texts = (carrier for carrier in carriers if isinstance(carrier, str) and not carrier.startswith(page_open))
+    texts = [carrier for carrier in carriers if isinstance(carrier, str) and not carrier.startswith(page_open)]
     for found in filter(None, (CHANNEL_FAILURE.search(carrier) for carrier in texts)):
         raise ChannelFailed(channel, found.group(1))
+    if page_open == THREAD_PARENT and any(THREAD_FAILURE.search(carrier) for carrier in texts):
+        raise ThreadNotFound(channel, THREAD_NOT_FOUND)
 
 
 def _relay_page(channel, call_id, text, seen_ts, oldest):
@@ -401,16 +476,21 @@ def _roots(history):
     return sorted({item.ts for item in history if item.thread_ts is not None}, key=decimal.Decimal)
 
 
-def _result(source, window, stored, reads):
+def _result(source, window, stored, reads, refused):
     base = _links_base(source)
-    records, cursor, entries = [], {}, {}
+    records, cursor, entries = [], {}, _failed(refused)
     for read in reads:
         if read.failure is None:
             records.extend(_record(base, item) for item in _merged(read))
             cursor[read.channel] = _newest(read.history, _stored_ts(stored, read.channel), window)
+            entries.update(_failed(read.lost))
         else:
             entries[read.channel] = {"status": "failed", "reason": read.failure}
     return {"records": {"messages": records}, "cursor": {"ts": {**stored, **cursor}}, "entries": entries}
+
+
+def _failed(reasons):
+    return {key: {"status": "failed", "reason": reason} for key, reason in reasons.items()}
 
 
 def _merged(read):
@@ -426,9 +506,17 @@ def _newest(history, stored_ts, window):
 
 
 def _record(base, item):
-    link = f"{base}/archives/{urllib.parse.quote(item.channel, safe='')}/p{item.ts.replace('.', '')}"
+    link = _message_link(base, item.channel, item.ts)
     text = LINE_BREAK.sub("\n", item.text).rstrip()
     return {"channel": item.channel, "ts": item.ts, "thread_ts": item.thread_ts, "author": item.author, "text": text, "link": link}
+
+
+def message_link(source, channel, ts):
+    return _message_link(_links_base(source), channel, ts)
+
+
+def _message_link(base, channel, ts):
+    return f"{base}/archives/{urllib.parse.quote(channel, safe='')}/p{ts.replace('.', '')}"
 
 
 def _links_base(source):

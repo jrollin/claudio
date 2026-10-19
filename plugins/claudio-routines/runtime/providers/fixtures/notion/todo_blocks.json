@@ -1,0 +1,7 @@
+{"object": "list", "type": "block", "block": {}, "has_more": false, "next_cursor": null, "results": [
+  {"object": "block", "id": "t-done", "type": "to_do", "has_children": false, "to_do": {"rich_text": [{"plain_text": "Ship the fix"}], "checked": true, "color": "default"}},
+  {"object": "block", "id": "t-open", "type": "to_do", "has_children": false, "to_do": {"rich_text": [{"plain_text": "Review the mutes"}], "checked": false, "color": "default"}},
+  {"object": "block", "id": "t-bullet", "type": "bulleted_list_item", "has_children": false, "bulleted_list_item": {"rich_text": [{"plain_text": "Plain bullet"}]}},
+  {"object": "block", "id": "t-number", "type": "numbered_list_item", "has_children": false, "numbered_list_item": {"rich_text": [{"plain_text": "Numbered item"}]}},
+  {"object": "block", "id": "t-text", "type": "paragraph", "has_children": false, "paragraph": {"rich_text": [{"plain_text": "A paragraph"}]}}
+]}

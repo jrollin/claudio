@@ -3,7 +3,7 @@
 ---
 feature: routines-as-code
 spec_version: 1
-total_tasks: 59
+total_tasks: 69
 phases:
   - name: "Leak guard"
     tasks: [T-1, T-2, T-3]
@@ -29,6 +29,8 @@ phases:
     tasks: [T-46, T-47, T-48, T-49, T-50, T-51, T-52]
   - name: "Tribe digest collectors"
     tasks: [T-53, T-54, T-55, T-56, T-57, T-58, T-59]
+  - name: "Tribe judgment"
+    tasks: [T-60, T-61, T-62, T-63, T-64, T-65, T-66, T-67, T-68, T-69]
 depends_on: []
 ---
 
@@ -664,6 +666,117 @@ Runs in a local session with the chat, issue tracker, document store and observa
 - **Blocked by**: T-58
 - **Rules**: BR-48, BR-50
 - **Status**: Complete (both reference windows covered, 0 unexplained: connect issues 8/12, pages 1/10, channels 4/7 found; scheduling issues 44/48, pages 0/7, channels 9/11 found; every other cited record has a verified reason. The replay found and fixed: thread pagination wording, newest-first thread pages, trailing message metadata, exclusive bounds, truncated listed pages, a listed database, the open-sprint query scope and harness-saved results)
+
+## Phase 13: Tribe judgment
+
+T-60, T-61, T-62 and T-64 run in parallel on separate files; T-63 needs T-60 and T-62; T-65 needs T-60 and T-64; T-66 needs T-62 and T-65.
+
+### T-60: Tribe state, window and seed
+- `tribe_state.py`: schema `tribe-1` (TD-46), load and check with key paths, atomic write.
+- `tribe.py`:
+  - `init`;
+  - `window`, using `state.compute_window` over `run.at`;
+  - `seed`: newest valid Run state, BR-54 checks with a `status` read as its leading BR-54 word, else `open`, cursors matched to the routine's sources, `previous_page`, skipped pages named, exit 2 with none (TD-47).
+- Routine key `engine` (`watch` default, `tribe`), validated in the config loaders. `collect.py` checks `--state` with the engine's checker and reads no tracked items for a tribe state.
+- Tests: every schema rejection, baseline init, window over a tribe state, an unknown `engine`, seed from a valid page, a skipped newer page, no valid page, a value outside BR-54, a status read as its BR-54 word, `collect.py` reading a tribe state.
+- **Refs**: US-32, US-33, TD-45, TD-46, TD-47
+- **Files**: `plugins/claudio-routines/runtime/tribe.py` (new), `plugins/claudio-routines/runtime/tribe_state.py` (new), `plugins/claudio-routines/runtime/tribe_seed.py` (new), `plugins/claudio-routines/runtime/test_tribe_seed.py` (new), `plugins/claudio-routines/runtime/test_tribe_state.py` (new), `plugins/claudio-routines/runtime/tribe_support.py` (new), `plugins/claudio-routines/runtime/collect.py` (modify), `plugins/claudio-routines/runtime/roles.py` (modify), `plugins/claudio-routines/runtime/config_tree.py` (modify), `plugins/claudio-routines/runtime/test_collect.py` (modify), `plugins/claudio-routines/runtime/test_roles.py` (modify), `plugins/claudio-routines/runtime/test_config_tree.py` (modify)
+- **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime`
+- **Rules**: BR-14, BR-22, BR-23, BR-27, BR-54, BR-55
+- **Status**: Complete
+
+### T-61: Collector additions for the tribe judgment
+- Chat: `source["threads"]` (from the tribe state) reads each cited thread's replies newer than the previous window end; a thread the tool reports as not found is a failed entry keyed `<channel>:<root ts>`, both transports.
+- Document store: list blocks carry `checked` (true, false or null) on both transports; the source option `page_from_state: previous_page` takes its page id from the state, filled by `collect.py`; a run with no previous page skips the source.
+- Tests: both transports from one data set for cited threads and checked to-dos, a deleted thread next to read ones, `page_from_state` with and without a previous page.
+- **Refs**: US-32, US-35, TD-46, TD-49
+- **Files**: `plugins/claudio-routines/runtime/providers/<chat vendor>.py` (modify), `plugins/claudio-routines/runtime/providers/test_<chat vendor>.py` (modify), `plugins/claudio-routines/runtime/providers/<document store vendor>.py` (modify), `plugins/claudio-routines/runtime/providers/test_<document store vendor>.py` (modify), provider fixtures, `plugins/claudio-routines/runtime/roles.py` (modify), `plugins/claudio-routines/runtime/collect.py` (modify), `plugins/claudio-routines/runtime/test_collect.py` (modify)
+- **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime`
+- **Blocked by**: T-60 (shares `collect.py` and `roles.py`; start once T-60's edits to them land)
+- **Rules**: BR-28, BR-50, BR-52
+- **Status**: Complete
+
+### T-62: Page render, structure check and edit parsing
+- `tribe_page.py`: render layout version 1 from a summary and a state (TD-52), key markers on warning rows and to-dos, the structure check in Python, and the parser of a fetched page's warning rows and to-dos into edits (TD-49).
+- Tests: a full render matches a golden page, each structure rule failing on a broken page, the parser reading ticks, statuses and key markers, ignored edits listed, a render-then-parse round trip.
+- **Refs**: US-35, US-39, TD-49, TD-52
+- **Files**: `plugins/claudio-routines/runtime/tribe_page.py` (new), `plugins/claudio-routines/runtime/test_tribe_page.py` (new), `plugins/claudio-routines/runtime/fixtures/tribe/` (new)
+- **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime`
+- **Rules**: BR-55, BR-60, BR-61, BR-62
+- **Status**: Complete
+
+### T-63: Tribe features and rules
+- `tribe_features.py` and `tribe.py features` (TD-48): record documents with source and link, monitor and metric documents, trend documents with `growth_monthly`, `previous`, `edits` (through `tribe_page`'s parser), `deferred`, `rules.json` from the routine's prose rules, `state.clean_text` on source text.
+- Tests: byte-identical features, each trend value and its null cases, deferred warnings from unread sources, edits after `written_at` only, no threshold in the features.
+- **Refs**: US-34, US-35, TD-48, TD-49
+- **Files**: `plugins/claudio-routines/runtime/tribe_features.py` (new), `plugins/claudio-routines/runtime/test_tribe_features.py` (new), `plugins/claudio-routines/runtime/tribe.py` (modify), `plugins/claudio-routines/runtime/tribe_support.py` (modify)
+- **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime`
+- **Blocked by**: T-60, T-62
+- **Rules**: BR-33, BR-38, BR-51, BR-61, BR-63
+- **Status**: Complete
+
+### T-64: Tribe judgment checks
+- `tribe_judgment.py` (TD-50, the CLI command lands in T-65): the judgment schema, every rejection with its key path and exit 3, author ids from the collections, the correction loop's messages.
+- Tests: one test per rejection, a valid judgment passing, replaces and deferred keys, title matches against stored and retired titles.
+- **Refs**: US-36, US-37, TD-50
+- **Files**: `plugins/claudio-routines/runtime/tribe_judgment.py` (new), `plugins/claudio-routines/runtime/test_tribe_judgment.py` (new)
+- **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime`
+- **Rules**: BR-52, BR-54, BR-56, BR-59, BR-62
+- **Status**: Complete
+
+### T-65: Tribe lifecycle
+- `tribe.py judge` (TD-50), wiring `tribe_judgment.py` into the CLI.
+- `tribe.py apply` (TD-51): the judgment then the edits into the next state, the summary and the run record, every resolution rule, `retired` with titles, `threads` rebuilt, forward-only cursors, report-only byte-identity.
+- Tests: each lifecycle rule, an edit winning over the judgment, a deferred warning held, a metric-less warning resolving by status only, once-only summary entries, report-only.
+- **Refs**: US-38, TD-51
+- **Files**: `plugins/claudio-routines/runtime/tribe.py` (modify), `plugins/claudio-routines/runtime/tribe_lifecycle.py` (new), `plugins/claudio-routines/runtime/tribe_state.py` (modify), `plugins/claudio-routines/runtime/test_tribe_lifecycle.py` (new)
+- **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime`
+- **Blocked by**: T-60, T-64
+- **Rules**: BR-12, BR-14, BR-22, BR-57, BR-58, BR-63
+- **Status**: Complete
+
+### T-66: Publish and message
+- `tribe_publish.py`, `tribe.py render`, `publish-plan`, `publish-parse` and `message` (TD-52, TD-53): the iterative write plan (create, polls, weekly heading), the page id and week from the results, a failed create or heading, report-only, the message and the degraded messages.
+- `roles.py` validates `page` and `publish` at config load for a routine with the tribe engine: every key required, `publish.provider` naming a configured provider (TD-52).
+- Tests: the plan for each step, a successful and a failed create, a failed heading kept for the next run, report-only plans no write, each message section, `page` and `publish` validation at config load.
+- **Refs**: US-39, US-40, TD-52, TD-53
+- **Files**: `plugins/claudio-routines/runtime/tribe_publish.py` (new), `plugins/claudio-routines/runtime/test_tribe_publish.py` (new), `plugins/claudio-routines/runtime/tribe_message.py` (new), `plugins/claudio-routines/runtime/test_tribe_message.py` (new), `plugins/claudio-routines/runtime/roles.py` (modify), `plugins/claudio-routines/runtime/test_roles.py` (modify), `plugins/claudio-routines/runtime/tribe_page.py` (modify), `plugins/claudio-routines/runtime/tribe.py` (modify)
+- **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime`
+- **Blocked by**: T-62, T-65
+- **Rules**: BR-22, BR-26, BR-42, BR-60
+- **Status**: Complete
+
+### T-67: Template, skill, docs and version
+- The runnable `tribe-digest.md` template (TD-54), `/routines seed <slug>` in SKILL.md with the approval gate, `lint --private` failing without the settings deny list, the template contract tests, an end-to-end pipeline test over fixtures (features, judge, apply, render, publish-plan and publish-parse, message), the plugin, providers and root READMEs, the example, plugin 0.4.0 and marketplace 2.16.0.
+- **Refs**: US-39, US-40, US-41, TD-45, TD-54
+- **Files**: `plugins/claudio-routines/skills/routines/templates/tribe-digest.md` (modify), `plugins/claudio-routines/skills/routines/SKILL.md` (modify), `plugins/claudio-routines/skills/routines/scripts/routines.py` (modify), `plugins/claudio-routines/skills/routines/scripts/lint.py` (modify), `plugins/claudio-routines/skills/routines/scripts/test_routines.py` (modify), `plugins/claudio-routines/runtime/test_tribe_pipeline.py` (new), `plugins/claudio-routines/README.md` (modify), `README.md` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify), `plugins/claudio-routines/example/` (modify), `plugins/claudio-routines/.claude-plugin/plugin.json` (modify), `.claude-plugin/marketplace.json` (modify)
+- **Verify**: `for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
+- **Blocked by**: T-61, T-63, T-66
+- **Rules**: BR-6, BR-8, BR-30, BR-42
+- **Status**: Complete
+
+### T-68: Seed and replay the next live digests
+Runs in a local session with the chat, issue tracker, document store and observability connectors; nothing is posted or written to any tool.
+1. Private: `.claude/settings.json` with the deny list, the tribe routine files with `engine: tribe`, the `previous-digest` source and the prose rules, the private runtime template.
+2. Fetch the 2026-10-16 tribe digests into `reference/`.
+3. Seed each tribe state from its 2026-10-15 digest (in a scratch state, not pushed).
+4. Replay the full pipeline report-only over each 2026-10-16 window, write the key map and the reasons after checking each difference, and run `reference/compare_judgment.py`.
+- **Refs**: US-33, US-42, TD-47, TD-55
+- **Files**: none in this repository; the private repository's `.claude/settings.json`, routine files, templates and `reference/` change, and the replay stays in a temporary directory
+- **Verify**: `python3 "$CLAUDIO_PRIVATE_DIR/reference/compare_judgment.py" --digest connect --replay <replay dir>/connect && python3 "$CLAUDIO_PRIVATE_DIR/reference/compare_judgment.py" --digest scheduling --replay <replay dir>/scheduling`
+- **Blocked by**: T-67
+- **Rules**: BR-22, BR-27
+- **Status**: In Progress (both replays explained but one line each, both collector-level: Connect reads an empty error-status query as a no-datapoints gap when the window holds zero errors; Scheduling reads its main page truncated over the connector)
+
+### T-69: Coverage notes
+- `coverage_notes` in the judgment (TD-50): schema and checks in `tribe_judgment.py`, carried into the summary by `apply` (TD-51, not the state), rendered after the collector gaps under Blind spots as `source: text` (TD-52), and named in the message's blind spots line (TD-53); template Step 7 describes the field and its limits.
+- Tests: a valid note passing, each rejection (over 10 notes, a repeated source, a source over 60 characters, a text failing the text rules), notes absent from the next state, the render and structure check with notes, the message line, the pipeline with notes.
+- **Refs**: US-36, TD-50, TD-51, TD-52, TD-53
+- **Files**: `plugins/claudio-routines/runtime/tribe_judgment.py` (modify), `plugins/claudio-routines/runtime/test_tribe_judgment.py` (modify), `plugins/claudio-routines/runtime/tribe_lifecycle.py` (modify), `plugins/claudio-routines/runtime/test_tribe_lifecycle.py` (modify), `plugins/claudio-routines/runtime/tribe_page.py` (modify), `plugins/claudio-routines/runtime/test_tribe_page.py` (modify), `plugins/claudio-routines/runtime/tribe_message.py` (modify), `plugins/claudio-routines/runtime/test_tribe_message.py` (modify), `plugins/claudio-routines/runtime/test_tribe_pipeline.py` (modify), `plugins/claudio-routines/runtime/tribe_state.py` (modify), `plugins/claudio-routines/runtime/tribe_support.py` (modify), `plugins/claudio-routines/runtime/test_tribe_seed.py` (modify), `plugins/claudio-routines/README.md` (modify), `plugins/claudio-routines/runtime/fixtures/tribe/` (modify), `plugins/claudio-routines/skills/routines/templates/tribe-digest.md` (modify), `plugins/claudio-routines/skills/routines/scripts/test_routines.py` (modify)
+- **Verify**: `for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
+- **Blocked by**: T-67
+- **Rules**: BR-60, BR-61, BR-64
+- **Status**: Complete
 
 ## Related Features
 

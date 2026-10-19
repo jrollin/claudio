@@ -12,6 +12,7 @@ import config_tree
 import providers
 import roles
 import state
+import tribe_state
 from config import adapter_role, config_directory, load_zone, read_routine
 from providers._common import ended
 from providers._http import BODY_CAP
@@ -19,6 +20,7 @@ from providers._errors import CALL_CAP, CALL_CAP_PARTIAL, CredentialsMissing, Pa
 
 NOT_REPORTED = "not reported by the adapter"
 NO_NEW_CALL = "no new call"
+NO_PREVIOUS_PAGE = "no previous digest page in the state"
 PLAN_NOT_DONE = "plan not done"
 NO_RESPONSE = "no response saved (connector missing or relay not run)"
 CALLS_FILE = "calls.json"
@@ -36,6 +38,8 @@ EMPTY_RECORDS = {
     "code_host": {"pull_requests": [], "issues": []},
     "issue_tracker": {"issues": []},
 }
+
+STATE_CHECKERS = {roles.DEFAULT_ENGINE: state.check_state, roles.TRIBE_ENGINE: tribe_state.check_state}
 
 STEP_SPEC = {
     "done": state.BOOLEAN,
@@ -131,6 +135,28 @@ def select_entries(entries, run_state, window, today):
     return selected, deferred
 
 
+def state_options(run_state, engine, role, source, name):
+    if engine != roles.TRIBE_ENGINE:
+        return {}
+    if role == "chat":
+        threads = run_state["threads"].get(name, [])
+        return {"threads": [{"channel": thread["channel"], "root_ts": thread["root_ts"]} for thread in threads]}
+    previous = run_state["run"]["previous_page"]
+    if "page_from_state" in source and previous is not None:
+        return {"page_id": previous["id"]}
+    return {}
+
+
+def skipped_reason(run_state, engine, source):
+    if engine == roles.TRIBE_ENGINE and "page_from_state" in source and run_state["run"]["previous_page"] is None:
+        return NO_PREVIOUS_PAGE
+    return None
+
+
+def tracked_items(run_state, engine):
+    return run_state["items"] if engine == roles.DEFAULT_ENGINE else {}
+
+
 def tracked_monitors(items, pack):
     listed = {entry["key"] for entry in pack}
     keys = sorted(key for key in items if state.is_tracked_monitor(key) and key not in listed)
@@ -172,8 +198,9 @@ def conforming_cursor(base, empty_records, cursor):
 
 
 class Draft:
-    def __init__(self, base, empty_records, cursor, selected, deferred):
+    def __init__(self, base, empty_records, cursor, selected, deferred, skipped=None):
         self.base = base
+        self.skipped = skipped
         self.empty_records = empty_records
         self.cursor = cursor
         self.selected = selected
@@ -234,7 +261,8 @@ def prepare(args, transport):
     source = transport_source(routine, args, transport)
     window = state.load(args.window, "window", check_fetch_window)
     window = {**window, "first_read_from_ts": first_read_from(routine, window), "timezone": config.get("timezone")}
-    run_state = state.load(args.state, "state", state.check_state)
+    engine = routine.get("engine", roles.DEFAULT_ENGINE)
+    run_state = state.load(args.state, "state", STATE_CHECKERS[engine])
     role = role_by_source[args.source]
     selected, deferred, kind = [], {}, role
     if role == "observability":
@@ -242,7 +270,7 @@ def prepare(args, transport):
         pack = routine.get("query_pack", [])
         entries = [entry for entry in pack if entry["source"] == args.source]
         if args.source == first_monitors_source(routine, role_by_source):
-            entries += tracked_monitors(run_state["items"], pack)
+            entries += tracked_monitors(tracked_items(run_state, engine), pack)
         zone = config_zone(config)
         selected, deferred = select_entries(entries, run_state, window, state.local_date(window["to_ts"], zone).isoformat())
         selected = [with_span(entry, window, zone) for entry in selected]
@@ -256,9 +284,11 @@ def prepare(args, transport):
         "window": {"from_ts": window["from_ts"], "to_ts": window["to_ts"]},
     }
     cursor = conforming_cursor(base, EMPTY_RECORDS[kind], stored_cursor(run_state["cursors"], args.source, role, kind))
-    draft = Draft(base, EMPTY_RECORDS[kind], cursor, selected, deferred)
+    draft = Draft(base, EMPTY_RECORDS[kind], cursor, selected, deferred, skipped_reason(run_state, engine, source))
     provider = config["providers"][source["provider"]]
-    return provider, {**source, "name": args.source, "provider_config": provider}, window, draft
+    options = state_options(run_state, engine, role, source, args.source)
+    configured = {key: value for key, value in source.items() if key != "threads"}
+    return provider, {**configured, "name": args.source, "provider_config": provider, **options}, window, draft
 
 
 def clean_reason(reason):
@@ -291,6 +321,9 @@ def write_collection(args, collection):
 
 def run_fetch(args):
     provider, source, window, draft = prepare(args, "api")
+    if draft.skipped is not None:
+        write_collection(args, draft.not_read(draft.skipped))
+        return 0
     adapter = providers.load(provider["adapter"])
     host = urlsplit(provider["api"]["base_url"]).hostname
     write_collection(
@@ -419,7 +452,7 @@ def run_plan(args):
     except OSError as error:
         raise state.InputError(f"responses: cannot create {args.responses}: {error.strerror}") from error
     known = state.load(calls_path, "calls", check_calls) if os.path.exists(calls_path) else {"calls": {}}
-    step = plan_step(providers.load(provider["adapter"]), source, window, draft, args.responses, connector)
+    step = ended() if draft.skipped is not None else plan_step(providers.load(provider["adapter"]), source, window, draft, args.responses, connector)
     step = {**step, "partial": clean_reason(step["partial"])}
     recorded = {
         "calls": {**known["calls"], **{call["id"]: call["digest"] for call in step["calls"]}},
@@ -446,6 +479,8 @@ def relay_gap(known, call_ids, name, connector):
 
 
 def parse_collection(args, provider, source, window, draft):
+    if draft.skipped is not None:
+        return draft.not_read(draft.skipped)
     connector = provider["mcp"]["connectors"][args.place]
     known = state.load(os.path.join(args.responses, CALLS_FILE), "calls", check_calls)
     call_ids = response_ids(args.responses)

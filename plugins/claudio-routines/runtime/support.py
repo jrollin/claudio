@@ -124,3 +124,23 @@ def run_cli(*argv):
         except SystemExit as error:
             code = error.code
     return code, out.getvalue(), err.getvalue()
+
+
+def publication_values(provider="docs"):
+    return {
+        "page": {
+            "how_built": ["- built"],
+            "key_callout": ["callout"],
+            "state_path": "state/x.json",
+            "link": "https://example.test/p/{{id}}",
+            "title": "Digest {{date}}",
+        },
+        "publish": {
+            "provider": provider,
+            "parent": "abc-123",
+            "create": {"tool": "create_page", "arguments": {"parent": "{{parent}}", "title": "{{title}}", "rows": [{"c": "{{content}}"}], "flag": True}},
+            "poll": {"tool": "poll_task", "arguments": {"task": "{{task}}", "title": "{{title}}"}},
+            "heading": {"tool": "append_text", "arguments": {"parent": "{{parent}}", "text": "## {{week}}"}},
+            "results": {"task": "task.id", "status": "task.status", "page": "task.page.id", "heading": "block.id", "done": ["completed"], "failed": ["failed"]},
+        },
+    }

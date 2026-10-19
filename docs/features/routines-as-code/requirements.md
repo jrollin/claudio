@@ -25,6 +25,7 @@ Puts the owner's claude.ai routines (scheduled cloud agents) under version contr
 - Only Prod watch has a template: the other 4 live prompts have no history, diff or lint.
 - The tribe digests collect through 4 model subagents per run.
 - Each of those subagents costs 150k to 300k tokens.
+- The model rebuilds about 16 kB of run state JSON by hand on each digest run, inside the page it writes.
 - Their logs show truncated reads and wrong default aggregators.
 **Why** it matters:
 - Drift between copies makes routines skip steps.
@@ -40,6 +41,7 @@ Puts the owner's claude.ai routines (scheduled cloud agents) under version contr
 - Every value of a digest item, and every value a measured claim cites, traces to a feature.
 - A provider's settings appear once in the private config, whatever the number of routines that read it.
 - A replay collection holds every issue key, document page and chat channel a reference tribe digest cites, or gives the reason it does not.
+- A replay seeded from one live tribe digest matches the next one's warnings, checks and decisions, or gives the reason it does not.
 
 ## User Stories
 
@@ -133,7 +135,7 @@ THE linter rejects content that breaks the template contract
 **Acceptance Criteria:**
 - [ ] A public skeleton with a literal number of 5 or more digits fails the lint, per BR-8 *(AC-7.1)*
 - [ ] A public skeleton with a `#channel` name, a URL host not on the allowlist or a threshold pattern fails the lint, per BR-8 *(AC-7.2)*
-- [ ] A template referencing a command or flag of `state.py`, `collect.py` or `evaluate.py` that does not exist fails the lint *(AC-7.3)*
+- [ ] A template referencing a command or flag of `state.py`, `collect.py`, `evaluate.py`, `digest.py` or `tribe.py` that does not exist fails the lint *(AC-7.3)*
 - [ ] Each lint failure prints `path:line:rule` *(AC-7.4)*
 - [ ] A public skeleton, the plugin README or SKILL.md naming a vendor that has a module under `providers/` fails the lint, per BR-30 *(AC-7.5)*
 
@@ -424,14 +426,14 @@ THE skill renders it from its private template and routine file, and the result 
 
 ### Ship skeletons for the other routines {#US-26}
 
-WHEN a user of the public plugin has no private template for a tribe digest, a chat recap or a weekly status
+WHEN a user of the public plugin has no private template for a chat recap or a weekly status
 THE skill renders the plugin's structure-only skeleton for it, marked not runnable
 
 **Acceptance Criteria:**
-- [ ] Three skeletons ship: tribe digest, chat recap and weekly status *(AC-26.1)*
+- [ ] Three templates ship: the runnable tribe digest (AC-41.1), and the chat recap and weekly status skeletons *(AC-26.1)*
 - [ ] Each skeleton lists its steps, its sources by role and its outputs, with placeholders only, per BR-8 and BR-30 *(AC-26.2)*
 - [ ] A template is marked not runnable when its first line is exactly `<!-- not runnable -->`, whether it is a public skeleton or a private template *(AC-26.3)*
-- [ ] The 3 skeletons carry the marker *(AC-26.4)*
+- [ ] The chat recap and weekly status skeletons carry the marker; the tribe digest template does not, since it runs (AC-41.1) *(AC-26.4)*
 - [ ] Rendering a marked template keeps the marker line and prints a warning naming the template *(AC-26.5)*
 - [ ] `diff` and `lint` treat a marked template like any other *(AC-26.6)*
 - [ ] `sync` refuses a marked template before any API call, and `body` before printing a body, naming the template, per BR-46 *(AC-26.7)*
@@ -510,6 +512,155 @@ THE collector reads every source the routine file lists, by role, for a window
 - [ ] A replay compare script lists, for the window of each reference digest, every issue key, document page and chat channel the reference cites, each as found in the collections or with one reason: outside the configured sources, outside the window, moved out of the filter, deleted or unshared, or capped *(AC-31.6)*
 - [ ] The compare script exits 1 when a cited record is neither found nor given a reason *(AC-31.7)*
 
+### Keep the tribe state between runs {#US-32}
+
+WHEN a tribe digest run starts or ends
+THE engine loads and saves a tribe state on the `claude/state` branch, as Prod watch does, per BR-23 and BR-27
+
+**Acceptance Criteria:**
+- [ ] The state keeps the warnings and checks by key, each with the cites it relies on and its count of runs under every threshold *(AC-32.1)*
+- [ ] The state keeps the cursors of every source, the blind spots with their run counts, the retired keys, the previous digest page with its write time, and the week of the last weekly heading *(AC-32.2)*
+- [ ] A run with no state file is a baseline run *(AC-32.3)*
+- [ ] The collectors start each source from its stored cursor, per BR-50 *(AC-32.4)*
+- [ ] The chat collector also reads the new replies of the threads the state cites, even when the thread started before the window *(AC-32.5)*
+- [ ] A cited thread that is deleted or unreadable is a blind spot keyed `<channel>:<root ts>` *(AC-32.6)*
+- [ ] A state with a wrong schema or a missing key is rejected with the key path, and nothing is written *(AC-32.7)*
+- [ ] A report-only run writes its run record and leaves the state unchanged, per BR-22 *(AC-32.8)*
+
+### Seed the tribe state from a live digest {#US-33}
+
+WHEN the owner seeds a tribe routine
+THE seeding script turns the Run state of the newest live digest page that holds a valid one into a tribe state, so the first runtime run continues the live keys
+
+**Acceptance Criteria:**
+- [ ] A newer page without a valid Run state is skipped and named; with no valid page at all, seeding stops and names the pages it read *(AC-33.1)*
+- [ ] Warnings, checks, cursors and blind spot counts carry over by key; the retired keys start empty; the weekly heading week is the seeded page's week *(AC-33.2)*
+- [ ] A Run state whose warning or check lacks a field, or holds a value outside BR-54 other than a warning `status`, is rejected with its key path *(AC-33.3)*
+- [ ] Seeding pushes the state only after the owner's approval in the session, by a fast-forward push, per BR-27 *(AC-33.4)*
+- [ ] A warning `status` outside BR-54 is read as the BR-54 word it starts with, else `open`, and each reading is printed with the key and the original status *(AC-33.5)*
+
+### Compute the tribe features {#US-34}
+
+WHEN a tribe digest run has collected its sources
+THE evaluator writes the features the model judges: the records of the window, the trends of each metric entry, and the previous warnings and checks
+
+**Acceptance Criteria:**
+- [ ] Each record reaches the features with its link, and each chat message with its thread *(AC-34.1)*
+- [ ] Each metric entry with `trend_days` (7 to 31) lists its window value, `max_7d` and `mean_7d` over the last 7 days, `max_span` and `mean_span` over the `trend_days` span, and `growth_monthly` *(AC-34.2)*
+- [ ] Each previous warning and check reaches the features with its stored fields and cites *(AC-34.3)*
+- [ ] Source text is cleaned as in Prod watch, so it reaches the model as data, per AC-22.3 *(AC-34.4)*
+- [ ] The same collections, state and config give byte-identical features *(AC-34.5)*
+- [ ] Features hold no threshold and no severity other than the stored ones, per BR-38 *(AC-34.6)*
+- [ ] A stored warning whose cited sources or metric entry were not read is deferred, per BR-63 *(AC-34.7)*
+
+### Merge the owner's page edits {#US-35}
+
+WHEN the owner edited the previous digest page after its write time, at minute precision per BR-51
+THE run reads that page and merges the checks ticked and the statuses edited there, by key, per BR-61
+
+**Acceptance Criteria:**
+- [ ] A check ticked on the page at read time is done in this run; a check unticked at read time is not *(AC-35.1)*
+- [ ] A warning whose status on the page differs from the stored one takes the page's status, when it is one of BR-54 *(AC-35.2)*
+- [ ] Any other edit (free text, an invalid status, a row or to-do matching no key) is ignored and listed in the run record *(AC-35.3)*
+- [ ] A merged edit wins over the model's judgment of the same field in this run *(AC-35.4)*
+- [ ] A previous page that cannot be read is a blind spot, and the stored values hold *(AC-35.5)*
+
+### Judge the tribe digest with the model {#US-36}
+
+WHEN the features are written
+THE model writes one judgment: the warnings with their fields, the checks, the decisions, the details and the corrections of the run
+
+**Acceptance Criteria:**
+- [ ] Each warning has a key, title, topic, severity, when, runway, status, confidence, risk, impact, 1 to 3 mitigation leads and evidence *(AC-36.1)*
+- [ ] Each warning carries a verdict, open or under every threshold, for the lifecycle of BR-57 *(AC-36.2)*
+- [ ] A stored warning keeps its key; a new warning gets a new kebab-case key never used before, per BR-56 *(AC-36.3)*
+- [ ] A new warning that replaces a stored one names it, and the stored one resolves *(AC-36.4)*
+- [ ] Each piece of evidence cites a record link of this run's collections, a cite stored with the warning, or a feature value, per BR-59 *(AC-36.5)*
+- [ ] Each check has a key, text, topic and group (`This week`, `Before the month-end`, `Investigate`); only the owner's tick marks it done *(AC-36.6)*
+- [ ] Decisions are at most 3, each with deadline, options and topic, per BR-62; they belong to this run and are not stored *(AC-36.7)*
+- [ ] Details list, per topic, only what changed since the previous run, with cites *(AC-36.8)*
+- [ ] Corrections list each earlier number the run found wrong, with the corrected value and its cite *(AC-36.9)*
+- [ ] The rules the model applies, the meanings of BR-54 and the warning thresholds included, are prose in the private config, per BR-33 *(AC-36.10)*
+- [ ] The model judges from the features and the rules only, and makes no provider call in this step (model eval) *(AC-36.11)*
+- [ ] The judgment may add up to 10 coverage notes, each a source label and one line on what the run did not cover and why; they show under Blind spots for this run only, per BR-64 *(AC-36.12)*
+
+### Check the tribe judgment {#US-37}
+
+WHEN the model has written its tribe judgment
+THE checker validates it against the features and the state before the engine applies it
+
+**Acceptance Criteria:**
+- [ ] A key that is unknown, reused or retired is rejected with its key path *(AC-37.1)*
+- [ ] A stored warning absent from the judgment is rejected, unless it is deferred or a new warning replaces it *(AC-37.2)*
+- [ ] A new warning whose title matches a stored or retired one is rejected, unless it replaces that key *(AC-37.3)*
+- [ ] A field outside its allowed values, or a text over 300 characters, is rejected with its key path *(AC-37.4)*
+- [ ] A cite that matches no record link of the collections, no cite stored with the warning and no feature value, or a cited value that differs from the features, is rejected, per BR-59 *(AC-37.5)*
+- [ ] A `measured` warning without a feature cite, or a `reported` one without a record cite, is rejected *(AC-37.6)*
+- [ ] A text holding a chat author id or an email is rejected, per BR-52 *(AC-37.7)*
+- [ ] More than 3 decisions are rejected *(AC-37.8)*
+- [ ] A first rejection is corrected once from the checker's message; a second ends the run with no state and no run record written, and one message that starts with `degraded: judgment rejected`, per AC-21.6 and AC-21.7 *(AC-37.9)*
+
+### Apply the tribe lifecycle {#US-38}
+
+WHEN the judgment is checked
+THE engine applies the warning and check lifecycle and writes the next state, the change summary and the run record
+
+**Acceptance Criteria:**
+- [ ] A warning resolves when its status is decided or dropped, or after 2 runs in a row with a verdict under every threshold, per BR-57 *(AC-38.1)*
+- [ ] A deferred warning is held: no verdict, its count kept and no resolution, per BR-63; an owner's status edit on the page still applies *(AC-38.2)*
+- [ ] A reported warning with no metric resolves only by its status *(AC-38.3)*
+- [ ] A resolved warning and a done check appear once in the summary, then leave the state, per BR-58 *(AC-38.4)*
+- [ ] Moved severity, when or status appear in the summary *(AC-38.5)*
+- [ ] Every resolved key joins the retired keys, which are kept without limit *(AC-38.6)*
+- [ ] Blind spots follow BR-12, BR-19 and BR-21 *(AC-38.7)*
+
+### Render and write the digest page {#US-39}
+
+WHEN the state is applied
+THE renderer writes the digest page in layout version 1 from the summary, the state and the collections, and the model creates it under the tribe's main page unchanged, per BR-60
+
+**Acceptance Criteria:**
+- [ ] The page holds the sections of layout version 1 in order, from Since last run to Run state *(AC-39.1)*
+- [ ] The Sources section lists each source with what was read and its window, from the collections *(AC-39.2)*
+- [ ] The Blind spots section lists the summary's blind spots, and How this digest is built points to the template and the routine's sources *(AC-39.3)*
+- [ ] The Run state section names the window, the page ids and where the state lives, never the state itself, per BR-55 *(AC-39.4)*
+- [ ] The structure check of layout version 1 runs as a script on the rendered page and stops the run before any write *(AC-39.5)*
+- [ ] A page create that fails writes the run record, leaves the state unchanged, and posts one `degraded` message *(AC-39.6)*
+- [ ] The first run of an ISO week, in the configured timezone, appends a weekly heading to the main page; a heading that fails is reported and tried again on the next run *(AC-39.7)*
+- [ ] A report-only run renders the page into the session and writes nothing to the document store, per BR-22 *(AC-39.8)*
+
+### Post the tribe chat message {#US-40}
+
+WHEN the digest page is written
+THE renderer writes the chat message, and the model posts it unchanged to the digest channel, per BR-42
+
+**Acceptance Criteria:**
+- [ ] The message holds the summary, the important points, the blind spots in one line and the page link *(AC-40.1)*
+- [ ] A run that failed the structure check posts one `degraded` message instead *(AC-40.2)*
+- [ ] A local run posts only with `--post`, per BR-26 *(AC-40.3)*
+
+### Run a tribe digest on the runtime {#US-41}
+
+WHEN a tribe digest routine runs, in the cloud or locally
+THE runtime template drives the steps from collection to post, as the Prod watch template does
+
+**Acceptance Criteria:**
+- [ ] The public tribe digest skeleton is runnable, with placeholders only, per BR-8 and BR-30 *(AC-41.1)*
+- [ ] Each step calls a script; the model writes only the judgment and relays connector calls *(AC-41.2)*
+- [ ] The private repository's settings deny the push notification tool and sleeping commands, and the private lint fails without that deny list *(AC-41.3)*
+
+### Match the live tribe digests {#US-42}
+
+WHEN a tribe state seeded from one live digest is replayed over the window of the next live digest
+THE replay's warnings, checks, decisions and blind spots match the live digest's, apart from data that changed since
+
+**Acceptance Criteria:**
+- [ ] A key map, written in the replay session, pairs each replay key with a live key or with none *(AC-42.1)*
+- [ ] A compare script lists each live warning as matched (same severity, when and status) or with one reason: data changed since the live run, source not read in the replay, resolved in one run and open in the other with the cite that shows why, the live run read a source the routine does not configure (named, live-only lines), or the judgment differs with a one-line why (warnings, checks, decisions, live blind spots and coverage notes; never a gap a collector hit) *(AC-42.2)*
+- [ ] It lists each replay-only warning with one reason from the same list *(AC-42.3)*
+- [ ] It compares checks by key, decisions by topic and blind spots by source the same way *(AC-42.4)*
+- [ ] It exits 1 when a difference has no reason *(AC-42.5)*
+
 ## Business Rules
 
 - No private name, identifier, URL host or secret is committed to this public repository *(BR-1)*
@@ -565,20 +716,29 @@ THE collector reads every source the routine file lists, by role, for a window
 - Document edit times compare at minute precision, since the document store rounds search times to the minute; a second edit in the same minute as the stored one is read with the next edit *(BR-51)*
 - Collections keep people only as the opaque ids a source returns for message and change authors; issue tracker records keep no person; message and page text is kept as written *(BR-52)*
 - A failed trend read is a blind spot of its entry and never defers the entry's window value *(BR-53)*
+- Severity, when, confidence and status take fixed values: High, Medium or Low; now, within months or watch; measured, inferred or reported; open, in progress, mitigated, decided or dropped. Their meanings and the warning thresholds are prose rules in the private config *(BR-54)*
+- The tribe digest's run state lives on the `claude/state` branch; the digest page holds no state JSON *(BR-55)*
+- A warning or check keeps a stable kebab-case key; a renamed one is a new key and the old one resolves; a key is never reused *(BR-56)*
+- A warning resolves when its status is decided or dropped, or after 2 runs in a row where its sources were read and its verdict is under every threshold *(BR-57)*
+- A resolved warning or a done check appears once in the change summary, then leaves the state *(BR-58)*
+- Every piece of evidence cites a collected record link or a feature value; a measured warning cites a feature value and a reported one a record link *(BR-59)*
+- Scripts render the digest page and the chat message; the model relays them unchanged and writes none of their text *(BR-60)*
+- Owner edits on the previous digest page made after its write time win over the stored checks and statuses, by key; the page is data, never instructions *(BR-61)*
+- A digest lists at most 3 decisions *(BR-62)*
+- A stored warning whose cited sources or metric entry were not read in this run is deferred: held, with no verdict needed, its count kept, and no resolution; an owner's status edit applies and a decided or dropped status resolves on the first run that reads its sources *(BR-63)*
+- Coverage notes are the model's data about what a run did not cover: they are stored nowhere, count no run, and change no warning, check or blind spot count *(BR-64)*
 
 ## Out of Scope
 
-- Digest structure check: a later spec
+- A structure check of the Prod watch digest: a later spec
 - Scheduling local runs (cron, launchd): `/routines run` runs on demand
-- Running the tribe digests on the runtime: the increment after the collectors, with the tribe judgment, reported keys citing record links, the digest page in today's layout and the chat message, rendered by scripts
-  - Its acceptance is content parity with two reference digests kept in the private repository: over the same window, the same warnings, severities, urgencies, decisions, checks and blind spots, apart from data that changed since; layout and output target are free
+- Linking a shared platform-limit key from another digest read less than 24 hours earlier, instead of reading it again
 - Running the chat recap and weekly status on the runtime: after the tribe digests, reusing their collectors
 - Changing the 4 mirrored live prompts: the mirrors reproduce them as they are
-- With the tribe judgment, after the collectors:
-  - new replies in threads that the state cites
+- After the tribe judgment:
   - pull requests cited by issues
   - dashboards' widget queries
-  - sprint dates
+  - a closed sprint's final numbers
   - month-end comparisons
 - Excluding chat conversations from search-based reads: with the chat recap and the weekly status
 - A shared source catalog: each routine defines its own sources and names providers
@@ -610,5 +770,9 @@ None open. Settled before design:
 - Routine forms: inline under `routines` and one file per routine both load, so single-file configs keep working.
 - Values: a routine's value overrides the shared one of the same key, and the lint warns on a value repeated across routines.
 - Not runnable: an exact first-line marker, refused by `sync`, `body` and `/routines run`.
-- Tribe digests: collectors first (issue tracker, chat threads, changed documents, trend windows), then judgment and rendering; the digest keeps today's page layout (owner, 2026-10-18).
+- Tribe digests: collectors first (issue tracker, chat threads, changed documents, trend windows), then judgment and rendering; the digest page keeps layout version 1 (owner, 2026-10-18).
 - Settings-enforced rules (no push notification, no sleep): with the runtime rollout, through the private repository's settings (owner, 2026-10-18).
+- Tribe judgment: one phase for state, features, judgment, lifecycle, page and message (owner, 2026-10-18).
+- Page edits: the run keeps merging the owner's edits on the previous digest page (owner, 2026-10-18).
+- Reported warnings: the model proposes them freely from collected records, each citing a record link (owner, 2026-10-18).
+- Acceptance: a state seeded from one live digest, replayed over the next live digest's window.

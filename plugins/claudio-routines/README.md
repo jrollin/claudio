@@ -16,7 +16,7 @@ Manage claude.ai routines (scheduled cloud agents) as code:
 | `routines.py` | `skills/routines/scripts/routines.py` | File side of every flow: snapshots, render, diff, lint, update body, setup script |
 | Config tree | `runtime/config_tree.py` | Loads `config.json` and the routine files into one config, resolves each source's transport, and rejects secrets; the skill and the runtime share it |
 | Example | `example/` | A private directory to copy: `config.json` and one routine file per routine, placeholders only |
-| Skeletons | `skills/routines/templates/` | Generic `prod-watch.md` prompt, `setup-env.sh` setup script and the not-runnable `tribe-digest.md`, `chat-recap.md` and `weekly-status.md`, placeholders only |
+| Skeletons | `skills/routines/templates/` | Generic `prod-watch.md` and `tribe-digest.md` prompts, `setup-env.sh` setup script and the not-runnable `chat-recap.md` and `weekly-status.md`, placeholders only |
 | State engine | `runtime/state.py` | Run window, item lifecycle, blind spots, mutes and run records for routine runs |
 | Collector | `runtime/collect.py` | Lists a routine's sources, checks the place's credentials and connectors, reads one source per command into a collection |
 | Evaluator | `runtime/evaluate.py` | `features` computes the judgment features, `judge` checks the model's judgment and merges it into the facts, `annotate` adds the analysis of new and escalated items |
@@ -24,6 +24,7 @@ Manage claude.ai routines (scheduled cloud agents) as code:
 | Features | `runtime/features.py` | Computes the features, base and rules files of one run; decides nothing |
 | Judgment | `runtime/judgment.py` | Checks the judgment and the analysis against the features, and builds the facts |
 | Roles | `runtime/roles.py` | Config and query pack checks, and the record schema of each of the five roles: observability tool, document store, chat channel, code host and issue tracker |
+| Tribe engine | `runtime/tribe.py` and its `tribe_*.py` modules | The engine of a routine whose `engine` is `tribe`: window, seed, features, judgment check, lifecycle, page render and structure check, page write plan and chat message |
 | Provider adapters | `runtime/providers/` | One module per vendor, each with an `api` and an `mcp` transport; see [the providers README](runtime/providers/README.md) |
 
 The real templates and every value that names a company resource live in a private repository, never here.
@@ -34,7 +35,7 @@ The real templates and every value that names a company resource live in a priva
 |---|---|---|
 | `prod-watch.md` | Routine prompt | Yes |
 | `setup-env.sh` | Environment setup script, printed by `setup-script` | Yes |
-| `tribe-digest.md` | Routine prompt skeleton | No, structure only |
+| `tribe-digest.md` | Routine prompt | Yes |
 | `chat-recap.md` | Routine prompt skeleton | No, structure only |
 | `weekly-status.md` | Routine prompt skeleton | No, structure only |
 
@@ -65,9 +66,12 @@ A template is marked not runnable when its first line is exactly `<!-- not runna
 3. Copy the contents of the plugin's `example/` directory into `$CLAUDIO_PRIVATE_DIR`: `config.json` and `config/routines/`. Fill in every `<placeholder>`.
    - Name each routine file after the live routine's slug, as `export` prints it, and set its `id`.
    - Delete the files of the routines you do not track.
-4. Add your templates under `$CLAUDIO_PRIVATE_DIR/templates/<template>.md`. A routine without a private template renders from the public skeleton of the same name.
-5. Run `/claudio-routines:routines export`, then `/claudio-routines:routines diff` until each configured routine prints `in sync`.
-6. For local runs, run `/claudio-routines:routines setup-script --place local` and run its output.
+4. Add `$CLAUDIO_PRIVATE_DIR/.claude/settings.json` with `permissions.deny` listing `PushNotification`, `Bash(sleep *)` and `Monitor`.
+   - It applies to every routine.
+   - `lint --private` reports `settings-missing`, `settings-invalid` or `deny-missing:<entry>` without it.
+5. Add your templates under `$CLAUDIO_PRIVATE_DIR/templates/<template>.md`. A routine without a private template renders from the public skeleton of the same name.
+6. Run `/claudio-routines:routines export`, then `/claudio-routines:routines diff` until each configured routine prints `in sync`.
+7. For local runs, run `/claudio-routines:routines setup-script --place local` and run its output.
 
 ## Usage
 
@@ -79,15 +83,17 @@ A template is marked not runnable when its first line is exactly `<!-- not runna
 /claudio-routines:routines sync <slug>                             show the diff, wait for approval, push, export again, confirm in sync
 /claudio-routines:routines setup-script [--place P]                print the setup script of a place, cloud by default
 /claudio-routines:routines run <slug> [--since T] [--post]         run a routine in this session for the local place
+/claudio-routines:routines seed <slug>                             seed a tribe routine's state from its previous digest pages, push after approval
 ```
 
 Each flow is described step by step in [SKILL.md](skills/routines/SKILL.md).
 
-Exit codes of `routines.py`, `state.py`, `collect.py`, `evaluate.py` and `digest.py`:
+Exit codes of `routines.py`, `state.py`, `collect.py`, `evaluate.py`, `digest.py` and `tribe.py`:
 - 0: ok or in sync.
 - 1: findings or drift; for `collect.py check-env`, a missing credential variable.
 - 2: usage or input error, including an unreadable or invalid features, base, facts, preview, summary, record or state file; `digest.py` exits 2 for every refused input, naming the file.
 - 3 (runtime scripts only): rejected state, facts, time or query pack; for `evaluate.py judge` and `annotate`, a rejected judgment or analysis, including a file that is not valid JSON.
+  - `tribe.py`: a rejected judgment, state, window or cursor (`judge`, `apply`), a page that fails its structure check (`render`, `publish-plan`), and a Run state field outside its allowed values (`seed`).
 
 ## Config reference
 
@@ -166,8 +172,9 @@ A source also holds the options of its provider's role:
 | Observability tool | `kind` | `monitors` or `metrics` |
 | Observability tool | `scope_filter` | Query of the alert event search of a `monitors` source, such as `source:alert env:prod`; a `metrics` source ignores it, since its pack queries carry their own scope |
 | Observability tool | `discovery_query` | Optional monitor search query of a `monitors` source: the monitors it finds are judged under `monitor-<id>` even when the pack lacks them; without it nothing is discovered; a `metrics` source refuses it |
-| Document store | `page_id` | The sources page that holds the mutes table: a top-level `Mutes` heading followed by a table with the columns `key` and `until` (or `silence until`, never both), never nested inside a toggle heading; a source sets exactly one of `page_id` and `pages` |
+| Document store | `page_id` | The sources page that holds the mutes table: a top-level `Mutes` heading followed by a table with the columns `key` and `until` (or `silence until`, never both), never nested inside a toggle heading; a source sets exactly one of `page_id`, `pages` and `page_from_state` |
 | Document store | `pages` | A non-empty list of page ids whose changes are collected: a page is read in full when its edit time moved, and its entry is `unchanged` or `not found or not shared` otherwise; keep it to about 10 pages, since a connector source fetches every listed page |
+| Document store | `page_from_state` | `previous_page`, in place of `page_id` and `pages`, for a routine with the `tribe` engine: the source reads the previous digest page named by the state, and a run with no previous page leaves the source unread |
 | Chat channel | `channels` | A non-empty list of channels; the replies of each thread whose root lies in the window are read too |
 | Code host | `repos` | A non-empty list of `owner/name` repositories |
 | Code host | `query` | Optional search query; a source with a non-empty one is not read, since neither transport takes a search query |
@@ -227,8 +234,9 @@ Reads:
 
 Where the collectors stand:
 - A tribe digest routine lists chat, issue tracker, document store and observability sources, and collects each one by role, outside any run.
-- The state keeps no chat, issue tracker or document store cursor, so each chat and issue tracker collection starts at the first-read span (`first_read_days`), or at the window start without it, and a document store reads every listed page.
-- The tribe digests collect and stop there: the evaluator computes no feature for these sources, no digest renders them, and the `tribe-digest` template stays a not-runnable skeleton.
+- A Prod watch state keeps no chat, issue tracker or document store cursor, so each chat and issue tracker collection starts at the first-read span (`first_read_days`), or at the window start without it, and a document store reads every listed page.
+- A tribe state keeps the cursors of these sources under their source names, and `collect.py` reads them from there.
+- The tribe engine computes the features of these sources and renders the digest page (see Tribe engine).
 
 Credentials:
 - Credentials live only in environment variables; the config names each variable, never its value.
@@ -297,6 +305,56 @@ Analysis text rules, checked by `evaluate.py annotate` before the state stores t
 - No control, format or separator characters (Unicode categories Cc, Cf, Cs, Zl and Zp).
 - No `<`, `>`, `@` or `://`.
 - At most 5 reason claims per item, and 1 to 3 mitigation leads.
+
+## Tribe engine
+
+A routine file with `engine: tribe` runs the `tribe-digest` template, which needs the routine values `digest.slug` (the state file name) and `digest.name` (the digest name in the state and the prompt). The state is `state/<slug>.json` on the `claude/state` branch, schema `tribe-1`, and changes only through `tribe.py apply` and `publish-parse`.
+
+Commands, in run order:
+
+```text
+python3 runtime/tribe.py init          --digest NAME --out STATE
+python3 runtime/tribe.py window        --state S --now T --tz Z [--since T0 | --report-only] --out W
+python3 runtime/collect.py ...         (one collection per source, as above)
+python3 runtime/tribe.py features      --config C --routine R --state S --window W --collections DIR --place P --out FEATURES --base-out BASE --rules-out RULES
+python3 runtime/tribe.py judge         --features FEATURES --judgment J
+python3 runtime/tribe.py apply         --state S --features FEATURES --base BASE --judgment J --window W --out applied.json --summary SUMMARY --record RECORD
+python3 runtime/tribe.py render        --config C --routine R --place P --summary SUMMARY --out PAGE
+python3 runtime/tribe.py publish-plan  --config C --routine R --place P --summary SUMMARY --state applied.json --page PAGE --responses DIR --out PLAN
+python3 runtime/tribe.py publish-parse --config C --routine R --place P --summary SUMMARY --state applied.json --responses DIR --now T --out next.json --result RESULT
+python3 runtime/tribe.py message       --summary SUMMARY --result RESULT --config C --routine R --place P --out MESSAGE
+python3 runtime/tribe.py message       --degraded {judgment|structure} --out MESSAGE
+python3 runtime/tribe.py seed          --page FETCHED [--page FETCHED ...] --routine R --config C --out STATE
+```
+
+- The model writes only `judgment.json`, from `features.json` and `rules.json`. `judge` rejects a cite that the features do not hold (exit 3, with the key path).
+- `apply` merges the judgment and the edits made on the previous page into the next state, the summary and the run record. A report-only run (`--since` or `--report-only`) leaves the state byte-identical.
+- `render` writes the page and runs its structure check; a failed check exits 3 and no page is written.
+- `publish-plan` prints one connector call at a time: on the first run of an ISO week the weekly heading, then the page create and one poll per plan step (at most 20). The model relays each call unchanged and saves each result as `DIR/<id>.txt`. `publish-parse` reads the results into the page id and the week of the state, and writes `RESULT` with the status `created`, `failed` or `report-only`; a failed create leaves the state as it was.
+- `message` writes the chat message with the page link, or one `degraded:` line for a rejected judgment, a failed structure check or a failed page create.
+- The judgment may carry an optional `coverage_notes` list of at most 10 `{source, text}`: `source` is a label of at most 60 characters, no two notes share a source, and a note holds no cite. The notes show under Blind spots of the page and name their sources in the blind spots line of the message for that run only; they are stored in no state and change no warning, check or blind spot count.
+- A document store source with `page_from_state: previous_page` reads the previous page named by the state; its blocks give the status edits and the ticked checks that `features` hands to the judgment.
+
+Routine keys of the engine, validated at config load. A routine with `engine: tribe` must set `page` and `publish`:
+
+| Key | Content |
+|---|---|
+| `engine` | `watch` (the default) or `tribe` |
+| `page` | `how_built` and `key_callout` (lists of lines), `state_path`, `link` (a URL template holding `{{id}}`) and `title` (a template holding `{{date}}` only, the title of the page and of the chat message), every key required |
+| `publish` | `provider` (a key of `providers`), `parent` (page id), optional `week_start_format` (a `strftime` format, default `%Y-%m-%d`), `create`, `poll` and `heading` as `{tool, arguments}`, and `results`: the dotted paths `task`, `status`, `page` and `heading`, and the non-empty status lists `done` and `failed` |
+
+- `arguments` hold the placeholders `{{parent}}`, `{{title}}`, `{{content}}`, `{{date}}`, `{{week}}` and `{{week_start}}`, and `{{task}}` in `poll` only. Tool names come from this key, never from code or the template.
+- The `publish` provider needs an `mcp` connector for the place that runs the routine.
+
+Seed:
+- `/routines seed <slug>` turns the Run state of the newest digest pages into a tribe state in a scratch file, shows its summary and waits for the owner's approval before it pushes `state/<slug>.json`.
+- `tribe.py seed` skips a page with no valid run state, naming it, and exits 2 when no page holds one.
+- It exits 3 when a field is outside its allowed values, a warning `status` excepted.
+- A warning `status` other than `open`, `in progress`, `mitigated`, `decided` or `dropped` is read as the one it starts with, else as `open`. Each reading is printed on stderr with the key and the original status.
+
+Settings:
+- The private repository holds `.claude/settings.json` with `permissions.deny` listing `PushNotification`, `Bash(sleep *)` and `Monitor`. A cloud routine reads it because the private repository is its only source.
+- `routines.py lint --private` fails with `settings-missing`, `settings-invalid` or `deny-missing:<entry>` when the file or an entry is absent.
 
 ## Local runs
 

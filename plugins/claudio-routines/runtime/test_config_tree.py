@@ -995,5 +995,36 @@ class SecretGuardTest(TreeCase):
         self.assertNotIn(MARKER, self.rejection(make_config(), files=files))
 
 
+class EngineKeyTest(TreeCase):
+    def rejection(self, engine, in_file=False):
+        routine = make_routine(engine=engine)
+        if in_file:
+            path = self.tree(make_config(), files={ROUTINE + ".json": routine})
+        else:
+            path = self.tree(make_config({ROUTINE: routine}))
+        return self.load_error(path, routine=ROUTINE)
+
+    def loaded(self, **overrides):
+        return config_tree.load(self.tree(make_config({ROUTINE: make_routine(**overrides)})), routine=ROUTINE)["routines"][ROUTINE]
+
+    def test_loads_a_routine_without_an_engine(self):
+        self.assertNotIn("engine", self.loaded())
+
+    def test_loads_the_tribe_engine(self):
+        self.assertEqual(self.loaded(engine="tribe")["engine"], "tribe")
+
+    def test_loads_the_watch_engine(self):
+        self.assertEqual(self.loaded(engine="watch")["engine"], "watch")
+
+    def test_rejects_an_unknown_engine_naming_the_key_path(self):
+        self.assertEqual(self.rejection("other"), "config.json: routines.prod-watch.engine: must be one of watch, tribe")
+
+    def test_rejects_an_unknown_engine_in_a_routine_file_naming_the_file(self):
+        self.assertEqual(self.rejection("other", in_file=True), "config/routines/prod-watch.json: engine: must be one of watch, tribe")
+
+    def test_rejects_a_null_engine(self):
+        self.assertEqual(self.rejection(None), "config.json: routines.prod-watch.engine: must be one of watch, tribe")
+
+
 if __name__ == "__main__":
     unittest.main()

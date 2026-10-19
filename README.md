@@ -62,13 +62,14 @@ This repository hosts several plugins, each shipped independently from the `clau
 
 | Skill / Script | Description |
 |---|---|
-| `routines` | Export live routines, render prompts from private templates, show drift, lint, push after approval, print the environment setup script, and run a routine locally |
+| `routines` | Export live routines, render prompts from private templates, show drift, lint, push after approval, print the environment setup script, seed a tribe routine's state from its previous digest pages (`seed`), and run a routine locally. `lint --private` also fails a private repository whose `.claude/settings.json` is missing (`settings-missing`), invalid (`settings-invalid`) or lacks a denied tool (`deny-missing:<entry>`) |
 | `runtime/state.py` | State engine for routine runs: window, item lifecycle, blind spots, mutes |
 | `runtime/collect.py` | Collectors: read a source over its provider API or through a claude.ai connector, chosen per source and place |
 | `runtime/evaluate.py` | Compute the judgment features from collections and a query pack, check the model's judgment and analysis, and merge them into the facts the state engine takes |
 | `runtime/digest.py` | Digest: renders the posted message from the change summary, the next state and the base file, so the model posts it unchanged and writes none of it |
 | `runtime/features.py` | Features, base and rules files: the named numbers the model judges and cites |
 | `runtime/judgment.py` | Judgment and analysis checks: every cited value must match the features |
+| `runtime/tribe.py` | Tribe digest engine and its `tribe_*.py` modules: window, seed, features, judgment check, lifecycle, page render with its structure check, page write plan and chat message, for a routine with `engine: tribe` |
 | `runtime/config_tree.py` | Config tree: loads `config.json` and the routine files, resolves transports, rejects secrets |
 | `runtime/roles.py` | Role record schemas, collector config and query pack validation |
 | `runtime/providers/` | One adapter per vendor, per role, for both transports; credentials and hosts in its README |
@@ -118,6 +119,7 @@ claude --plugin-dir /path/to/claudio/plugins/claudio-spec
 
 /claudio-routines:routines sync <slug>
 /claudio-routines:routines run <slug> [--since T] [--post]
+/claudio-routines:routines seed <slug>
 ```
 
 Typical workflow:

@@ -1,7 +1,7 @@
 {
   "name": "claudio-routines",
   "description": "Manage claude.ai routines as code: render, diff and sync prompts from templates, and a state engine for routine runs",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "author": {
     "name": "Julien Rollin"
   },

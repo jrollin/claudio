@@ -12,8 +12,11 @@ from unittest import mock
 import collect
 import roles
 import state
+from support import publication_values
 from providers._http import PAGE_CAP, PartialRead, SourceUnreadable
 from providers._errors import CredentialsMissing
+from tribe_support import make_state as make_tribe_state
+from tribe_support import make_warning
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FAKE_ADAPTERS_MAIN = """
@@ -178,7 +181,7 @@ RESULTS = {
                     "title": "Sources",
                     "last_edited": UTC_EDIT,
                     "link": "https://docs.example.test/" + page_id().replace("-", ""),
-                    "blocks": [{"type": "heading", "text": "Mutes", "rows": None}],
+                    "blocks": [{"type": "heading", "text": "Mutes", "rows": None, "checked": None}],
                 }
             ]
         },
@@ -892,6 +895,56 @@ class TrackedMonitorTest(CollectTestCase):
         self.assertEqual([self.obs.plans[0]["entries"][-1], self.obs.parses[0]["entries"][-1]], [tracked_entry(), tracked_entry()])
 
 
+class TribeStateTest(CollectTestCase):
+    def setUp(self):
+        super().setUp()
+        self.config["routines"][ROUTINE]["engine"] = "tribe"
+        self.config["routines"][ROUTINE].update(publication_values())
+        self.state = make_tribe_state()
+
+    def test_reads_a_tribe_state(self):
+        self.assertEqual(self.fetch()[0], 0)
+
+    def test_hands_the_stored_observability_cursor_to_the_adapter(self):
+        self.fetch()
+        self.assertEqual(self.obs.calls[0]["cursor"], {"events_ts_ms": 1000, "monitors": {"1001": "OK"}})
+
+    def test_hands_a_document_source_its_stored_cursor(self):
+        self.state["cursors"]["sources-page"] = {"pages": {page_id(): UTC_EDIT}}
+        self.fetch(source="sources-page", place="local")
+        self.assertEqual(self.doc.calls[0]["cursor"], {"pages": {page_id(): UTC_EDIT}})
+
+    def test_hands_the_adapter_only_the_pack_entries(self):
+        self.state["warnings"][TRACKED_KEY] = make_warning()
+        self.fetch()
+        self.assertEqual(self.adapter_keys(self.obs), [API_KEY, DB_KEY])
+
+    def test_defers_a_daily_entry_already_read_today(self):
+        self.state["run"]["daily_metrics_on"] = PARIS_DAY
+        self.fetch(source="metrics")
+        self.assertEqual(self.statuses()["db-size"], "deferred")
+
+    def test_rejects_a_watch_state_for_a_tribe_routine_naming_the_schema(self):
+        self.state = make_state()
+        code, _, err = self.fetch()
+        self.assertEqual((code, "state: expected schema tribe-1 at schema" in err), (3, True))
+
+    def test_rejects_a_tribe_state_for_a_watch_routine(self):
+        del self.config["routines"][ROUTINE]["engine"]
+        code, _, err = self.fetch()
+        self.assertEqual((code, "state: expected schema 2 at schema" in err), (3, True))
+
+    def test_rejects_an_invalid_tribe_state_naming_the_key_path(self):
+        self.state["warnings"]["queue-depth"]["severity"] = "Critical"
+        code, _, err = self.fetch()
+        self.assertEqual((code, "warnings.queue-depth.severity" in err), (3, True))
+
+    def test_rejects_an_unknown_engine(self):
+        self.config["routines"][ROUTINE]["engine"] = "other"
+        code, _, err = self.fetch()
+        self.assertEqual((code, "routines.prod-watch.engine" in err), (2, True))
+
+
 class LookbackSpanTest(CollectTestCase):
     def lookback(self, days=7):
         self.config["routines"][ROUTINE]["query_pack"][3]["lookback_days"] = days
@@ -1273,6 +1326,192 @@ class RelayTestCase(CollectTestCase):
 
     def call_ids(self):
         return [call["id"] for call in self.plan_doc()["calls"]]
+
+
+CHAT_CHANNEL = "CHAN1"
+CITED_ROOT = "1791990000.000100"
+CITED_THREADS = [{"channel": CHAT_CHANNEL, "root_ts": CITED_ROOT}]
+CONFIG_THREADS = [{"channel": "CHAN9", "root_ts": "junk"}]
+STORED_THREADS = [{**thread, "links": ["https://chat.example.test/archives/cited"]} for thread in CITED_THREADS]
+NO_CHAT_RESULT = {"records": {"messages": []}, "cursor": {"ts": {}}, "entries": {}}
+
+
+class TribeChatCase(RelayTestCase):
+    def setUp(self):
+        super().setUp()
+        self.chat = fake_adapter("fakechat", "chat")
+        self.chat.result = NO_CHAT_RESULT
+        patched = mock.patch.dict(sys.modules, {"providers.fakechat": self.chat})
+        patched.start()
+        self.addCleanup(patched.stop)
+        self.config["providers"]["chat"] = {
+            "adapter": "fakechat",
+            "api": {"base_url": "https://chat.example.test", "credentials": {"token": "CHAT_TOKEN"}},
+            "mcp": {"connectors": {"cloud": "chat-cloud", "local": "chat-local"}},
+        }
+        self.config["routines"][ROUTINE]["engine"] = "tribe"
+        self.config["routines"][ROUTINE].update(publication_values())
+        self.config["routines"][ROUTINE]["sources"]["team-chat"] = {
+            "provider": "chat",
+            "transport": {"cloud": "mcp", "local": "api"},
+            "channels": [CHAT_CHANNEL],
+        }
+        self.state = make_tribe_state()
+        self.state["threads"] = {"team-chat": STORED_THREADS}
+
+
+class TribeChatThreadsTest(TribeChatCase):
+    def test_hands_the_adapter_the_cited_threads_of_the_source_over_the_api_transport(self):
+        self.fetch(source="team-chat", place="local")
+        self.assertEqual(self.chat.calls[0]["source"]["threads"], CITED_THREADS)
+
+    def test_hands_the_adapter_the_cited_threads_of_the_source_when_planning(self):
+        self.plan(source="team-chat")
+        self.assertEqual(self.chat.plans[0]["source"]["threads"], CITED_THREADS)
+
+    def test_hands_the_adapter_the_cited_threads_of_the_source_when_parsing(self):
+        self.loop(source="team-chat")
+        self.parse(source="team-chat")
+        self.assertEqual(self.chat.parses[0]["source"]["threads"], CITED_THREADS)
+
+    def test_hands_the_adapter_no_thread_of_another_source(self):
+        self.state["threads"] = {"other-chat": STORED_THREADS}
+        self.fetch(source="team-chat", place="local")
+        self.assertEqual(self.chat.calls[0]["source"]["threads"], [])
+
+    def test_hands_the_adapter_no_thread_when_the_state_cites_none(self):
+        self.state["threads"] = {}
+        self.fetch(source="team-chat", place="local")
+        self.assertEqual(self.chat.calls[0]["source"]["threads"], [])
+
+    def test_keeps_the_failed_thread_entries_of_the_adapter(self):
+        failed = {f"{CHAT_CHANNEL}:{CITED_ROOT}": {"status": "failed", "reason": "thread_not_found"}}
+        self.chat.result = {**NO_CHAT_RESULT, "entries": failed}
+        self.fetch(source="team-chat", place="local")
+        self.assertEqual(self.collection()["entries"], failed)
+
+    def test_does_not_hand_a_document_source_threads(self):
+        self.state["threads"] = {"sources-page": STORED_THREADS}
+        self.fetch(source="sources-page", place="local")
+        self.assertNotIn("threads", self.doc.calls[0]["source"])
+
+    def test_does_not_hand_a_watch_routine_threads(self):
+        del self.config["routines"][ROUTINE]["engine"]
+        self.state = make_state()
+        self.fetch(source="team-chat", place="local")
+        self.assertNotIn("threads", self.chat.calls[0]["source"])
+
+    def test_drops_the_threads_written_in_the_config_of_a_watch_source(self):
+        del self.config["routines"][ROUTINE]["engine"]
+        self.config["routines"][ROUTINE]["sources"]["team-chat"]["threads"] = CONFIG_THREADS
+        self.state = make_state()
+        self.fetch(source="team-chat", place="local")
+        self.assertNotIn("threads", self.chat.calls[0]["source"])
+
+    def test_replaces_the_threads_written_in_the_config_of_a_tribe_source(self):
+        self.config["routines"][ROUTINE]["sources"]["team-chat"]["threads"] = CONFIG_THREADS
+        self.state["threads"] = {}
+        self.fetch(source="team-chat", place="local")
+        self.assertEqual(self.chat.calls[0]["source"]["threads"], [])
+
+    def test_drops_the_threads_written_in_the_config_of_a_document_source(self):
+        self.config["routines"][ROUTINE]["sources"]["sources-page"]["threads"] = CONFIG_THREADS
+        self.fetch(source="sources-page", place="local")
+        self.assertNotIn("threads", self.doc.calls[0]["source"])
+
+    def test_hands_the_adapter_only_the_channel_and_root_of_a_stored_thread(self):
+        self.fetch(source="team-chat", place="local")
+        self.assertEqual(set(self.chat.calls[0]["source"]["threads"][0]), {"channel", "root_ts"})
+
+
+class TribeChatCallCapTest(TribeChatCase):
+    def setUp(self):
+        super().setUp()
+        self.config["providers"]["chat"]["adapter"] = "slack"
+        self.state["threads"] = {"team-chat": [{**STORED_THREADS[0], "root_ts": f"{1791990000 + n}.000100"} for n in range(60)]}
+
+    def test_cited_thread_reads_reaching_the_response_cap_end_the_plan_partial(self):
+        listing = json.dumps({"messages": f"Channel: #room ({CHAT_CHANNEL})\n", "pagination_info": "There are no more messages available."})
+        self.respond("team-chat-1", listing)
+        for number in range(2, collect.CALL_CAP + 1):
+            self.respond(f"team-chat-{number}", json.dumps({"ok": False, "error": "thread_not_found"}))
+        self.plan(source="team-chat")
+        self.assertEqual(self.plan_doc(), {"done": True, "partial": "call cap", "calls": []})
+
+
+class TribePreviousPageTest(RelayTestCase):
+    def setUp(self):
+        super().setUp()
+        self.config["routines"][ROUTINE]["engine"] = "tribe"
+        self.config["routines"][ROUTINE].update(publication_values())
+        self.config["routines"][ROUTINE]["sources"]["sources-page"] = {
+            "provider": "docs",
+            "transport": {"cloud": "mcp", "local": "api"},
+            "page_from_state": "previous_page",
+        }
+        self.state = make_tribe_state()
+        self.previous = self.state["run"]["previous_page"]["id"]
+
+    def without_previous_page(self):
+        self.state["run"]["previous_page"] = None
+
+    def test_reads_the_previous_digest_page_over_the_api_transport(self):
+        self.fetch(source="sources-page", place="local")
+        self.assertEqual(self.doc.calls[0]["source"]["page_id"], self.previous)
+
+    def test_reads_the_previous_digest_page_when_planning(self):
+        self.plan()
+        self.assertEqual(self.doc.plans[0]["source"]["page_id"], self.previous)
+
+    def test_reads_the_previous_digest_page_when_parsing(self):
+        self.loop()
+        self.parse()
+        self.assertEqual(self.doc.parses[0]["source"]["page_id"], self.previous)
+
+    def test_a_run_with_no_previous_page_marks_the_source_not_read(self):
+        self.without_previous_page()
+        self.fetch(source="sources-page", place="local")
+        collection = self.collection()
+        self.assertEqual((collection["read"], collection["reason"], collection["records"], collection["entries"]), (False, collect.NO_PREVIOUS_PAGE, {"pages": []}, {}))
+
+    def test_a_run_with_no_previous_page_does_not_call_the_adapter(self):
+        self.without_previous_page()
+        self.fetch(source="sources-page", place="local")
+        self.assertEqual((self.doc.clients, self.doc.calls), ([], []))
+
+    def test_a_skipped_source_keeps_its_stored_cursor(self):
+        self.without_previous_page()
+        self.state["cursors"]["sources-page"] = {"pages": {page_id(): UTC_EDIT}}
+        self.fetch(source="sources-page", place="local")
+        self.assertEqual(self.collection()["cursor"], {"pages": {page_id(): UTC_EDIT}})
+
+    def test_a_skipped_source_needs_no_credential(self):
+        self.without_previous_page()
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(self.fetch(source="sources-page", place="local")[0], 0)
+
+    def test_a_run_with_no_previous_page_plans_no_call(self):
+        self.without_previous_page()
+        self.assertEqual(self.plan()[0], 0)
+        self.assertEqual((self.plan_doc(), self.doc.plans), ({"done": True, "partial": None, "calls": []}, []))
+
+    def test_a_run_with_no_previous_page_parses_a_source_not_read(self):
+        self.without_previous_page()
+        self.plan()
+        self.assertEqual(self.parse()[0], 0)
+        collection = self.collection()
+        self.assertEqual((collection["read"], collection["reason"], self.doc.parses), (False, collect.NO_PREVIOUS_PAGE, []))
+
+    def test_rejects_the_option_for_a_watch_routine_naming_the_key_path(self):
+        del self.config["routines"][ROUTINE]["engine"]
+        self.state = make_state()
+        code, _, err = self.fetch(source="sources-page", place="local")
+        self.assertEqual((code, "routines.prod-watch.sources.sources-page.page_from_state" in err), (2, True))
+
+    def test_rejects_the_option_next_to_a_page_id_naming_the_key_path(self):
+        self.config["routines"][ROUTINE]["sources"]["sources-page"]["page_id"] = page_id()
+        code, _, err = self.fetch(source="sources-page", place="local")
+        self.assertEqual((code, "routines.prod-watch.sources.sources-page" in err), (2, True))
 
 
 class SavedResultUnwrapTest(RelayTestCase):

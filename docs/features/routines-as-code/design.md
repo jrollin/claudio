@@ -2,7 +2,7 @@
 
 ## Architecture Overview
 
-Four parts, one new plugin, one private repository.
+Five parts, one new plugin, one private repository.
 
 - **Leak guard**, at the repository root:
   - `scripts/leak_check.py` scans staged changes, the tree, or the history, and prints `path:line:rule`.
@@ -17,6 +17,7 @@ Four parts, one new plugin, one private repository.
   - Computes the run window and the item lifecycle from the previous state and the facts the evaluator writes.
   - Cloud runs get it from a setup script on the default environment, which clones this repository at a pinned tag.
   - Each run reads and writes its state as a JSON file on the `claude/state` branch of the private repository, with one run record per run for stats.
+  - `runtime/digest.py` renders Prod watch's posted message from the change summary, the next state, the run record and the base file (TD-33).
 - **Collectors**, in `plugins/claudio-routines/runtime/`:
   - `collect.py` reads one source of a routine for a window and writes a collection file in the schema of the source's role.
   - The `api` transport calls the provider's HTTPS API with credentials from environment variables.
@@ -26,10 +27,15 @@ Four parts, one new plugin, one private repository.
   - `evaluate.py` computes Prod watch's features from the collections, the query pack and the state, checks the model's judgment and analysis against them, and writes the facts `state.py` takes.
   - The routine's model judges the features against the routine's prose rules: it writes the verdicts (`open`, `severity`, `urgency`, `rank`, `cites`) and the analysis of new and escalated items, and sets no fact value.
   - A routine runs in the cloud on its schedule, or locally through `/routines run`, from the same template and the same pinned runtime.
+- **Tribe engine**, in `plugins/claudio-routines/runtime/tribe.py` and its `tribe_*.py` modules (TD-45):
+  - Runs a routine whose `engine` is `tribe`, from the same collectors: window, seed, features, judgment check, lifecycle, page render with its structure check, connector write plans and chat message.
+  - Keeps its state as `tribe-1` JSON on the `claude/state` branch, with the cursors of every source (TD-46).
+  - Reuses the window, blind spot and text rules of `state.py` and the cite helpers of `judgment.py`.
+  - The routine's model writes only `judgment.json`; the page and the message are the scripts' output.
 
 The private repository (`$CLAUDIO_PRIVATE_DIR`) holds `config.json`, `config/routines/`, `templates/` and `routines/` snapshots on its main branch, and the run state on `claude/state`. CI never reads it, and no script writes it into this repository.
 
-The routines name roles, not providers: an observability tool (monitors, metrics, alert events), a chat channel (the digest, and messages to read), a document store (the sources page with the mutes) and a code host (pull requests and issues). Which product fills each role is a private configuration choice: a source's `provider` in `config.json` picks the adapter.
+The routines name roles, not providers: an observability tool (monitors, metrics, alert events), a chat channel (the digest, and messages to read), a document store (the sources page with the mutes), a code host (pull requests and issues) and an issue tracker (the tribe digests' filters). Which product fills each role is a private configuration choice: a source's `provider` in `config.json` picks the adapter.
 
 ## Usage Flow
 
@@ -126,10 +132,12 @@ graph LR
             ST[state.py]
             COL[collect.py]
             PRV[providers: one adapter per vendor]
-        RL[roles.py: role schemas, config and pack validation]
+            RL[roles.py: role schemas, config and pack validation]
             EV[evaluate.py]
             FT[features.py]
             JG[judgment.py]
+            DG[digest.py]
+            TRB["tribe.py and tribe_*.py: state, seed, features, judgment, lifecycle, page, publish, message"]
             CT[config_tree.py]
         end
     end
@@ -172,6 +180,14 @@ graph LR
     EV --> RL
     EV --> FT
     EV --> JG
+    DG --> ST
+    TRB --> ST
+    TRB --> COL
+    TRB --> EV
+    TRB --> FT
+    TRB --> JG
+    TRB --> RL
+    TRB --> CT
     PRV -->|api| PAPI
     RUN -->|mcp relay, digest post| CONN
     LOCAL -->|mcp relay, digest post| CONN
@@ -410,7 +426,7 @@ Bump procedure, documented in the plugin README:
   - `host`: a URL host, or a bare host name ending in `.com`, `.net`, `.io`, `.eu`, `.ai` or `.org`, other than `claude.ai` and `github.com`.
   - The setup script skeleton gets only the `host`, `literal-number` and `provider-name` rules.
   - `threshold`: a number followed by `%`, `ms`, `s`, `min`, `h`, `MB` or `GB`; or `above`, `below`, `over` or `under` followed by a number.
-- Flag contract (AC-7.3), for each runtime script (`state.py`, `collect.py`, `evaluate.py`):
+- Flag contract (AC-7.3), for each runtime script (`state.py`, `collect.py`, `evaluate.py`, `digest.py`, `tribe.py`):
   - `lint --public` loads the checkout's script with `importlib`.
   - `lint --private` first requires `runtime.tag` to resolve to `runtime.sha` in the local checkout, then extracts the pinned `plugins/claudio-routines/runtime/` tree of `runtime.sha` from the local checkout (`git archive`) into a temporary directory, since the scripts import their siblings, loads each script from there, and exits 2 when the commit is missing.
   - The in-repo paths `plugins/claudio-routines` and `plugins/claudio-routines/runtime` are fixed strings, so the lint and the private-dir guard work from the plugin cache too.
@@ -442,7 +458,7 @@ Bump procedure, documented in the plugin README:
 **Choice**: `collect.py` writes one collection per source, `<run>/collections/<source>.json`, as canonical JSON (AC-13.6):
 - `schema` (1), `source`, `role`, `provider`, `transport`, `place`, `window` (`from_ts`, `to_ts`).
 - `read`, and `reason` (null when read).
-- `cursor`: the newest position reached, in the role's cursor shape. The state stores the observability cursors only (`cursors.observability`); a source of another role reads from the window start.
+- `cursor`: the newest position reached, in the role's cursor shape. The Prod watch state stores the observability cursors only (`cursors.observability`), so its sources of another role read from the window start. The tribe state stores one cursor per source name (TD-46).
 - `records`: in the role's record schema (Data Model), shared by every provider of the role (AC-13.7).
 - `entries`: per query pack entry of the source, or per channel or page of a chat or document store source (TD-40, TD-41), `ok`, `deferred` or `failed` with a reason, so the evaluator can defer one entry without dropping the source.
 
@@ -806,7 +822,7 @@ Feature rules:
   - A clash names both paths. No message prints a config value, ids included (NFR-5).
 - `routines.py` imports `config_tree` from its plugin's runtime through `runtime_imports`, converts its `ConfigError` to a usage error (exit 2), then runs its own checks (TD-11) on the merged config. A `routines` that is not an object fails there. `diff` lists `untracked` and `not exported` from the merged config (AC-23.5).
 - `run_context` runs `git status --porcelain -- config.json config/routines/<slug>.json`, so `config_dirty` covers the routine file, an untracked one included (AC-23.18).
-- The plugin ships `example/`, a private directory to copy: `example/config.json`, plus `example/config/routines/<slug>.json` for Prod watch and the three skeletons of TD-37, each with its own id placeholder, so the example passes BR-47 (AC-23.20).
+- The plugin ships `example/`, a private directory to copy: `example/config.json`, plus `example/config/routines/<slug>.json` for Prod watch, the tribe digest, the chat recap and the weekly status, each with its own id placeholder, so the example passes BR-47 (AC-23.20).
 
 **Alternatives considered**:
 - One merge per loader: rejected, two copies drift, and AC-23.16 needs one definition.
@@ -868,9 +884,8 @@ Feature rules:
 - `render` keeps the line, and the `render` command prints a warning naming the template; `diff` and `lint` render without it (AC-26.5, AC-26.6).
 - `render --runnable` exits 2 on a marked template. The skill's `/routines run` renders with it (AC-26.8).
 - The skill's `sync` runs `render --runnable` before its export, so a marked template stops the sync before any API call. `body` exits 2 on a marked template before printing a body, as a second guard (AC-26.7, BR-46).
-- Three public skeletons start with the marker: `tribe-digest.md`, `chat-recap.md` and `weekly-status.md` (AC-26.4).
-- Each holds the sections Purpose, Sources (by role), Steps and Outputs, with placeholders only, and calls no runtime command, so the public lint passes (AC-26.2, AC-26.9):
-  - Tribe digest: issue tracker filters, chat channels and their threads, observability trend windows, changed documents; outputs a digest page and a chat message.
+- Two public skeletons start with the marker: `chat-recap.md` and `weekly-status.md` (AC-26.4). `tribe-digest.md` is a runnable template without the marker (TD-54).
+- Each marked skeleton holds the sections Purpose, Sources (by role), Steps and Outputs, with placeholders only, and calls no runtime command, so the public lint passes (AC-26.2, AC-26.9):
   - Chat recap: direct messages, mentions, followed threads and announcements; outputs a chat message.
   - Weekly status: the week's issue tracker, code host, chat and document store activity of the owner; outputs a chat message.
 - Each skeleton keeps its run state, or for the weekly status its run record only, on the `claude/state` branch (BR-23).
@@ -963,7 +978,7 @@ Feature rules:
 **Choice**:
 - A document store source sets either `page_id` (the sources page, read every run) or `pages`, a list of page ids. Setting both, or neither, is a config error.
 - The page record holds `link`, the store's page link under `links_base` or the store's default host, for both kinds.
-- The cursor is `{"pages": {<page id>: <edit time>}}` for both kinds. No migration is needed: the state keeps no document store cursor (TD-18). A failed or unchanged page keeps its stored edit time. Records follow the configured page order.
+- The cursor is `{"pages": {<page id>: <edit time>}}` for both kinds. No migration is needed: a Prod watch state keeps no document store cursor (TD-18). A failed or unchanged page keeps its stored edit time. Records follow the configured page order.
 - The evaluator takes its sources page only from a source that sets `page_id`.
 - `api`: the page metadata call gives each page's edit time. Only a page whose edit time differs from its cursor at minute precision is read in full (BR-51).
 - `mcp`: the connector has no edit-time call, so each listed page is fetched, and a page whose edit minute equals its cursor is left out of the records. The cost grows with the number of pages, and the README says so.
@@ -1012,7 +1027,8 @@ Feature rules:
 - A routine file may set `first_read_days`, from 1 to 31.
 - `collect.py` adds `first_read_from_ts` (window end minus that span) and `timezone` (the config timezone) to the window it hands the adapters. Without the key, `first_read_from_ts` is the window start, so Prod watch keeps its windows. `roles.validate_config` checks the key.
 - Read start, one helper for every adapter: a stored cursor later than `first_read_from_ts` wins, else the read starts at `first_read_from_ts`.
-- Collections stay stateless for these roles in this phase: the state keeps no chat, issue tracker or document store cursor (TD-18), so each collection starts at `first_read_from_ts`. The tribe state of the next phase stores them.
+- Under a Prod watch state, collections of these roles are stateless: the state keeps no chat, issue tracker or document store cursor (TD-18), so each collection starts at `first_read_from_ts`.
+- Under a tribe state, each source has a stored cursor (TD-46), and the read start helper takes it when it is later than `first_read_from_ts`.
 - The chat and issue tracker adapters start a channel or a filter with no cursor at `first_read_from_ts`, never earlier (BR-50). The run window keeps BR-13 and BR-20.
 - `config.json` holds the chat and issue tracker providers, each with its default transport. The two tribe digest routine files list:
   - their channels, their issue filter and its narrowing query;
@@ -1045,6 +1061,269 @@ Feature rules:
 - Inferring reasons in the script: rejected, "moved out of the filter" and "deleted" need a lookup that only the session can make.
 
 **Rationale**: the check measures the collectors against what the live digests cited, before any judgment exists.
+
+### TD-45: Tribe engine modules and CLI
+
+**Choice**:
+- A routine file sets `engine`: `watch` (Prod watch, the default) or `tribe`.
+- `runtime/tribe.py` is the CLI of the tribe engine, with subcommands `init`, `seed`, `window`, `features`, `judge`, `apply`, `render`, `publish-plan`, `publish-parse` and `message`. Each reads and writes JSON files, as `state.py` and `evaluate.py` do.
+- `tribe.py` parses the arguments, runs `init` and `window`, and calls the modules for the other subcommands.
+- The logic sits in focused modules:
+  - `tribe_state.py`: schema, load, write and the shared rules (keys, page ids, ISO weeks, the initial state);
+  - `tribe_seed.py`: seeding from a live digest (TD-47);
+  - `tribe_features.py`: features, base and rules files;
+  - `tribe_judgment.py`: judgment schema and checks;
+  - `tribe_lifecycle.py`: `judge` and `apply`, the lifecycle, the summary and the run record;
+  - `tribe_page.py`: render, structure check, edit parsing;
+  - `tribe_publish.py`: `render`, `publish-plan` and `publish-parse`, the connector write plans;
+  - `tribe_message.py`: the chat message and the degraded messages.
+- The modules reuse `state.py` (window computation, blind spot rules, text cleaner, atomic writes) and the cite helpers of `judgment.py`.
+- `collect.py` checks `--state` with the checker of the routine's engine. For a tribe state it reads no tracked items, so monitor reads come from the pack only.
+
+**Alternatives considered**:
+- Growing `state.py` and `evaluate.py` with tribe branches: rejected, Prod watch's tested paths would change for a different item model.
+- One script per step: rejected, the steps share loaders and checks.
+
+**Rationale**: the tribe engine reuses the proven pieces and leaves Prod watch's behaviour as it is.
+
+### TD-46: Tribe state
+
+**Choice**: `state/<slug>.json` on `claude/state`, schema `tribe-1`:
+- `run`: `at`, `window`, `daily_metrics_on`, `previous_page` (`id`, `written_at`), `weekly_heading_week` (ISO week of the config timezone), `layout_version`, `models`, `posted`.
+- `warnings.<key>`, with these fields:
+  - `title`, `topic`, `severity`, `when`, `runway`, `status`, `confidence`, `risk`, `impact`, `mitigation`;
+  - `cites`: each `{source, link}` for a record or `{feature, name}` for a feature value;
+  - `metric` (a pack entry key or null);
+  - `runs_under` (the count of BR-57);
+  - `since`.
+- `checks.<key>`: `text`, `topic`, `group`, `since`.
+- `cursors`: keyed by source name for the chat, issue tracker and document store sources, which `collect.stored_cursor` already looks up, plus `observability` as in Prod watch. A source not read keeps its stored cursor, and cursors only move forward (BR-14, BR-28).
+- `threads`: per chat source, the threads `{channel, root_ts, links}` that open warnings cite, `links` being the cited record links of that thread. `apply` derives them from the cited message records, which carry `thread_ts`, and keeps a stored thread while an open warning still cites one of its links. `collect.py` hands `{channel, root_ts}` of each to the chat adapter as `source["threads"]`, and the adapter reads their replies newer than the previous window end (AC-32.5).
+- `blind_spots`: as in Prod watch.
+- `retired`: retired keys, each with its title, for the duplicate-title check.
+- The state changes only through `tribe.py apply` and `publish-parse` (TD-52), and the template pushes it fast-forward (BR-27).
+
+**Alternatives considered**:
+- Prod watch's state schema with a kind field: rejected, items and warnings do not share fields or lifecycle.
+- The Run state JSON inside the digest page: rejected, BR-55.
+
+**Rationale**: one file per routine, readable by the collectors and owned by scripts.
+
+### TD-47: Seeding from a live digest
+
+**Choice**: `tribe.py seed --page <saved page file> [--page ...] --routine <slug> --config <config> --out <state>`:
+- It reads saved fetches of the newest digest pages, newest first.
+- It takes the first page whose `Run state` toggle holds a JSON block that parses with `schema` 1.
+- It maps that JSON into `tribe-1`:
+  - warnings and checks by key, their fields checked against BR-54;
+  - cursors per source, matched by channel id, filter and page id against the routine's sources;
+  - blind spot runs;
+  - the tracked threads, from the chat cursor section's `threads` entries (`<channel>/<root ts>`), as `threads[<chat source>]` `{channel, root_ts, links}` for each chat source that lists the channel, the link built by the chat adapter from the provider's `links_base`; an entry that is malformed or whose channel no chat source lists is skipped and noted on stderr;
+  - `previous_page`, from the page's id and the Run state's `written_at`, so the first run reads the owner's edits.
+- A warning status that is not one of BR-54 is read as the BR-54 word it starts with (case-insensitive, up to the first comma or space-separated clause), else as `open`. Each remapped status is printed as `seed: warnings.<key>.status "<original, cut to 60 characters>" read as <status>`, so the owner sees it at the approval gate (AC-33.4, AC-33.5). `check_state` stays strict.
+- The retired keys start empty. `weekly_heading_week` is the page's ISO week.
+- It prints each skipped page and why, and exits 2 when no page qualifies.
+- The skill's `/routines seed <slug>` flow shows the state and pushes it to `claude/state` only after the owner's approval (AC-33.4).
+
+**Alternatives considered**:
+- Seeding inside the first run: rejected, a wrong seed would be pushed with no review.
+
+**Rationale**: the first runtime run continues the live keys, and the owner sees the seed first.
+
+### TD-48: Tribe features and rules
+
+**Choice**: `tribe.py features` writes `features.json`, `base.json` and `rules.json`, as TD-26 does. Features are keyed documents with named values, so `judgment.feature_value` resolves a cite `{feature, name, value}`:
+- Records, each carrying its source and link:
+  - one `record:<source>:<channel>:<ts>` document per chat message or reply, with its channel and thread root, so each reply link can be cited;
+  - one per issue, with key, type, status, priority, update time and sprint flag;
+  - one per changed page, with its blocks as plain text.
+- `monitor-<id>` documents with state and transitions, reusing `features.py`, and `metric:<entry>` documents with the window value.
+- A `trend:<entry>` document for each entry with `trend_days`:
+  - the window value;
+  - the max and the mean over the last 7 days and over the whole span;
+  - `growth_monthly`: the mean of the span's second half over the mean of its first half, raised to the power 30 over half the span, minus 1, in percent.
+  - `growth_monthly` is null with fewer than 2 points in a half, a first-half mean at or below 0, or a negative second-half mean. A 30-day span compares two 15-day halves within the 31-day cap of AC-30.1.
+- `previous`: the stored warnings and checks with their fields and cites.
+- `edits`: the parsed page edits (TD-49).
+- `deferred`: the stored warnings whose cited sources or metric entry were not read (BR-63), from the cite's `source` and the collections' read flags.
+- `rules.json` holds the routine's prose rules from the private config: the meanings of BR-54, the warning thresholds and the writing rules (BR-33, AC-36.10).
+- Source text goes through `state.clean_text` (AC-34.4). The byte-identity and no-threshold rules of TD-26 apply.
+
+**Alternatives considered**:
+- Handing the model the raw collections: rejected, for the TD-26 reasons (size, and no named values to cite).
+- Growth over the last 30 days against the 30 before: rejected, it needs a 60-day span, past the trend cap.
+
+**Rationale**: the model sees each value once, by name, and every cite can be checked.
+
+### TD-49: Page edits
+
+**Choice**:
+- The previous digest page is read as an extra document store source, `previous-digest`, with the option `page_from_state: previous_page`. `collect.py` fills its page id from `run.previous_page.id`. A run with no previous page skips it.
+- Document store list blocks carry `checked`: true or false for a to-do, null for any other block, on both transports (the api's to-do checked flag, the connector's `- [ ]` and `- [x]` markers).
+- The renderer ends each to-do with its check key in a gray marker, and each warning row's first cell with its key, so matching does not rely on text prefixes.
+- When the page's edit time, at minute precision, is later than `written_at`, `tribe.py features` parses:
+  - each warning row's key marker and its `status:` value;
+  - each to-do's key marker and its checked flag.
+- Only a status of BR-54 and a checked flag become edits. Every other difference, a key that matches nothing included, is listed under `edits.ignored` and copied into the run record (AC-35.3).
+- A previous page that cannot be read, or that was edited and no longer holds the Warnings and What to check sections in layout order, is a blind spot `previous digest unreadable`, and the stored values hold (AC-35.5).
+
+**Alternatives considered**:
+- Matching by title and text prefix: rejected, a renamed title or a shared prefix would merge an edit into the wrong key.
+
+**Rationale**: the owner's two kinds of edits merge exactly, and nothing else on the page can change the state.
+
+### TD-50: Tribe judgment and its checks
+
+**Choice**: the model writes `judgment.json`, judging from the features and the rules only, with no provider call in this step (model eval):
+- `warnings.<key>`:
+  - the AC-36.1 fields, `metric` (a pack entry key or null) and `verdict` (`open` or `under`);
+  - `evidence`, a list of `{claim, cites}`;
+  - an optional `replaces` (a stored key).
+- `checks.<key>`: `text`, `topic`, `group` (`This week`, `Before the month-end`, `Investigate`).
+- `decisions`: at most 3 of `{decision, deadline, options, topic}`.
+- `details`: per topic, a list of `{text, cites}`.
+- `corrections`: a list of `{was, now, cites}`.
+- `highlights`: the run's summary lines, each with cites.
+- `coverage_notes`: optional, at most 10 of `{source, text}`: `source` a label of at most 60 characters naming what was not covered (configured or not), `text` one line on what and why; no two notes share a source; no cites (AC-36.12, BR-64).
+
+`tribe.py judge` rejects, with exit 3 and the key path:
+- fields outside the shapes above;
+- keys that are not kebab-case (`^[a-z0-9]+(-[a-z0-9]+)*$`), longer than 60 characters, unknown, reused or retired;
+- a warning key equal to a check key, stored or judged;
+- a missing stored warning that is neither deferred nor replaced, and a `replaces` that names a deferred warning;
+- a new warning whose title matches a stored or retired title, case-insensitive, without `replaces`, and two warnings with the same title;
+- values outside BR-54 and the check groups;
+- empty texts, and texts that are not labels (TD-27: 300 characters, no control characters) or that hold `<`, `>`, `@` or `://`, since the page is table markup; both rules apply to the NFKC form too;
+- an evidence item, detail, correction or highlight without a cite;
+- cites that match nothing: a record cite must name the source and link of a record of this run's features or of a cite stored with a warning, and a feature cite must give a value equal to the features;
+- a `measured` warning without a feature cite, or a `reported` one without a record cite;
+- a text holding an author id that appears in this run's collections, or an email;
+- more than 3 decisions.
+
+Stored checks absent from the judgment are kept unchanged. The correction loop is the one of TD-27.
+
+`tribe.py judge --features F --judgment J` writes no file. It exits 0 for a checked judgment, 3 for a rejection or a judgment that is not valid JSON (the message starts with `judgment:` and names the key path), and 2 for an unreadable file or a features file that fails its schema. `tribe.py apply` runs the same check on the raw `judgment.json`, so only a checked judgment is applied.
+
+**Alternatives considered**:
+- The model writing the page: rejected, BR-60.
+- A fixed author id pattern: rejected, it matches ordinary uppercase words.
+
+**Rationale**: every field the page shows comes from a checked judgment or a script.
+
+### TD-51: Tribe lifecycle
+
+**Choice**: `tribe.py apply` merges the judgment, then the page edits, into the next state. An edit wins over the judgment for the same field (AC-35.4). It writes the summary and the run record:
+- A warning with status decided or dropped resolves.
+- A warning with a `metric`, whose sources were read and whose verdict is `under`, adds 1 to `runs_under` and resolves at 2. A verdict of `open` resets the count to 0 (BR-57).
+- A warning without a `metric` resolves only by its status (AC-38.3).
+- A deferred warning is held with its count and no verdict (BR-63). A page status edit still applies to it (AC-35.4), shows as a move, and is not listed as ignored. A deferred warning does not resolve in that run, even when the edited status is decided or dropped. A stored status of decided or dropped holds against the judgment, so the warning resolves in the first run where it is not deferred.
+- A replaced warning resolves.
+- A checked to-do marks its check done.
+- Resolved warnings and done checks appear once in the summary, then leave the state, and their keys and titles join `retired` (BR-58, AC-38.6).
+- Moves of severity, when or status appear in the summary. A runway or other label edit is not a move.
+- Blind spots follow `state.py`'s rules.
+- Cursors come from the collections that were read. The others keep their stored value.
+- `threads` is rebuilt for each chat source read in the run, from the record links the open warnings cite (stored, held or new):
+  - an entry is derived from each cited link that matches a message record of this run, and merged by channel and root with the stored entry of the same thread;
+  - a stored entry stays while one of its links is still cited, and keeps only the links still cited;
+  - an entry no open warning cites is dropped;
+  - a source not read keeps its stored threads.
+- A report-only run writes the record and the summary, and leaves the state byte-identical (BR-22).
+
+`tribe.py apply --state S --features F --base B --judgment J --window W --out N --summary M --record R`:
+- `--base` is the `base.json` of `tribe.py features`; `--window` is the file of `tribe.py window`, whose `explicit` flag marks a report-only run.
+- A cursor older than the stored one, for a source read in the run, is rejected with exit 3 and its path, in a run that advances the state (BR-14).
+- Exit 2 is an unreadable or invalid input, features built from another state, or a cursor for a source not read; exit 3 is a rejected state, judgment, window or cursor. A failed run writes no file.
+
+**Alternatives considered**:
+- The model deciding resolution: rejected, BR-38.
+
+**Rationale**: the template's lifecycle rules, in a tested script.
+
+### TD-52: Page render, structure check and publish
+
+**Choice**:
+- `tribe.py render` writes the page in the store's enhanced markdown, layout version 1:
+  - a header callout with the run time and window and the previous run, then the table of contents;
+  - the h2 sections, in order: Since last run, Decisions this week, Warnings, What to check, Details, Blind spots, Corrections to earlier numbers, Sources, How this digest is built, Run state;
+  - Warnings:
+    - a key callout from `page.key_callout`, then a Focus table (Topic, Severity, When, Warnings), sorted by highest severity, then soonest when;
+    - one h3 per topic, in Focus order, each a 6-column table (Warning, Severity, Risk, Impact, Mitigation leads, Evidence);
+    - markers: `status:` under the warning, `runway:` under the severity, and `confidence:` as the first line of the evidence;
+  - Decisions this week: at most 3 rows of Decision, Deadline, Options and Topic.
+  - What to check: the 3 groups, each to-do starting with a gray topic tag and ending with its key marker.
+  - Sources and Blind spots come from the collections and the summary. Each blind spot reads `key: gap (runs: n)`, and a last line gives the count the cap dropped when it is not 0.
+  - Under Blind spots, after the gap lines, each coverage note reads `source: text` on its own line, and the section reads None only when there is no gap, no dropped count and no note (BR-64).
+  - How this digest is built holds the lines of `page.how_built`.
+  - Run state names the window, the page ids and the state path, `page.state_path` (BR-55).
+- Tables hold one `<tr>` or `<td>` per line. `tribe_page.check` runs the layout's structure checks in Python (sections, Focus first, table headers, the 3 markers per row, the Focus counts, at most 3 decisions, the check groups and tags). `render` exits 3 when a check fails (AC-39.5).
+- `tribe.py publish-plan` is an iterative plan, like a read plan (TD-21):
+  - first, when the state's `weekly_heading_week` differs from the run's ISO week in the config timezone, the weekly heading append to the main page, so the first page of a week lands under its heading;
+  - then one page create under the main page, in background mode, with the title and the rendered content, even when the heading failed;
+  - then one task poll per plan step until the task ends, at most 20 polls.
+- The model relays each call unchanged and saves each result.
+- Tool names and argument shapes come from the routine's `publish` key, never from code; every template is filled before the first call, so a bad template stops the run before a page exists.
+- `page` and `publish` are required for a routine with `engine: tribe` and checked at config load, with every `page` key required and `publish.provider` naming a configured provider. The connector of that provider for the run's place is checked when `publish-plan` and `publish-parse` run.
+- Placeholders of a call template:
+  - `{{parent}}` (the main page id), `{{content}}` (the rendered page), `{{title}}` (the routine's `page.title` template rendered), `{{date}}` (the run's local date in the config timezone, `YYYY-MM-DD`), `{{week}}` (the ISO week, `YYYY-Www`) and `{{week_start}}` (the Monday of that week, formatted with `publish.week_start_format`, a `strftime` format, default `%Y-%m-%d`);
+  - `{{task}}` in the poll template only.
+- `page.title` is the one source of the page title and the chat message title; it takes `{{date}}` only. The summary holds no title.
+- Result paths (`publish.results`) follow object keys, and a digit segment indexes a list (`pages.0.id`); a missing key, a non-object or an index out of range gives no value.
+- `tribe.py publish-parse --now T` reads the new page id from the results and writes two files: the state (`--out`) and the result (`--result`, `result.json`, see Data Model).
+  - It sets `run.previous_page` (the id lowercase without dashes, with `written_at` = T) and, when the heading call succeeded, `weekly_heading_week`.
+  - A failed heading keeps the week, so the next run tries again (AC-39.7).
+  - A failed create leaves the state unchanged, even when the heading was written, and `result.json` holds the status `failed` with its reason (AC-39.6).
+  - It writes no run record: the record comes from `tribe.py apply --record`, and the template commits it with or without the state.
+- A report-only run prints the page and plans no write; `publish-parse` then writes the state unchanged and a result with the status `report-only` (AC-39.8).
+
+**Alternatives considered**:
+- The model composing the create call: rejected, BR-60, and the reason of TD-12.
+- Reading the main page to detect the heading: rejected, the state already holds the last heading week.
+- A synchronous create: rejected, the digest pages reach about 60 kB and the live runs use the background mode.
+
+**Rationale**: the page is byte for byte the script's output, and the state moves only once the page exists.
+
+### TD-53: Tribe chat message
+
+**Choice**: `tribe.py message` renders the message:
+- the run kind, the new and resolved warnings, the ticked checks and the sources read out of those configured;
+- the important points: warnings past a threshold (judged `when` of `now`, since thresholds are prose rules) or with a runway under 14 days, moved severity or when, monitor changes, the decisions;
+- the blind spots in one line, and the page link:
+  - the line names the gap keys, then the coverage note sources, at most 8 names in all (the blind spot cap), and the names past the cap join the `N more not listed` count (BR-64).
+
+A degraded run's message is one line that starts with `degraded:` and names the cause (a rejected judgment, a failed structure check, a failed create). The model posts it unchanged to the digest channel when the run's post setting is `yes`, which holds in the cloud, and locally only with `--post` (BR-26, BR-42).
+
+**Rationale**: the same contract as Prod watch's digest.
+
+### TD-54: Tribe template and enforced rules
+
+**Choice**:
+- The public `tribe-digest.md` skeleton is a runnable runtime template without the not-runnable marker, with placeholders only. Its steps follow the Prod watch template:
+  - check runtime, load state;
+  - window, check environment, collect;
+  - features, judge, apply, render;
+  - publish (relayed writes), save state, message.
+- The private repository holds `.claude/settings.json` with `permissions.deny` for `PushNotification`, `Bash(sleep *)` and `Monitor`. The cloud session reads that file because each runtime routine attaches the private repository as its only source.
+- `lint --private` fails when that file or one of those entries is missing (AC-41.3).
+
+**Alternatives considered**:
+- Prose rules only: rejected, 3 of 3 live digest runs broke them.
+
+**Rationale**: the session itself refuses the forbidden tools.
+
+### TD-55: Replay against the next live digest
+
+**Choice**:
+- The private `reference/` holds the 2026-10-15 digests (the seed) and the 2026-10-16 digests (the targets).
+- The replay seeds from the first, runs the full pipeline report-only over the second's window, and writes `key_map.json` and `reasons.json` in the session.
+- `reference/compare_judgment.py` compares:
+  - warnings by mapped key (severity, when, status);
+  - checks by key;
+  - decisions by topic;
+  - blind spots by source.
+- Its reasons come from the closed list of AC-42.2, and it exits 1 on an unexplained difference.
+
+**Rationale**: it measures continuity from a live state, which is how the rollout starts.
 
 ## Implementation Considerations
 
@@ -1103,6 +1382,8 @@ Private config additions (TD-19, TD-23, TD-24, TD-34, TD-35):
 | `places.<place>` | `runtime_dir`, `state_dir`, for `cloud` and `local` |
 | `config/routines/<slug>.json` | one routine, with the keys of `routines.<slug>` (TD-34) |
 | `routines.<slug>.sources.<source>` | `provider`, `transport.cloud` and `transport.local` when they differ from the provider default, and the role's options |
+| `routines.<slug>.page` | tribe engine, required at config load, every key required: `how_built` and `key_callout` (lists of lines), `state_path`, `link` (page URL template holding `{{id}}` only) and `title` (page title template holding `{{date}}` only) (TD-52) |
+| `routines.<slug>.publish` | tribe engine, required at config load: `provider` (a key of `providers`), `parent` (page id), optional `week_start_format` (`strftime`, default `%Y-%m-%d`), `create`, `poll` and `heading` as `{tool, arguments}`, `results` {`task`, `status`, `page`, `heading` (dotted paths of object keys and list indexes), `done`, `failed` (non-empty lists of statuses)}; arguments hold `{{parent}}`, `{{title}}`, `{{content}}`, `{{date}}`, `{{week}}`, `{{week_start}}`, and `{{task}}` in `poll` only; validated at config load (TD-52) |
 | `routines.<slug>.query_pack` | list of entries (TD-23, TD-31) |
 | `routines.<slug>.rules` | routine-wide rule texts (TD-31) |
 | `routines.<slug>.sources.<monitors source>.discovery_query` | optional monitor search query (TD-29) |
@@ -1113,8 +1394,8 @@ Role record schemas, shared by every provider of a role (AC-13.7):
 | Role | Source options | Records | Cursor |
 |---|---|---|---|
 | observability | `kind` (`monitors` or `metrics`), `scope_filter` (the alert event search query of a `monitors` source; ignored by a `metrics` source), `discovery_query` (`monitors` only) | `monitors` kind: `monitors` `{id, name, state, priority, link}`, alert `events` `{ts_ms, link, monitor}` after the cursor (no title: the features use only the monitor and the time), `discovered` `{id, name, state, priority, link}` (search results and event-named monitors) and `discovery` `{read, reason}` with an optional `event_monitors_capped`; `metrics` kind: `metrics` `{key, value, hourly [{ts, value}], daily [{ts, value}], groups [{group, value}], trend [{day, value}] or null, trend_reason}`, `daily` for lookback entries only, `trend` for entries with `trend_days` (TD-42) | `events_ts_ms` and `monitors` for `monitors`, `metrics` for `metrics` |
-| document store | `page_id` (`^[A-Za-z0-9-]+$`), or `pages` (a list of page ids, TD-41) | `pages`: `{id, title, last_edited, link, blocks [{type, text, rows}]}` | `pages` (edit time per page id) |
-| chat channel | `channels` | `messages`: `{channel, ts, thread_ts, author, text, link}` (TD-40) | newest history `ts` per channel |
+| document store | exactly one of `page_id` (`^[A-Za-z0-9-]+$`), `pages` (a list of page ids, TD-41) and `page_from_state: previous_page` (tribe engine only, TD-49) | `pages`: `{id, title, last_edited, link, blocks [{type, text, rows, checked}]}`, `checked` true or false on a to-do, null or absent otherwise | `pages` (edit time per page id) |
+| chat channel | `channels`; `threads` `[{channel, root_ts}]` from the tribe state, set by `collect.py` (TD-46) | `messages`: `{channel, ts, thread_ts, author, text, link}` (TD-40), cited thread replies included; a cited thread not found is a failed entry `<channel>:<root ts>` | newest history `ts` per channel |
 | issue tracker | `filter`, optional `query` and `open_sprints` (TD-39) | `issues`: `{key, title, type, status, priority, created, updated, link, in_open_sprint}` | `updated` |
 | code host | `repos`, `query` (a non-empty `query` makes the source not read: neither transport supports it) | `pull_requests`: `{repo, number, title, author, state, draft, created_at, updated_at, merged_at, link}`; `issues`: `{repo, number, title, author, state, created_at, updated_at, link}` | newest `updated_at` |
 
@@ -1127,6 +1408,23 @@ Entry statuses in a collection's `entries`: `ok`, `deferred`, `failed`, and `mis
 Features, base, rules, judgment and analysis files: TD-26 and TD-27. They stay in the run's temporary directory (NFR-8).
 
 Plan file (TD-21): `{"done", "partial", "calls": [{"id", "connector", "tool", "arguments"}]}`. Per responses directory, `calls.json` keeps `{"calls": {id: digest or null}, "done", "partial"}` across plan steps, so `parse` knows every planned call, its expected digest, and whether the loop ended. A code script's result is `{"payload", "checksum", "digest"}`. Each source has its own responses directory. A saved response that holds the harness's file wrapper, a JSON list of `{"type": "text", "text"}` blocks, is unwrapped to the joined texts before any check, since the model copies a harness-saved result unchanged.
+
+Tribe engine files (TD-45 to TD-53), all canonical JSON:
+
+| File | Shape |
+|---|---|
+| state `tribe-1` | `schema`, `digest`, `run` {`at`, `window` {`from_ts`, `to_ts`}, `daily_metrics_on`, `previous_page` {`id`, `written_at`} or null, `weekly_heading_week` (`YYYY-Www`) or null, `layout_version` 1, `models`, `posted`}, `warnings`, `checks`, `cursors` {`observability`, `<source>`}, `threads` {`<source>`: [{`channel`, `root_ts`, `links` (cited record links, at least 1)}]}, `blind_spots` [{`key`, `gap`, `runs`}], `retired` {`<key>`: `<title>`} |
+| stored warning | `title`, `topic`, `severity`, `when`, `runway`, `status`, `confidence`, `risk`, `impact`, `mitigation` (1 to 3 labels; 0 only on a warning seeded from a page that had none), `cites`, `metric` (pack entry key or null), `runs_under`, `since` |
+| stored check | `text`, `topic`, `group`, `since` |
+| cite | a record cite `{source, link}`, or a feature cite `{feature, name, value}` (the stored form omits `value`) |
+| `features.json` | `keys` {`<doc key>`: {`kind` (`record`, `monitor`, `metric`, `trend`), `source`, `link` or null, `title`, `values` {`<name>`: value}, `text` (records only, cleaned)}}, `previous` {`warnings`, `checks`, `retired`}, `edits`, `deferred` (warning keys), `authors` (the author ids of the collections), `pack` (entry keys) |
+| `judgment.json` | `warnings` {`<key>`: the stored warning fields without `cites`, `runs_under` and `since`, plus `verdict` (`open`, `under`), `evidence` [{`claim`, `cites`}], optional `replaces`}, `checks` {`<key>`: {`text`, `topic`, `group`}}, `decisions` [{`decision`, `deadline`, `options`, `topic`}], `details` {`<topic>`: [{`text`, `cites`}]}, `corrections` [{`was`, `now`, `cites`}], `highlights` [{`text`, `cites`}] |
+| edits | `page_id`, `edited_at`, `after_written` (bool), `statuses` {`<key>`: status}, `ticked` [keys], `unticked` [keys], `ignored` [{`where`, `why`}] |
+| tribe summary | `digest`, `run_at`, `window`, `baseline`, `report_only`, `previous_page`, `warnings` (open, each the stored fields plus `evidence` and `change` (`new`, `moved`, `same`)), `moved` [{`key`, `field` (`severity`, `when` or `status`), `from`, `to`}], `resolved` [{`key`, `title`, `reason`}], `checks` (open, keyed), `done` [{`key`, `text`}], `decisions`, `details`, `corrections`, `highlights`, `blind_spots`, `blind_spots_dropped`, `coverage_notes` [{`source`, `text`}], `sources` [{`source`, `role`, `read`, `reason`, `from_ts`, `to_ts`}], `edits_ignored` |
+| `base.json` (tribe) | `sources` [{`source`, `role`, `read`, `reason`, `from_ts`, `to_ts`}], `cursors` {`observability` (merged), `<source>` (the cursor of a source read)}, `blind_spots` [{`key`, `gap`}], `blind_spots_retried` [keys] (optional), `deferred` [keys], `daily_metrics_on`, `models` |
+| tribe run record | `schema` 1, `digest`, `run_at`, `window` {`from_ts`, `to_ts`, `explicit`, `cut`}, `counts` {`new`, `moved`, `resolved`, `done`, `held`, `open`, `checks`}, `new`, `moved`, `resolved`, `done`, `held` (keys), `blind_spots` [{`key`, `runs`}], `blind_spots_dropped`, `sources_read` [names], `edits_ignored` |
+| `result.json` | written by `publish-parse --result`: `status` (`created`, `failed` or `report-only`), `page` (the page id, lowercase without dashes, or null), `reason` (text or null), `heading` (`written`, `failed` or `skipped`), `heading_reason` (text or null) |
+| page key markers | a warning row's first cell ends with `<span color="gray">key: <key></span>`; a to-do ends with ` <span color="gray"><key></span>` |
 
 ### API / Interface
 
@@ -1152,17 +1450,37 @@ python3 .../runtime/collect.py parse     --config C --routine R --source NAME --
 python3 .../runtime/evaluate.py features --config C --routine R --state S --window W --collections DIR --place P --runtime SHA --out FEATURES --base-out BASE --rules-out RULES
 python3 .../runtime/evaluate.py judge    --features FEATURES --base BASE --judgment J --out F
 python3 .../runtime/evaluate.py annotate --features FEATURES --facts F --analysis A --preview SUMMARY --out F2
+python3 .../runtime/tribe.py init          --digest NAME --out S
+python3 .../runtime/tribe.py window        --state S --now T --tz Z [--since T0 | --report-only] --out W
+python3 .../runtime/tribe.py seed          --page FETCHED [--page FETCHED ...] --routine R --config C --out S
+python3 .../runtime/tribe.py features      --config C --routine R --state S --window W --collections DIR --place P --out FEATURES --base-out BASE --rules-out RULES
+python3 .../runtime/tribe.py judge         --features FEATURES --judgment J
+python3 .../runtime/tribe.py apply         --state S --features FEATURES --base BASE --judgment J --window W --out N --summary M --record R
+python3 .../runtime/tribe.py render        --config C --routine R --place P --summary M --out PAGE
+python3 .../runtime/tribe.py publish-plan  --config C --routine R --place P --summary M --state N --page PAGE --responses DIR --out PLAN
+python3 .../runtime/tribe.py publish-parse --config C --routine R --place P --summary M --state N --responses DIR --now T --out S2 --result RESULT
+python3 .../runtime/tribe.py message       --result RESULT --summary M --config C --routine R --place P --out MESSAGE
+python3 .../runtime/tribe.py message       --degraded {judgment|structure} --out MESSAGE
+python3 .../routines.py seed SLUG --page F [--page F ...] --out F [--private DIR]
 ```
 
 `--config` names `config.json`; the runtime also reads `config/routines/<routine>.json` beside it (TD-34). `render --runnable` and `body` exit 2 on a template marked not runnable (TD-37).
 
 `collect.py` runs one source outside any routine with a window from `state.py window --since` over a state from `state.py init` (AC-13.9). `collect.py check-env` exits 1 when a variable is missing; `collect.py` and `evaluate.py` exit 3 on an invalid query pack; `evaluate.py judge` and `annotate` exit 3 on a rejected judgment or analysis.
 
+`tribe.py` exits 3 on:
+- a rejected state or time, in `window`, `features`, `apply`, `publish-plan` and `publish-parse`;
+- a rejected judgment, window or cursor, in `judge` and `apply`;
+- a page that fails its structure check, in `render` and `publish-plan`;
+- a Run state field outside its allowed values, in `seed`, a `status` aside (TD-47).
+
+A `message --result` of status `failed` needs no flag besides `--out`. `routines.py seed` runs `tribe.py seed` from the runtime pinned at `runtime.sha` in `places.local.runtime_dir`, and passes its exit code through.
+
 Exit codes:
 - 0: ok or in sync.
 - 1: findings or drift.
 - 2: usage error, input error, or a scan that cannot run.
-- 3: rejected state, facts, time, query pack, judgment or analysis.
+- 3: rejected state, facts, time, query pack, judgment, analysis, cursor, page structure or seeded Run state.
 
 ### Lifecycle Algorithm
 
@@ -1406,6 +1724,45 @@ sequenceDiagram
     A-->>C: records, cursor, entries
 ```
 
+### Tribe digest run
+
+```mermaid
+sequenceDiagram
+    participant M as Routine model
+    participant C as collect.py
+    participant T as tribe.py
+    participant D as Document store connector
+    participant H as Chat connector
+    M->>T: load or init the state, then tribe.py window
+    M->>C: plan, relay, parse each source, the previous digest page included
+    M->>T: features
+    T-->>M: features.json, base.json, rules
+    M->>T: judge judgment.json
+    alt rejected twice
+        T-->>M: exit 3
+        M->>H: post degraded message
+    else checked
+        M->>T: apply, then render
+        alt structure check fails
+            T-->>M: exit 3
+            M->>H: post degraded message
+        else page checked
+        M->>T: publish-plan
+        M->>D: weekly heading when due, create page, poll, as planned
+        M->>T: publish-parse the saved results
+        alt page created
+            T-->>M: next state with the page id
+            M->>M: commit state and record, push fast-forward
+            M->>T: message
+            M->>H: post the rendered message
+        else create failed
+            T-->>M: record only, state unchanged
+            M->>H: post degraded message
+        end
+        end
+    end
+```
+
 ## File Inventory
 
 | File | Action | Purpose |
@@ -1477,7 +1834,7 @@ sequenceDiagram
 | `plugins/claudio-routines/skills/routines/scripts/routines.py` | modify | Config split: load through `config_tree`, error labels, `render --runnable`, `body` refusal, `literal-value` and `repeated-value` warnings |
 | `plugins/claudio-routines/skills/routines/scripts/lint.py` | modify | Config split: pure functions for the not-runnable marker, the `marker` finding and the literal value lines |
 | `plugins/claudio-routines/skills/routines/scripts/test_routines.py` | modify | Config split: merged loads, labels, export untouched `config/`, marker handling, warnings, the example tree |
-| `plugins/claudio-routines/skills/routines/templates/tribe-digest.md`, `chat-recap.md`, `weekly-status.md` | new | Structure-only skeletons, marked not runnable (TD-37) |
+| `plugins/claudio-routines/skills/routines/templates/tribe-digest.md`, `chat-recap.md`, `weekly-status.md` | new | Structure-only skeletons; the chat recap and the weekly status are marked not runnable (TD-37), the tribe digest is runnable (TD-54) |
 | `plugins/claudio-routines/skills/routines/SKILL.md` | modify | Config split: routine files, `/routines run` renders with `--runnable`, sync stops on a marked template |
 | `plugins/claudio-routines/example/config.json`, `example/config/routines/*.json` | new | Config split: example private directory, shared file plus Prod watch and the three skeletons |
 | `plugins/claudio-routines/config.example.json` | delete | Config split: the example config sits in `example/` |
@@ -1492,6 +1849,17 @@ sequenceDiagram
 | `plugins/claudio-routines/runtime/providers/README.md` | modify | Tribe collectors: issue tracker section, thread reads, page lists, trend reads |
 | `plugins/claudio-routines/runtime/test_roles.py`, `test_collect.py`, `evaluate_support.py`, `test_evaluate.py` | modify | Tribe collectors: role schemas, first-read span, page `link` in the sources page collection |
 | `plugins/claudio-routines/example/config.json`, `example/config/routines/tribe-digest.json`, `README.md`, `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` | modify | Tribe collectors: example sources, docs, version bump |
+| `plugins/claudio-routines/runtime/tribe.py`, `tribe_state.py`, `tribe_seed.py`, `tribe_features.py`, `tribe_judgment.py`, `tribe_lifecycle.py`, `tribe_page.py`, `tribe_publish.py`, `tribe_message.py` | new | Tribe judgment: CLI, state and lifecycle, features, judgment checks, page render and structure check, connector write plans (TD-45 to TD-53) |
+| `plugins/claudio-routines/runtime/test_tribe_*.py`, `tribe_support.py` | new | Tribe judgment: tests per module and an end-to-end pipeline test |
+| `plugins/claudio-routines/runtime/fixtures/tribe/` | new | Tribe judgment: the golden page and its summary and values, and the pipeline fixtures (state, config, collections, judgment, saved publish results) |
+| `plugins/claudio-routines/runtime/providers/fixtures/<document store vendor>/todo_*` | new | Tribe judgment: list blocks with their `checked` flag, for both transports |
+| `plugins/claudio-routines/runtime/collect.py`, `roles.py`, `config_tree.py` | modify | Tribe judgment: `engine` key, state checker per engine, cited threads for chat sources, `page_from_state` option, `page` and `publish` validation |
+| `plugins/claudio-routines/runtime/test_collect.py`, `test_roles.py`, `test_config_tree.py`, `support.py` | modify | Tribe judgment: tests for the `engine` key, the tribe state checker, cited threads, `page_from_state`, `page` and `publish` validation, and the `publication_values` fixture |
+| `plugins/claudio-routines/runtime/providers/<chat vendor>.py`, `<document store vendor>.py` and their tests | modify | Tribe judgment: replies of cited threads with per-thread failed entries; list blocks with their `checked` flag |
+| `plugins/claudio-routines/skills/routines/templates/tribe-digest.md` | modify | Tribe judgment: runnable runtime template (TD-54) |
+| `plugins/claudio-routines/skills/routines/scripts/routines.py`, `lint.py`, `SKILL.md`, `test_routines.py` | modify | Tribe judgment: `/routines seed`, the settings deny check of `lint --private`, the tribe template contract |
+| `plugins/claudio-routines/README.md`, `runtime/providers/README.md`, `example/`, `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` | modify | Tribe judgment: docs, example, version bump |
+| `README.md` | modify | Tribe judgment: the `runtime/tribe.py` row, the `seed` usage line and the settings check of `lint --private` |
 
 Tasks create the private repository files (`config.json`, `config/routines/*.json`, `templates/prod-watch.md`, `templates/prod-watch-runtime.md`, `templates/tribe-digest.md`, `templates/chat-recap.md`, `templates/weekly-status.md`, `routines/*`, `reference/` compare script and reasons) outside this repository; this inventory never lists their content.
 

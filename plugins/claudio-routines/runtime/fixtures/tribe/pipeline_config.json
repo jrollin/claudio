@@ -1,0 +1,192 @@
+{
+  "places": {
+    "cloud": {
+      "runtime_dir": "/opt/runtime",
+      "state_dir": "/opt/state"
+    },
+    "local": {
+      "runtime_dir": "/srv/runtime",
+      "state_dir": "/srv/state"
+    }
+  },
+  "providers": {
+    "chat": {
+      "adapter": "slack",
+      "api": {
+        "base_url": "https://api.example.com",
+        "credentials": {
+          "token": "EXAMPLE_TOKEN"
+        }
+      },
+      "transport": {
+        "cloud": "api",
+        "local": "api"
+      }
+    },
+    "document-store": {
+      "adapter": "notion",
+      "api": {
+        "base_url": "https://api.example.com",
+        "credentials": {
+          "token": "EXAMPLE_TOKEN"
+        }
+      },
+      "mcp": {
+        "connectors": {
+          "cloud": "docs-connector",
+          "local": "docs-connector"
+        }
+      },
+      "transport": {
+        "cloud": "api",
+        "local": "api"
+      }
+    },
+    "issue-tracker": {
+      "adapter": "jira",
+      "api": {
+        "base_url": "https://api.example.com",
+        "credentials": {
+          "token": "EXAMPLE_TOKEN"
+        }
+      },
+      "transport": {
+        "cloud": "api",
+        "local": "api"
+      }
+    },
+    "observability": {
+      "adapter": "datadog",
+      "api": {
+        "base_url": "https://api.example.com",
+        "credentials": {
+          "token": "EXAMPLE_TOKEN"
+        }
+      },
+      "transport": {
+        "cloud": "api",
+        "local": "api"
+      }
+    }
+  },
+  "routines": {
+    "tribe-digest": {
+      "engine": "tribe",
+      "page": {
+        "how_built": [
+          "- Format, key and rules: the digest template of the routine.",
+          "- Sources: the routine's source list, read through the collectors."
+        ],
+        "key_callout": [
+          "How to read the warnings",
+          "- Severity is how bad it is if it happens: High, Medium or Low.",
+          "- When is how soon it binds:",
+          "\t- \ud83d\udd34 now: at or above a limit today.",
+          "\t- \ud83d\udfe0 within months: reaches a limit at the current trend.",
+          "\t- \ud83d\udfe1 watch: moving the wrong way, no limit in sight yet.",
+          "- Status sits under each warning name."
+        ],
+        "link": "https://example.test/pages/{{id}}",
+        "state_path": "state/sample.json on the claude/state branch",
+        "title": "Sample digest : {{date}}"
+      },
+      "publish": {
+        "create": {
+          "arguments": {
+            "background": true,
+            "content": "{{content}}",
+            "parent": "{{parent}}",
+            "title": "{{title}}"
+          },
+          "tool": "page_create"
+        },
+        "heading": {
+          "arguments": {
+            "content": "## {{week}}",
+            "parent": "{{parent}}"
+          },
+          "tool": "page_append"
+        },
+        "parent": "@PAGE_TWO@",
+        "poll": {
+          "arguments": {
+            "task": "{{task}}"
+          },
+          "tool": "task_poll"
+        },
+        "provider": "document-store",
+        "results": {
+          "done": [
+            "completed"
+          ],
+          "failed": [
+            "failed",
+            "cancelled"
+          ],
+          "heading": "block.id",
+          "page": "task.page.id",
+          "status": "task.status",
+          "task": "task.id"
+        }
+      },
+      "query_pack": [
+        {
+          "aggregator": "avg",
+          "key": "queue-depth",
+          "link": "https://example.test/m/1",
+          "query": "avg:queue.depth{*}",
+          "read": "scalar",
+          "rule": "Warn when the queue grows for a month.",
+          "schedule": "every_run",
+          "source": "metrics",
+          "title": "Queue depth",
+          "trend_days": 30
+        }
+      ],
+      "rules": [
+        "A warning needs two weeks of growth."
+      ],
+      "sources": {
+        "channels": {
+          "channels": [
+            "@CHANNEL_A@",
+            "@CHANNEL_B@"
+          ],
+          "provider": "chat"
+        },
+        "issues": {
+          "filter": "10321",
+          "provider": "issue-tracker"
+        },
+        "metrics": {
+          "kind": "metrics",
+          "provider": "observability",
+          "scope_filter": ""
+        },
+        "monitors": {
+          "kind": "monitors",
+          "provider": "observability",
+          "scope_filter": ""
+        },
+        "other-channels": {
+          "channels": [
+            "@CHANNEL_C@"
+          ],
+          "provider": "chat"
+        },
+        "other-issues": {
+          "filter": "20999",
+          "provider": "issue-tracker"
+        },
+        "pages": {
+          "pages": [
+            "@NOTION_A_DASHED@",
+            "@NOTION_B@"
+          ],
+          "provider": "document-store"
+        }
+      }
+    }
+  },
+  "timezone": "Europe/Paris"
+}

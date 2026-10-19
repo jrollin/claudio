@@ -26,6 +26,7 @@ RUNTIME_PATH = str(SCRIPT_PATH.parents[3] / "runtime")
 PLUGIN_IN_REPO = "plugins/claudio-routines"
 RUNTIME_IN_REPO = "plugins/claudio-routines/runtime"
 PLACES = ("cloud", "local")
+SETTINGS_PARTS = (".claude", "settings.json")
 SETUP_TEMPLATE = "setup-env.sh"
 TEMP_PREFIX = ".routines-"
 HTTP_LINE = re.compile(r"HTTP\s+([0-9]{3})(?:\s.*)?")
@@ -63,6 +64,14 @@ def read_text(path):
         raise UsageError(f"cannot read {path}: {error.strerror}") from error
     except UnicodeDecodeError as error:
         raise UsageError(f"cannot read {path}: not UTF-8") from error
+
+
+def read_bytes(path):
+    try:
+        with open(path, "rb") as handle:
+            return handle.read()
+    except OSError as error:
+        raise UsageError(f"cannot read {path}: {error.strerror}") from error
 
 
 def write_bytes(path, data):
@@ -694,6 +703,11 @@ def public_findings():
     return findings
 
 
+def settings_findings(private):
+    path = os.path.join(private, *SETTINGS_PARTS)
+    return lint.settings_findings(path, read_bytes(path) if os.path.isfile(path) else None)
+
+
 def private_findings(args):
     private = resolve_private(args.private)
     config = load_config(private)
@@ -702,7 +716,7 @@ def private_findings(args):
         extract_runtime(args.claudio, config["runtime"]["tag"], sha, directory)
         with runtime_imports(directory):
             contracts = load_contracts(directory, f"{sha}:{RUNTIME_IN_REPO}")
-    findings = set()
+    findings = settings_findings(private)
     for path in templates_in(os.path.join(private, "templates")):
         findings |= findings_in(path, lint.no_rules, contracts)
     used = set()
@@ -740,6 +754,80 @@ def repeated_value_warnings(config):
     return lint.repeated_values({slug: flatten(routine.get("values", {})) for slug, routine in config["routines"].items()})
 
 
+def require_tribe(config, slug):
+    with runtime_imports(RUNTIME_PATH):
+        roles = importlib.import_module("roles")
+        config_tree = importlib.import_module("config_tree")
+    if config_tree.SLUG.fullmatch(slug) is None:
+        raise UsageError(f"routine slug {slug} must match ^{config_tree.SLUG.pattern}$")
+    engine = configured(config, slug).get("engine", roles.DEFAULT_ENGINE)
+    if engine != roles.TRIBE_ENGINE:
+        raise UsageError(f"routine {slug} has engine {engine}: seeding needs engine {roles.TRIBE_ENGINE}")
+
+
+def local_tribe_script(config):
+    runtime_dir, sha = config["places"]["local"]["runtime_dir"], config["runtime"]["sha"]
+    head = run_git(runtime_dir, "rev-parse", "HEAD")
+    status = run_git(runtime_dir, "status", "--porcelain", "--ignored")
+    at_sha = head.returncode == 0 and head.stdout.decode(errors="replace").strip() == sha
+    if not (at_sha and status.returncode == 0 and not status.stdout.strip()):
+        raise UsageError(f"{runtime_dir} is not a clean checkout of runtime.sha {sha}: run setup-script --place local and run its output")
+    return os.path.join(runtime_dir, RUNTIME_IN_REPO, "tribe.py")
+
+
+def seed_lines(slug, out, document):
+    run, warnings, checks = document["run"], document["warnings"], document["checks"]
+    return [
+        f"seeded {slug}: state written to {out}",
+        f"run at {run['at']}, weekly heading week {run['weekly_heading_week']}, "
+        f"previous page {run['previous_page']['id']} written {run['previous_page']['written_at']}",
+        f"warnings: {len(warnings)}",
+        *(f"  {key}: {warnings[key]['severity']}, {warnings[key]['when']}, {warnings[key]['status']}" for key in sorted(warnings)),
+        f"checks: {len(checks)}",
+        *(f"  {key}: {checks[key]['group']}" for key in sorted(checks)),
+        f"cursors: {', '.join(sorted(document['cursors']))}",
+        f"blind spot runs: {len(document['blind_spots'])}",
+    ]
+
+
+def seed_summary(slug, out):
+    try:
+        document = json.loads(read_text(out))
+    except json.JSONDecodeError as error:
+        raise UsageError(f"seeded state {out} is not JSON: {error.msg}") from error
+    try:
+        lines = seed_lines(slug, out, document)
+    except (KeyError, TypeError, AttributeError) as error:
+        raise UsageError(f"seeded state {out} has an unexpected shape") from error
+    return "".join(f"{line}\n" for line in lines)
+
+
+def require_out_outside_repositories(out):
+    directory = os.path.dirname(os.path.realpath(out))
+    top = git_toplevel(directory)
+    if top is not None:
+        raise UsageError(f"--out {out} is inside the git work tree {top}: write the seeded state outside any repository")
+
+
+def cmd_seed(args):
+    private = resolve_private(args.private)
+    config = load_config(private)
+    require_tribe(config, args.slug)
+    require_out_outside_repositories(args.out)
+    script = local_tribe_script(config)
+    command = [sys.executable, "-B", script, "seed", "--routine", args.slug, "--config", os.path.join(private, "config.json"), "--out", args.out]
+    for page in args.page:
+        command += ["--page", page]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True)
+    except OSError as error:
+        raise UsageError(f"cannot run {script}: {error.strerror}") from error
+    sys.stderr.write(result.stderr)
+    if result.returncode == 0:
+        sys.stdout.write(seed_summary(args.slug, args.out))
+    return result.returncode
+
+
 def cmd_lint(args):
     findings = public_findings() if args.public else private_findings(args)
     for path, line, rule in sorted(findings):
@@ -771,6 +859,10 @@ def build_parser():
     command("setup-script", "render the environment setup script").add_argument(
         "--place", choices=PLACES, default="cloud", help="place to install the runtime in, default cloud"
     )
+    seed = command("seed", "seed a tribe routine's state from its previous digest pages")
+    seed.add_argument("slug")
+    seed.add_argument("--page", action="append", required=True, help="saved fetch result of a digest page, newest first; repeatable")
+    seed.add_argument("--out", required=True, help="seeded state file, outside any repository")
     lint_command = commands.add_parser("lint", help="lint public skeletons or private templates")
     target = lint_command.add_mutually_exclusive_group(required=True)
     target.add_argument("--public", action="store_true")
@@ -786,6 +878,7 @@ COMMANDS = {
     "diff": cmd_diff,
     "body": cmd_body,
     "setup-script": cmd_setup_script,
+    "seed": cmd_seed,
     "lint": cmd_lint,
 }
 
