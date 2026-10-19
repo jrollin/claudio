@@ -781,6 +781,40 @@ THE collector reads it through the first listed transport the place can use: `ap
 - [ ] The run record names, per source, the chosen transport and the skipped ones with their reason *(AC-52.5)*
 - [ ] A source with no usable transport is not read, and the environment check names its missing variables, as before *(AC-52.6)*
 
+### Collect the owner's week {#US-53}
+
+WHEN a weekly status run reads its sources
+THE collectors return what the owner did during the week, from Monday 00:00 in the configured timezone to the run time, one collection per source
+
+**Acceptance Criteria:**
+- [ ] An issue tracker source takes a `jql` query instead of a saved filter, on both transports; the collector adds the window bound *(AC-53.1)*
+- [ ] A code host source takes `searches`, pull request search queries; the collector adds the window start, keeps each pull request once, and reads its comments, reviews and review comments written in the window by a human *(AC-53.2)*
+- [ ] A document store source takes `edited_by`, a user id; the collector lists the pages that user last edited in the window, newest first, and reads their blocks *(AC-53.3)*
+- [ ] A chat source takes the recap's `searches`, so the owner's threads come with their messages *(AC-53.4)*
+- [ ] Code host `searches` and document store `edited_by` read over `api` only; a source that sets them with an `mcp` transport fails the load with its key path *(AC-53.5)*
+
+### Summarise the week {#US-54}
+
+WHEN a weekly status run has its collections
+THE scripts turn them into items, the model writes the status from the items, and the scripts check it and render the message
+
+**Acceptance Criteria:**
+- [ ] `weekly.py features` writes one item per issue, pull request, chat thread and page with activity in the window: key, title, status, link, time, people and short excerpts; it drops the routines' own channels *(AC-54.1)*
+- [ ] The judgment holds the key accomplishments (1 to 6, none when there is no item), the decisions (up to 6) and what stays open (up to 8, each with its owner when another person), each a plain sentence citing item keys *(AC-54.2)*
+- [ ] `weekly.py judge` rejects, naming the key path, a cite that is not an item key, a text with a link, a line break or over 200 characters, and judgment texts over 220 words in total; a second rejection gives a degraded run *(AC-54.3)*
+- [ ] `weekly.py message` renders the title with the week's Monday, the three sections in order, the links of each bullet from its cited items, `None recorded` for no decision, and the sources checked with any that were not read *(AC-54.4)*
+- [ ] The state and the run record hold the window, counts and keys, never a message, comment or page text, per BR-75 *(AC-54.5)*
+
+### Run the weekly status on the runtime {#US-55}
+
+WHEN the owner switches the weekly status to the runtime
+THE routine renders from the runnable `weekly-status` template and a private routine file with `engine: weekly`, keeps its state on the state branch, and posts one message to the digest channel
+
+**Acceptance Criteria:**
+- [ ] The `weekly-status` template runs: runtime check, state, window, environment check, collect, features, judge, apply, save, message, report *(AC-55.1)*
+- [ ] The routine file names the owner's identities per source, the excluded channels and the sources; the lint names the key path of an invalid value *(AC-55.2)*
+- [ ] A local report-only run prints the status and saves only its run record *(AC-55.3)*
+
 ## Business Rules
 
 - No private name, identifier, URL host or secret is committed to this public repository *(BR-1)*
@@ -854,6 +888,9 @@ THE collector reads it through the first listed transport the place can use: `ap
 - Scripts decide who wrote last, whether the owner answered, ages, lateness and landing sections; the model decides only what a message asks, its kind among those the facts allow, its summary and the reading *(BR-69)*
 - Raw results hold source content and stay out of git: the local runs folder is ignored by the private repository, and nothing under `raw/` reaches the state branch *(BR-70)*
 - A credential is present only when its environment variable holds a value that is not blank *(BR-72)*
+- Every link in the weekly status comes from a collection: the model cites item keys, and the script turns them into links *(BR-73)*
+- The routines' own posts never count as the owner's work: the digest channel and the excluded conversations are dropped before any item exists *(BR-74)*
+- The weekly state and its run records hold the window, counts and item keys, never a message, comment or page text *(BR-75)*
 - A raw record never holds a credential: request headers are never recorded, and credentials only travel in request headers *(BR-71)*
 
 ## Out of Scope
@@ -861,7 +898,8 @@ THE collector reads it through the first listed transport the place can use: `ap
 - A structure check of the Prod watch digest: a later spec
 - Scheduling local runs (cron, launchd): `/routines run` runs on demand
 - Linking a shared platform-limit key from another digest read less than 24 hours earlier, instead of reading it again
-- Running the weekly status on the runtime: next phase, reusing the chat search of the recap
+- Reading code host searches and edited document store pages through the connector: the weekly status reads them over `api` only
+- Jira status transitions and comment text in the weekly status: issues carry their current status only
 - Reading chat channels in full for the recap: the announcement scan searches the configured channels only
 - Changing the 4 mirrored live prompts: the mirrors reproduce them as they are
 - After the tribe judgment:

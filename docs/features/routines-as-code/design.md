@@ -1546,6 +1546,64 @@ A degraded run's message is one line that starts with `degraded:` and names the 
 
 **Rationale**: api is the default wherever its credentials exist, the connector covers a place without them, and git still decides the order.
 
+### TD-67: Weekly sources
+
+**Choice**:
+- Issue tracker: `jql` (non-blank text) replaces `filter` on a source; a source sets exactly one of them. The collector builds `(<jql>) AND updated >= "<window start>" ORDER BY key ASC` on both transports (AC-53.1). `open_sprints` stays filter-only.
+- Code host: `searches`, a list of pull request search queries such as `is:pr org:<org> author:<login>`, replaces `repos` for that source (AC-53.2). Over `api`:
+  - `GET /search/issues` with `q` = the query and `updated:>=<window start date>`, paged up to `PAGE_CAP`;
+  - every pull request kept once, by repository and number;
+  - per pull request, `GET /repos/<repo>/issues/<n>/comments?since=<window start>`, `GET /repos/<repo>/pulls/<n>/reviews` and `GET /repos/<repo>/pulls/<n>/comments?since=<window start>`, each paged;
+  - an `activity` entry per comment, review or review comment created or submitted in the window: `repo`, `number`, `kind` (`comment`, `review`, `review_comment`), `author`, `at`, `state` (the review state or null) and `text` (at most 1000 characters);
+  - authors ending in `[bot]` and the source's `exclude_authors` are dropped.
+- Document store: `edited_by`, a user id, replaces `pages` for that source (AC-53.3). Over `api`, `POST /v1/search` with the page filter, sorted by `last_edited_time` descending, paged until a page is older than the window start; the pages whose `last_edited_by.id` is `edited_by` are read with the existing page reader, up to `edited_cap` pages (default 20).
+- Chat: the recap's `searches` with the routine's `owner` (AC-53.4).
+- Config load refuses `searches` on a code host or `edited_by` on a document store whose transport for a place includes `mcp`, naming the key path (AC-53.5).
+
+**Alternatives considered**:
+- Relay these reads through the connector: rejected for now, the owner prefers `api`, and the relay of long comment and page text is where the model's safeguard trips.
+- One owner identity at the routine level: rejected, each tool names the owner differently (a login, a user id, `currentUser()` in the query).
+
+**Rationale**: the weekly status reads the owner's activity, not a team's board or channel list, so each role gains an owner-centred source option and keeps its collection schema.
+
+### TD-68: Weekly engine
+
+**Choice**: `weekly.py` with `init`, `window`, `features`, `judge`, `apply` and `message`; `roles.ENGINES` gains `weekly`, whose routines take issue tracker, code host, chat and document store sources.
+- `window --now --tz`: `from_ts` is Monday 00:00 of the week of `now` in `tz`, `to_ts` is `now`; `--report-only` is accepted and changes nothing, as the window keeps no cursor.
+- `features`: one item per issue, pull request, chat thread and page with activity in the window (AC-54.1):
+  - keys `issue:<key>`, `pr:<repo>#<number>`, `chat:<channel>:<root ts>`, `page:<id>`;
+  - fields `source`, `role`, `kind`, `title`, `status` (or null), `link`, `when` (the latest activity in the window), `people` (display names) and `excerpts` (`by`, `at`, `text` of at most 500 characters: pull request activity up to 10, thread messages up to 15, the first 1000 characters of a page's blocks as one excerpt);
+  - chat units in the routine's `exclude.channels` and the digest channel are dropped (BR-74);
+  - `sources`: per source, `read` and `reason`.
+- `judge --features --judgment --out <run>/summary.json` checks the judgment (AC-54.2, AC-54.3):
+  - `{"schema": 1, "accomplishments": [{"text", "cites"}], "decisions": [{"text", "cites"}], "open": [{"text", "owner", "cites"}]}`;
+  - accomplishments 1 to 6, or none when there is no item; decisions up to 6; open up to 8;
+  - a text is plain, 1 to 200 characters, with no URL and no line break; `owner` is null or a name of at most 60 characters;
+  - `cites` is non-empty, each an item key, without repeats;
+  - all texts hold at most 220 words together;
+  - exit 3 names the key path; the template allows one correction, then a degraded run.
+- `apply --state --summary --window --out <run>/next.json --record <run>/record.json`: the state holds `schema` (`weekly-1`), `digest` and `last_run` (`run_at`, `week_start`); the record holds the window, the item counts per role, the counts per section, the cited keys and the sources read (AC-54.5, BR-75).
+- `message --summary --features --tz --out <run>/message.md` renders (AC-54.4, BR-73):
+  - `**Weekly status, week of <Mon 13 Oct>**`;
+  - `**Key accomplishments**`, `**Decisions**` (`- None recorded` when empty), `**Still open / next week**` (` (owner: <name>)` when set);
+  - each bullet's links after its text, labelled by kind: the issue key, `<repo name>#<number>`, `thread in #<channel>` or `DM`, the page title cut to 6 words;
+  - `_Sources checked: <roles read>._`, then `Not read: <source> (<reason>)` when a source was not read.
+
+**Alternatives considered**:
+- Group the items by theme in a script: rejected, themes are judgment, so the model groups and the script checks the cites.
+- Reuse the tribe engine: rejected, its warnings, checks and decisions carry over between runs, while a weekly status starts fresh each week.
+
+**Rationale**: the same pipeline as the other engines, scripts in and out at every stage, with the model writing only the summary sentences.
+
+### TD-69: Weekly template and routine file
+
+**Choice**:
+- `templates/weekly-status.md` becomes runnable, with the chat recap's steps: runtime check, load state, window, environment check, collect, features, judge, apply, save, message, report (AC-55.1).
+- `config/routines/<slug>.json` with `engine: weekly` holds `owner` (the chat user id), `exclude.channels`, `digest` (`name`, `slug`) and the sources, each with its owner identity: `jql`, `searches` with the code host login, `edited_by`, chat `searches` (AC-55.2).
+- The save step commits the state and the run record like the other templates; a report-only run commits the record only (AC-55.3).
+
+**Rationale**: the fourth engine follows the template and routine file conventions of the other three, so the lint, render, sync and private copies work unchanged.
+
 ## Implementation Considerations
 
 ### Data Model
@@ -2138,6 +2196,9 @@ sequenceDiagram
 | `plugins/claudio-routines/runtime/providers/_http.py`, `collect.py` | modify | Raw store: optional HTTP recorder, `fetch --responses`, `replay` |
 | `plugins/claudio-routines/runtime/providers/_replay.py` | new | Replay client serving recorded HTTP calls in order |
 | `plugins/claudio-routines/skills/routines/scripts/routines.py`, `templates/*.md`, `example/config.json` | modify | Raw folders by role, `places.<place>.runs_dir` and the run folder under it |
+| `plugins/claudio-routines/runtime/providers/jira.py`, `github.py`, `notion.py` | modify | Weekly sources: `jql`, code host `searches` with activity, `edited_by` |
+| `plugins/claudio-routines/runtime/weekly.py`, `weekly_state.py` | new | Weekly engine: window, features, judge, apply, message |
+| `plugins/claudio-routines/skills/routines/templates/weekly-status.md` | modify | Runnable weekly status |
 
 Tasks create the private repository files (`config.json`, `config/routines/*.json`, `templates/prod-watch.md`, `templates/prod-watch-runtime.md`, `templates/tribe-digest.md`, `templates/chat-recap.md`, `templates/weekly-status.md`, `routines/*`, `reference/` compare script and reasons) outside this repository; this inventory never lists their content.
 
