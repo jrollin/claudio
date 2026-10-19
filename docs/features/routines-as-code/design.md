@@ -444,7 +444,9 @@ Bump procedure, documented in the plugin README:
 - `state/<slug>.json`: the state the next run starts from.
 - `runs/<slug>/<run-at>.json`: one record per run (window, counts, keys new, escalated and resolved, muted keys, blind spots, sources read), kept for stats.
 - At the start of a run, the model fetches `claude/state` with `--no-prune`: in a checkout whose git config prunes on fetch, an explicit refspec into the remote-tracking namespace deletes the ref it fetches whenever the ref already exists, so every other local run would find no state. A missing branch or file means a baseline run.
-- At the end, it commits both files and pushes to `claude/state`. A failed push is reported in the digest as state not saved.
+- At the end, it fetches `claude/state` again, commits both files on its tip and pushes. Several routines share the branch, and one run can last 40 minutes, so the tip seen at the start is often stale by the end. Each routine writes only its own `state/<slug>.json` and `runs/<slug>/`, so building on another routine's commit loses nothing.
+- A push rejected because the branch moved between that fetch and the push gets one scripted retry: the same save block, which fetches first. The model never forces, pulls or rebases. A failed save is reported in the digest as state not saved.
+- Before copying its state, the save checks that `state/<slug>.json` on the tip still equals the state the run loaded. When another run of the same routine saved meanwhile, the save stops and reports state not saved, so neither run replaces the other's state.
 - The public repository is never attached to a routine.
 
 **Alternatives considered**:
@@ -614,7 +616,7 @@ Two kinds of calls:
 
 Accepted risks:
 - Clock skew: a cloud run that starts within the skew after a local run exits 3 on `window` (AC-10.4), posts the rejection and writes nothing; the next run recovers.
-- A local run with `--post` and a cloud run at the same time both post; the second push is rejected and reports `state not saved`, and the next run collects the window again.
+- A local run with `--post` and a cloud run at the same time both post; the second save finds the routine's state file changed since it started, stops and reports `state not saved`, and the next run collects the window again.
 - A local run reads the working tree's `config.json` and routine file, which can hold uncommitted changes; `config_dirty` marks those runs in the record.
 
 **Alternatives considered**:

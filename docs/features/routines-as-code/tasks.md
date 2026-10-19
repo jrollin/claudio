@@ -3,7 +3,7 @@
 ---
 feature: routines-as-code
 spec_version: 1
-total_tasks: 92
+total_tasks: 93
 phases:
   - name: "Leak guard"
     tasks: [T-1, T-2, T-3]
@@ -38,7 +38,7 @@ phases:
   - name: "Monitor priority and seed fixes"
     tasks: [T-72, T-73, T-74]
   - name: "Cloud run fixes"
-    tasks: [T-75, T-76, T-77, T-87, T-88, T-89, T-90, T-91, T-92]
+    tasks: [T-75, T-76, T-77, T-87, T-88, T-89, T-90, T-91, T-92, T-93]
   - name: "Chat recap engine"
     tasks: [T-78, T-79, T-80, T-81, T-82, T-83, T-84, T-85, T-86]
 depends_on: []
@@ -910,6 +910,16 @@ Runs in a local session with the chat, issue tracker, document store and observa
 - **Refs**: US-28, US-45, TD-22, TD-40, TD-59
 - **Files**: `docs/features/routines-as-code/tasks.md` (modify), `docs/features/routines-as-code/design.md` (modify), `plugins/claudio-routines/runtime/providers/_slack_read.py` (modify), `plugins/claudio-routines/runtime/providers/_slack_search.py` (modify), `plugins/claudio-routines/runtime/providers/test_slack.py` (modify), `plugins/claudio-routines/runtime/providers/test_slack_search.py` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify)
 - **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime && python3 scripts/leak_check.py --tree`
+- **Status**: Complete
+
+### T-93: Save the state on the latest branch tip
+- Several routines push to `claude/state`, and a run lasts up to 40 minutes, so the tip fetched at the start is often stale at the save: a local Connect run lost its run record when Prod watch pushed meanwhile. The save block that builds on the saved branch fetches it again (`--no-prune`) before `worktree add`. It then checks that the routine's own `state/<slug>.json` on that tip still equals `<run>/state.json`, so a concurrent run of the same routine is reported as state not saved instead of replaced.
+- A push rejected because the branch moved (`fetch first` or `non-fast-forward`) gets one retry of that save block, after the work tree cleanup. Never a force, a pull, a rebase or a second retry. Applies to `prod-watch`, `tribe-digest` and `chat-recap`.
+- Tests: every runnable template fetches before `worktree add` in its save block and carries the one-retry and never-force rules; a save after another routine pushed builds on that commit and keeps its files; a save after another run of the same routine saved fails and keeps the remote tip.
+- **Refs**: US-12, US-16, TD-17
+- **Files**: `docs/features/routines-as-code/requirements.md` (modify), `docs/features/routines-as-code/design.md` (modify), `docs/features/routines-as-code/tasks.md` (modify), `plugins/claudio-routines/README.md` (modify), `plugins/claudio-routines/skills/routines/templates/prod-watch.md` (modify), `plugins/claudio-routines/skills/routines/templates/tribe-digest.md` (modify), `plugins/claudio-routines/skills/routines/templates/chat-recap.md` (modify), `plugins/claudio-routines/skills/routines/scripts/test_routines.py` (modify)
+- **Verify**: `for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
+- **Rules**: BR-27
 - **Status**: Complete
 
 ## Phase 18: Chat recap engine

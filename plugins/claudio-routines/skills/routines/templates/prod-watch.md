@@ -206,10 +206,12 @@ Exit code 3 means the engine rejected the state or the facts. Report the rejecti
 
 Run one save block, as one command.
 
-When the fetch of Step 2 succeeded, with or without a state file, build on the saved branch:
+When the fetch of Step 2 succeeded, with or without a state file, build on the saved branch, fetched again so the commit builds on its latest tip:
 
 ```bash
-git -C {{state.dir}} worktree add --detach <run>/store origin/claude/state && \
+git -C {{state.dir}} fetch --no-prune origin +claude/state:refs/remotes/origin/claude/state && \
+  git -C {{state.dir}} worktree add --detach <run>/store origin/claude/state && \
+  { [ ! -e <run>/store/state/prod-watch.json ] || cmp -s <run>/store/state/prod-watch.json <run>/state.json; } && \
   mkdir -p <run>/store/state <run>/store/runs/prod-watch && \
   cp <run>/next.json <run>/store/state/prod-watch.json && \
   cp <run>/record.json <run>/store/runs/prod-watch/<run-at>.json && \
@@ -245,8 +247,10 @@ git -C {{state.dir}} branch -q -D prod-watch-state-<run-at>
 ```
 
 - On a report-only run (Step 3), `next.json` equals `<run>/state.json`: the saved state, or the baseline state on a baseline run. The commit adds the run record, and on a baseline run the baseline state file.
-- Never force the push, never pull, rebase or retry it.
-- A non-zero exit of the save block means the state is not saved: the digest of Step 12 starts with `state not saved` and the command that failed. A failed cleanup does not change the digest.
+- The `cmp` line stops the save when `state/prod-watch.json` on the branch is no longer the state of Step 2: another run of this routine saved meanwhile, and this run must not replace its state.
+- A push rejected because the branch moved (`fetch first` or `non-fast-forward` in its output) gets one retry: remove the work tree, delete the throwaway branch after an orphan save block, then run the save block that builds on the saved branch.
+- Never force the push, never pull or rebase, and never retry a second time or after another failure.
+- A non-zero exit of the last save block run means the state is not saved: the digest of Step 12 starts with `state not saved` and the command that failed. A failed cleanup does not change the digest.
 
 ## Step 12: Report the digest
 

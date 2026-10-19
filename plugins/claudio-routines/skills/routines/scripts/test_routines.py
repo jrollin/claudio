@@ -3328,6 +3328,33 @@ class ShippedFilesTest(Case):
                 self.assertIn("fetch --no-prune origin +claude/state:refs/remotes/origin/claude/state", text)
                 self.assertNotIn("fetch origin +claude/state", text)
 
+    def runnable_save_step(self, name):
+        text = read(os.path.join(SHIPPED_TEMPLATES, f"{name}.md"))
+        start = text.index(": Save the state\n")
+        return text[start: text.index("\n## ", start)]
+
+    def test_every_runnable_template_fetches_the_state_branch_again_before_building_the_save(self):
+        expected = [
+            "git -C {{state.dir}} fetch --no-prune origin +claude/state:refs/remotes/origin/claude/state && \\",
+            "git -C {{state.dir}} worktree add --detach <run>/store origin/claude/state && \\",
+        ]
+        for name in ("prod-watch", "tribe-digest", "chat-recap"):
+            with self.subTest(template=name):
+                block = self.runnable_save_step(name).split("```bash\n")[1]
+                self.assertEqual([line.strip() for line in block.splitlines()[:2]], expected)
+
+    def test_every_runnable_template_retries_a_push_rejected_by_a_moved_branch_once(self):
+        retry = "- A push rejected because the branch moved (`fetch first` or `non-fast-forward` in its output) gets one retry:"
+        for name in ("prod-watch", "tribe-digest", "chat-recap"):
+            with self.subTest(template=name):
+                self.assertIn(retry, self.runnable_save_step(name))
+
+    def test_every_runnable_template_never_forces_or_retries_twice(self):
+        rule = "- Never force the push, never pull or rebase, and never retry a second time or after another failure."
+        for name in ("prod-watch", "tribe-digest", "chat-recap"):
+            with self.subTest(template=name):
+                self.assertIn(rule, self.runnable_save_step(name))
+
     def test_prod_watch_apply_writes_the_run_record(self):
         self.assertIn("--record <run>/record.json", self.prod_watch_step("Apply"))
 
@@ -4122,10 +4149,11 @@ class SaveBlockExecution:
             script = script.replace(self.clone, state_dir)
         return subprocess.run(["bash", "-c", script], env=git_env(), capture_output=True, text=True)
 
-    def run_dir(self, name, state):
+    def run_dir(self, name, state, state_dir=None):
         path = os.path.join(self.root, name)
         write(os.path.join(path, "next.json"), json.dumps(state) + "\n")
         write(os.path.join(path, "record.json"), json.dumps({"run_at": "2026-10-17T09:00:00Z", "run": name}) + "\n")
+        self.bash(self.rendered_step("Load the state").split("```bash\n")[1].split("```")[0], path, state_dir)
         return path
 
     def fetch(self, run_dir, state_dir=None):
@@ -4133,7 +4161,7 @@ class SaveBlockExecution:
         return self.bash(command, run_dir, state_dir)
 
     def save(self, kind, name, state_dir=None):
-        run_dir = self.run_dir(name, {"run": name})
+        run_dir = self.run_dir(name, {"run": name}, state_dir)
         return self.bash(self.save_block(kind), run_dir, state_dir)
 
     def remote_tip(self):
@@ -4177,15 +4205,36 @@ class SaveBlockExecution:
         self.save("detached", "second")
         self.assertEqual(json.loads(git(self.remote, "show", f"claude/state:state/{self.SLUG}.json")), {"run": "second"})
 
-    def test_push_after_the_remote_moved_fails_and_keeps_the_remote_tip(self):
+    def push_from_another_routine(self):
+        other = os.path.join(self.root, "other")
+        git(self.root, "clone", "-q", "--branch", "claude/state", self.remote, other)
+        write(os.path.join(other, "state", "other-routine.json"), "{}\n")
+        git(other, "add", "state")
+        git(other, "commit", "-q", "-m", "other routine run")
+        git(other, "push", "-q", "origin", "HEAD:refs/heads/claude/state")
+        return self.remote_tip()
+
+    def test_save_after_another_routine_pushed_builds_on_its_commit(self):
         self.save("orphan", "first")
-        other = self.single_branch_clone("other")
         self.fetch(self.root)
-        self.fetch(self.root, other)
-        self.assertEqual(self.save("detached", "other-run", other).returncode, 0)
-        moved = self.remote_tip()
+        moved = self.push_from_another_routine()
         result = self.save("detached", "late-run")
+        self.assertEqual((result.returncode, git(self.remote, "rev-parse", "claude/state^")), (0, moved), result.stderr)
+
+    def test_save_after_another_run_of_this_routine_saved_fails_and_keeps_the_remote_tip(self):
+        self.save("orphan", "first")
+        late = self.run_dir("late-run", {"run": "late-run"})
+        self.assertEqual(self.save("detached", "other-run").returncode, 0)
+        moved = self.remote_tip()
+        result = self.bash(self.save_block("detached"), late)
         self.assertEqual((result.returncode != 0, self.remote_tip()), (True, moved))
+
+    def test_save_after_another_routine_pushed_keeps_its_files(self):
+        self.save("orphan", "first")
+        self.fetch(self.root)
+        self.push_from_another_routine()
+        self.save("detached", "late-run")
+        self.assertIn("state/other-routine.json", git(self.remote, "ls-tree", "-r", "--name-only", "claude/state").splitlines())
 
 
 class SaveBlockExecutionTest(SaveBlockExecution, Case):
