@@ -1,4 +1,5 @@
 import contextlib
+import copy
 import io
 import os
 import re
@@ -165,6 +166,68 @@ def make_stored(**units):
 THREAD_KEY = f"thread-{CHAN}-{ROOT}"
 DM_KEY = f"dm-{DM}"
 
+ISSUE_KEY = "issue:PROJ-12"
+PR_KEY = "pr:example-org/service#7"
+THREAD_ITEM = f"chat:{THREAD_KEY}"
+DM_ITEM = f"chat:{DM_KEY}"
+PAGE_KEY = "page:page-ab12"
+OWNER_NAME = "Ada Lovelace"
+
+
+def make_item_document(source, role, kind, title, link):
+    return {"source": source, "role": role, "kind": kind, "title": title, "status": None, "link": link, "when": "2026-10-14T09:30:00Z", "people": [], "excerpts": []}
+
+
+def make_features_items():
+    return {
+        ISSUE_KEY: make_item_document("issues", "issue_tracker", "issue", "Checkout fails", "https://tracker.example.test/browse/PROJ-12"),
+        PR_KEY: make_item_document("code", "code_host", "pull_request", "Fix the export", "https://code.example.test/example-org/service/pull/7"),
+        THREAD_ITEM: make_item_document("recap", "chat", "thread", "Review the rollout plan", f"https://{HOST}/archives/{CHAN}/p1791990000000100"),
+        DM_ITEM: make_item_document("recap", "chat", "dm", "Question about the launch", f"https://{HOST}/archives/{DM}/p1791990000000200"),
+        PAGE_KEY: make_item_document("docs", "document_store", "page", "Launch plan for the autumn release of the export", "https://docs.example.test/page-ab12"),
+    }
+
+
+def make_source_rows(**changes):
+    rows = {
+        "chat": {"source": "chat", "role": "chat", "read": True, "reason": None},
+        "code": {"source": "code", "role": "code_host", "read": True, "reason": None},
+        "docs": {"source": "docs", "role": "document_store", "read": True, "reason": None},
+        "issues": {"source": "issues", "role": "issue_tracker", "read": True, "reason": None},
+    }
+    for name, fields in changes.items():
+        rows[name] = {**rows[name], **fields}
+    return list(rows.values())
+
+
+def make_features_document(items=None, sources=None):
+    return {
+        "schema": 1,
+        "window": make_window(),
+        "week_start": "2026-10-12",
+        "items": make_features_items() if items is None else items,
+        "recap_counts": {"new": 2, "resolved": 1, "handled": 3},
+        "sources": make_source_rows() if sources is None else sources,
+    }
+
+
+def make_judgment():
+    return {
+        "schema": 1,
+        "accomplishments": [{"text": "Fixed the checkout failure and the export.", "cites": [ISSUE_KEY, PR_KEY]}],
+        "decisions": [{"text": "Ship the export behind a flag.", "cites": [PAGE_KEY]}],
+        "open": [{"text": "Review the rollout plan.", "owner": OWNER_NAME, "cites": [THREAD_ITEM]}],
+    }
+
+
+def make_summary(judgment=None, features=None):
+    features = features or make_features_document()
+    return {**{name: features[name] for name in ("window", "week_start", "recap_counts", "sources")}, **(judgment or make_judgment())}
+
+
+def words(count):
+    return " ".join(["w"] * count)
+
 
 class WeeklyCase(FileCase):
     def run_weekly(self, *argv):
@@ -313,6 +376,7 @@ class IssueFeaturesTest(FeaturesCase):
                 "when": "2026-10-14T09:30:00Z",
                 "people": [],
                 "excerpts": [],
+                "channel_name": None,
             },
         )
 
@@ -414,6 +478,7 @@ class PageFeaturesTest(FeaturesCase):
                 "when": "2026-10-15T08:00:00Z",
                 "people": [],
                 "excerpts": [{"by": None, "at": "2026-10-15T08:00:00Z", "text": "Plan\nShip it"}],
+                "channel_name": None,
             },
         )
 
@@ -438,7 +503,7 @@ class RecapFeaturesTest(FeaturesCase):
         return make_stored(**units)
 
     def test_a_recap_thread_seen_in_the_week_is_an_item_with_its_title_status_and_link(self):
-        unit = make_unit(kind="thread", channel=CHAN, status="waiting", title="Review the export plan", person={"id": PEER, "name": NAMES[PEER]}, **RECAP_FRESH)
+        unit = make_unit(kind="thread", channel=CHAN, channel_name="#export", status="waiting", title="Review the export plan", person={"id": PEER, "name": NAMES[PEER]}, **RECAP_FRESH)
 
         item = self.items(recap=self.stored(**{THREAD_KEY: unit}))[f"chat:{THREAD_KEY}"]
 
@@ -455,6 +520,7 @@ class RecapFeaturesTest(FeaturesCase):
                 "when": "2026-10-14T09:00:00Z",
                 "people": ["Peer Name"],
                 "excerpts": [],
+                "channel_name": "#export",
             },
         )
 
@@ -678,6 +744,377 @@ class SourcesFeaturesTest(FeaturesCase):
 
         self.assertEqual(code, 2)
         self.assertRegex(err, re.escape(f"routine {SLUG}"))
+
+
+class JudgeCase(WeeklyCase):
+    def judge(self, judgment, features=None):
+        self.write("features.json", features or make_features_document())
+        self.write("judgment.json", judgment)
+        return self.run_weekly("judge", "--features", self.path("features.json"), "--judgment", self.path("judgment.json"), "--out", self.path("summary.json"))
+
+    def accepted(self, judgment, features=None):
+        code, _, err = self.judge(judgment, features)
+        self.assertEqual((code, err), (0, ""))
+        return self.read("summary.json")
+
+    def rejection(self, judgment, features=None):
+        code, _, err = self.judge(judgment, features)
+        self.assertEqual(code, 3)
+        self.assertFalse(os.path.exists(self.path("summary.json")))
+        return err
+
+    def changed(self, mutate, features=None):
+        judgment = make_judgment()
+        mutate(judgment)
+        return self.rejection(judgment, features)
+
+    def assert_rejected_at(self, mutate, path, features=None):
+        self.assertRegex(self.changed(mutate, features), r"rejected: judgment: " + re.escape(path) + r": ")
+
+
+class JudgeAcceptTest(JudgeCase):
+    def test_a_valid_judgment_writes_the_summary_with_the_features_context(self):
+        summary = self.accepted(make_judgment())
+
+        self.assertEqual(summary, make_summary())
+        self.assert_canonical("summary.json")
+
+    def test_an_empty_week_accepts_no_accomplishment(self):
+        judgment = {"schema": 1, "accomplishments": [], "decisions": [], "open": []}
+
+        summary = self.accepted(judgment, make_features_document(items={}))
+
+        self.assertEqual(summary["accomplishments"], [])
+
+    def test_a_text_of_200_characters_is_accepted(self):
+        judgment = make_judgment()
+        judgment["decisions"][0]["text"] = "x" * 200
+
+        self.assertEqual(self.accepted(judgment)["decisions"][0]["text"], "x" * 200)
+
+    def test_an_owner_of_60_characters_is_accepted(self):
+        judgment = make_judgment()
+        judgment["open"][0]["owner"] = "x" * 60
+
+        self.assertEqual(self.accepted(judgment)["open"][0]["owner"], "x" * 60)
+
+    def test_an_open_bullet_without_owner_is_accepted(self):
+        judgment = make_judgment()
+        judgment["open"][0]["owner"] = None
+
+        self.assertIsNone(self.accepted(judgment)["open"][0]["owner"])
+
+    def test_texts_of_220_words_together_are_accepted(self):
+        judgment = make_judgment()
+        judgment["accomplishments"][0]["text"] = words(74)
+        judgment["decisions"][0]["text"] = words(73)
+        judgment["open"][0]["text"] = words(73)
+
+        self.assertEqual(self.accepted(judgment)["open"][0]["text"], words(73))
+
+    def test_six_accomplishments_six_decisions_and_eight_open_are_accepted(self):
+        judgment = make_judgment()
+        judgment["accomplishments"] = [{"text": f"Done {index}", "cites": [ISSUE_KEY]} for index in range(6)]
+        judgment["decisions"] = [{"text": f"Decided {index}", "cites": [ISSUE_KEY]} for index in range(6)]
+        judgment["open"] = [{"text": f"Open {index}", "owner": None, "cites": [ISSUE_KEY]} for index in range(8)]
+
+        self.assertEqual(len(self.accepted(judgment)["open"]), 8)
+
+
+class JudgeShapeTest(JudgeCase):
+    def test_rejects_a_judgment_that_is_not_json(self):
+        self.write("features.json", make_features_document())
+        with open(self.path("judgment.json"), "w", encoding="utf-8") as handle:
+            handle.write("{not json")
+
+        code, _, err = self.run_weekly("judge", "--features", self.path("features.json"), "--judgment", self.path("judgment.json"), "--out", self.path("summary.json"))
+
+        self.assertEqual(code, 3)
+        self.assertRegex(err, r"judgment: invalid JSON in .*judgment\.json")
+
+    def test_rejects_a_judgment_that_is_not_an_object(self):
+        self.assertRegex(self.rejection([]), r"judgment: <root>: expected an object")
+
+    def test_rejects_another_schema(self):
+        err = self.changed(lambda doc: doc.update(schema=2))
+
+        self.assertIn("judgment: expected schema 1 at schema", err)
+
+    def test_rejects_an_unknown_key(self):
+        self.assert_rejected_at(lambda doc: doc.update(risks=[]), "risks")
+
+    def test_rejects_a_missing_section(self):
+        self.assert_rejected_at(lambda doc: doc.pop("decisions"), "decisions")
+
+    def test_rejects_an_unknown_bullet_field(self):
+        self.assert_rejected_at(lambda doc: doc["accomplishments"][0].update(owner="Ada"), "accomplishments[0].owner")
+
+    def test_rejects_an_open_bullet_without_owner_field(self):
+        self.assert_rejected_at(lambda doc: doc["open"][0].pop("owner"), "open[0].owner")
+
+    def test_rejects_a_section_that_is_not_a_list(self):
+        self.assert_rejected_at(lambda doc: doc.update(decisions={}), "decisions")
+
+    def test_rejects_a_bullet_that_is_not_an_object(self):
+        self.assert_rejected_at(lambda doc: doc["decisions"].append("text"), "decisions[1]")
+
+
+class JudgeCountTest(JudgeCase):
+    def test_rejects_no_accomplishment_when_the_features_hold_items(self):
+        self.assert_rejected_at(lambda doc: doc.update(accomplishments=[]), "accomplishments")
+
+    def test_rejects_seven_accomplishments(self):
+        self.assert_rejected_at(lambda doc: doc.update(accomplishments=[doc["accomplishments"][0]] * 7), "accomplishments")
+
+    def test_rejects_an_accomplishment_when_the_features_hold_no_item(self):
+        judgment = {"schema": 1, "accomplishments": make_judgment()["accomplishments"], "decisions": [], "open": []}
+
+        self.assertRegex(self.rejection(judgment, make_features_document(items={})), r"judgment: accomplishments: ")
+
+    def test_rejects_seven_decisions(self):
+        self.assert_rejected_at(lambda doc: doc.update(decisions=[doc["decisions"][0]] * 7), "decisions")
+
+    def test_rejects_nine_open_bullets(self):
+        self.assert_rejected_at(lambda doc: doc.update(open=[doc["open"][0]] * 9), "open")
+
+
+class JudgeTextTest(JudgeCase):
+    def text_rejected(self, text):
+        self.assert_rejected_at(lambda doc: doc["decisions"][0].update(text=text), "decisions[0].text")
+
+    def test_rejects_a_text_that_is_not_a_string(self):
+        self.text_rejected(7)
+
+    def test_rejects_an_empty_text(self):
+        self.text_rejected("")
+
+    def test_rejects_a_blank_text(self):
+        self.text_rejected("   ")
+
+    def test_rejects_a_text_of_201_characters(self):
+        self.text_rejected("x" * 201)
+
+    def test_rejects_a_text_with_an_https_url(self):
+        self.text_rejected("See https://example.test/page for details")
+
+    def test_rejects_a_text_with_an_http_url_in_capitals(self):
+        self.text_rejected("See HTTP://example.test for details")
+
+    def test_rejects_a_text_with_a_www_address(self):
+        self.text_rejected("See www.example.test for details")
+
+    def test_rejects_a_text_with_a_line_break(self):
+        self.text_rejected("First line\nSecond line")
+
+    def test_rejects_a_text_with_a_control_character(self):
+        self.text_rejected("Tabbed\ttext")
+
+    def test_rejects_a_text_with_a_zero_width_character(self):
+        self.text_rejected("Hidden​text")
+
+    def test_names_the_open_bullet_text_path(self):
+        self.assert_rejected_at(lambda doc: doc["open"][0].update(text="x" * 201), "open[0].text")
+
+    def test_rejects_texts_of_221_words_together_naming_the_bullet_that_crosses_the_cap(self):
+        def mutate(doc):
+            doc["accomplishments"][0]["text"] = words(74)
+            doc["decisions"][0]["text"] = words(73)
+            doc["open"][0]["text"] = words(74)
+
+        self.assert_rejected_at(mutate, "open[0].text")
+
+
+class JudgeOwnerTest(JudgeCase):
+    def owner_rejected(self, owner):
+        self.assert_rejected_at(lambda doc: doc["open"][0].update(owner=owner), "open[0].owner")
+
+    def test_rejects_an_owner_of_61_characters(self):
+        self.owner_rejected("x" * 61)
+
+    def test_rejects_a_blank_owner(self):
+        self.owner_rejected("  ")
+
+    def test_rejects_an_owner_that_is_not_a_string(self):
+        self.owner_rejected(7)
+
+    def test_rejects_an_owner_with_a_line_break(self):
+        self.owner_rejected("Ada\nLovelace")
+
+
+class JudgeCitesTest(JudgeCase):
+    def test_rejects_a_cite_that_is_not_an_item_key(self):
+        def mutate(doc):
+            doc["accomplishments"][0]["cites"] = [ISSUE_KEY, "issue:OTHER-1"]
+
+        self.assert_rejected_at(mutate, "accomplishments[0].cites[1]")
+
+    def test_the_rejection_names_the_unknown_cite(self):
+        err = self.changed(lambda doc: doc["decisions"][0].update(cites=["issue:OTHER-1"]))
+
+        self.assertIn("issue:OTHER-1 is not an item of the features", err)
+
+    def test_rejects_a_cite_repeated_within_a_bullet(self):
+        self.assert_rejected_at(lambda doc: doc["accomplishments"][0].update(cites=[ISSUE_KEY, PR_KEY, ISSUE_KEY]), "accomplishments[0].cites[2]")
+
+    def test_the_same_item_may_be_cited_by_two_bullets(self):
+        judgment = make_judgment()
+        judgment["decisions"][0]["cites"] = [ISSUE_KEY]
+
+        self.assertEqual(self.accepted(judgment)["decisions"][0]["cites"], [ISSUE_KEY])
+
+    def test_rejects_empty_cites(self):
+        self.assert_rejected_at(lambda doc: doc["open"][0].update(cites=[]), "open[0].cites")
+
+    def test_rejects_cites_that_are_not_a_list(self):
+        self.assert_rejected_at(lambda doc: doc["open"][0].update(cites=ISSUE_KEY), "open[0].cites")
+
+    def test_rejects_a_cite_that_is_not_a_string(self):
+        self.assert_rejected_at(lambda doc: doc["open"][0].update(cites=[["x"]]), "open[0].cites[0]")
+
+    def test_cleans_the_key_of_an_unknown_cite_before_naming_it(self):
+        err = self.changed(lambda doc: doc["open"][0].update(cites=["issue:\nforged: ok"]))
+
+        self.assertNotIn("\nforged", err)
+
+
+class JudgeInputTest(JudgeCase):
+    def test_a_missing_judgment_file_is_an_input_error_naming_the_file(self):
+        self.write("features.json", make_features_document())
+
+        code, _, err = self.run_weekly("judge", "--features", self.path("features.json"), "--judgment", self.path("none.json"), "--out", self.path("summary.json"))
+
+        self.assertEqual(code, 2)
+        self.assertIn("none.json", err)
+
+    def test_features_missing_a_key_are_an_input_error_naming_the_key_path(self):
+        features = make_features_document()
+        del features["recap_counts"]
+
+        code, _, err = self.judge(make_judgment(), features)
+
+        self.assertEqual(code, 2)
+        self.assertIn("recap_counts", err)
+
+
+class ApplyCase(WeeklyCase):
+    def apply(self, summary=None, state_document=None, window=None):
+        self.write("state.json", state_document or {"schema": "weekly-1", "digest": SLUG, "last_run": None})
+        self.write("summary.json", summary or make_summary())
+        self.write("window.json", window or make_window())
+        return self.run_weekly(
+            "apply", "--state", self.path("state.json"), "--summary", self.path("summary.json"), "--window", self.path("window.json"),
+            "--out", self.path("next.json"), "--record", self.path("record.json"),
+        )
+
+    def applied(self, **options):
+        code, _, err = self.apply(**options)
+        self.assertEqual((code, err), (0, ""))
+
+
+class ApplyStateTest(ApplyCase):
+    def test_the_next_state_records_the_run_time_and_the_week(self):
+        self.applied()
+
+        self.assertEqual(
+            self.read("next.json"),
+            {"schema": "weekly-1", "digest": SLUG, "last_run": {"run_at": NOW, "week_start": "2026-10-12"}},
+        )
+        self.assert_canonical("next.json")
+
+    def test_the_next_state_replaces_the_previous_last_run(self):
+        previous = {"schema": "weekly-1", "digest": SLUG, "last_run": {"run_at": "2026-10-09T14:00:00Z", "week_start": "2026-10-05"}}
+
+        self.applied(state_document=previous)
+
+        self.assertEqual(self.read("next.json")["last_run"], {"run_at": NOW, "week_start": "2026-10-12"})
+
+    def test_a_report_only_window_keeps_the_state(self):
+        previous = {"schema": "weekly-1", "digest": SLUG, "last_run": {"run_at": "2026-10-09T14:00:00Z", "week_start": "2026-10-05"}}
+
+        self.applied(state_document=previous, window=make_window(report_only=True))
+
+        with open(self.path("state.json"), "rb") as source, open(self.path("next.json"), "rb") as written:
+            self.assertEqual(written.read(), source.read())
+
+    def test_rejects_a_state_naming_the_file_and_key_path(self):
+        code, _, err = self.apply(state_document={"schema": "weekly-1", "digest": SLUG, "last_run": {"run_at": "soon", "week_start": "2026-10-12"}})
+
+        self.assertEqual(code, 3)
+        self.assertRegex(err, r"state: .*last_run\.run_at")
+        self.assertFalse(os.path.exists(self.path("record.json")))
+
+    def test_a_summary_missing_a_key_is_an_input_error_naming_the_key_path(self):
+        summary = make_summary()
+        del summary["open"]
+
+        code, _, err = self.apply(summary=summary)
+
+        self.assertEqual(code, 2)
+        self.assertIn("open", err)
+
+    def test_rejects_a_window_naming_its_key_path(self):
+        code, _, err = self.apply(window={**make_window(), "week_start": "soon"})
+
+        self.assertEqual(code, 3)
+        self.assertIn("week_start", err)
+
+
+class ApplyRecordTest(ApplyCase):
+    def test_the_record_holds_the_window_the_counts_the_cited_keys_and_the_sources(self):
+        self.applied()
+
+        self.assertEqual(
+            self.read("record.json"),
+            {
+                "schema": 1,
+                "run_at": NOW,
+                "window": make_window(),
+                "week_start": "2026-10-12",
+                "report_only": False,
+                "counts": {
+                    "items": {"issue_tracker": 1, "code_host": 1, "chat": 1, "document_store": 1},
+                    "sections": {"accomplishments": 1, "decisions": 1, "open": 1},
+                },
+                "cited": sorted([ISSUE_KEY, PR_KEY, PAGE_KEY, THREAD_ITEM]),
+                "sources": [
+                    {"source": "chat", "read": True, "reason": None},
+                    {"source": "code", "read": True, "reason": None},
+                    {"source": "docs", "read": True, "reason": None},
+                    {"source": "issues", "read": True, "reason": None},
+                ],
+            },
+        )
+        self.assert_canonical("record.json")
+
+    def test_an_item_cited_by_two_bullets_counts_once(self):
+        judgment = make_judgment()
+        judgment["decisions"][0]["cites"] = [ISSUE_KEY]
+
+        self.applied(summary=make_summary(judgment))
+
+        self.assertEqual(self.read("record.json")["counts"]["items"]["issue_tracker"], 1)
+
+    def test_a_source_not_read_keeps_its_reason(self):
+        features = make_features_document(sources=make_source_rows(code={"read": False, "reason": "http 503"}))
+
+        self.applied(summary=make_summary(features=features))
+
+        self.assertIn({"source": "code", "read": False, "reason": "http 503"}, self.read("record.json")["sources"])
+
+    def test_the_record_of_a_report_only_run_is_marked(self):
+        self.applied(window=make_window(report_only=True))
+
+        self.assertTrue(self.read("record.json")["report_only"])
+
+    def test_neither_file_holds_a_bullet_text_a_title_or_an_owner_name(self):
+        self.applied()
+
+        with open(self.path("record.json"), encoding="utf-8") as record, open(self.path("next.json"), encoding="utf-8") as written:
+            kept = record.read() + written.read()
+        texts = [entry["text"] for section in ("accomplishments", "decisions", "open") for entry in make_judgment()[section]]
+        titles = [item["title"] for item in make_features_items().values()]
+        for text in [*texts, *titles, OWNER_NAME]:
+            self.assertNotIn(text, kept)
 
 
 if __name__ == "__main__":

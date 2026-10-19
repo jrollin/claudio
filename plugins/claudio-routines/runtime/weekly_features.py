@@ -7,6 +7,7 @@ import recap_message
 import recap_state
 import roles
 import state
+import weekly_state
 import weekly_window
 from config import adapter_role
 from state import Rejected
@@ -20,6 +21,28 @@ PAGE_EXCERPT_CAP = 1000
 CHAT_TITLE_CAP = 80
 RECORD_SPEC = {"run_at": recap_state.UTC_TIME, "new": [state.TEXT], "resolved": [state.TEXT], "handled": [state.TEXT]}
 COUNTED = ("new", "resolved", "handled")
+KINDS = ("issue", "pull_request", "thread", "dm", "page")
+ROLE_OF_PREFIX = {"issue": "issue_tracker", "pr": "code_host", "chat": "chat", "page": "document_store"}
+SCHEMA = state.leaf(lambda value: state.is_integer(value) and value == SCHEMA_VERSION, f"schema {SCHEMA_VERSION}")
+ITEM_KEY = state.leaf(lambda value: isinstance(value, str) and value.partition(":")[0] in ROLE_OF_PREFIX and ":" in value, "an item key like issue:<key>, pr:<repo>#<number>, chat:<unit key> or page:<id>")
+ITEM_SPEC = {"source": state.TEXT, "role": state.TEXT, "kind": recap_state.one_of(KINDS), "title": state.TEXT, "link": state.TEXT}
+SOURCE_SPEC = {"source": state.TEXT, "role": state.TEXT, "read": state.BOOLEAN, "reason": state.Nullable(state.TEXT)}
+CONTEXT_SPEC = {
+    "schema": SCHEMA,
+    "window": weekly_window.WINDOW_SPEC,
+    "week_start": weekly_state.DAY,
+    "recap_counts": {name: recap_state.COUNT for name in COUNTED},
+    "sources": [SOURCE_SPEC],
+}
+FEATURES_SPEC = {**CONTEXT_SPEC, "items": {"*": ITEM_SPEC}}
+BULLET_SPEC = {"text": state.TEXT, "cites": [ITEM_KEY]}
+SECTIONS = ("accomplishments", "decisions", "open")
+SUMMARY_SPEC = {
+    **CONTEXT_SPEC,
+    "accomplishments": [BULLET_SPEC],
+    "decisions": [BULLET_SPEC],
+    "open": [{**BULLET_SPEC, "owner": state.Nullable(state.TEXT)}],
+}
 
 
 def seconds(text, where):
@@ -39,7 +62,7 @@ def in_window(window, moment):
     return window["from_ts"] <= moment <= window["to_ts"]
 
 
-def make_item(source, role, kind, title, status, link, when, people=(), excerpts=()):
+def make_item(source, role, kind, title, status, link, when, people=(), excerpts=(), channel_name=None):
     return {
         "source": source,
         "role": role,
@@ -50,6 +73,7 @@ def make_item(source, role, kind, title, status, link, when, people=(), excerpts
         "when": state.utc_text(when),
         "people": list(people),
         "excerpts": list(excerpts),
+        "channel_name": channel_name,
     }
 
 
@@ -112,7 +136,8 @@ def recap_unit_items(stored, window, routine, excluded, items):
         kind = "dm" if unit["kind"] in recap_state.DM_KINDS else "thread"
         people = [] if unit["person"] is None else [unit["person"]["name"]]
         link = chat_link(routine["workspace"], unit["channel"], unit["last_ts"], thread_root(key))
-        items[f"chat:{key}"] = make_item(RECAP_SOURCE, "chat", kind, unit["title"], unit["status"], link, last if in_window(window, last) else first, people)
+        when = last if in_window(window, last) else first
+        items[f"chat:{key}"] = make_item(RECAP_SOURCE, "chat", kind, unit["title"], unit["status"], link, when, people, channel_name=unit["channel_name"])
 
 
 def recap_counts(records, window, excluded):
@@ -134,7 +159,7 @@ def direct_units(sources, collections, excluded):
                 moment = stamp_seconds(message["ts"], f"collection {name}: records.units messages[{index}].ts")
                 root = None if conversation else message["root_ts"] or message["ts"]
                 key = recap_state.dm_key(record["channel"]) if conversation else recap_state.thread_key(record["channel"], root)
-                unit = grouped.setdefault(key, {"source": name, "channel": record["channel"], "root": root, "messages": {}})
+                unit = grouped.setdefault(key, {"source": name, "channel": record["channel"], "name": None if conversation else record["name"], "root": root, "messages": {}})
                 unit["messages"].setdefault(message["ts"], (moment, message))
     return grouped
 
@@ -155,7 +180,7 @@ def direct_chat_items(sources, collections, window, host, excluded, items):
         people = sorted({message["name"] for _, _, message in inside})
         link = chat_link(host, unit["channel"], newest_stamp, unit["root"])
         kind = "dm" if unit["root"] is None else "thread"
-        items[f"chat:{key}"] = make_item(unit["source"], "chat", kind, title, None, link, newest, people, excerpts)
+        items[f"chat:{key}"] = make_item(unit["source"], "chat", kind, title, None, link, newest, people, excerpts, unit["name"])
 
 
 RECORD_ITEMS = {"issue_tracker": issue_items, "code_host": pull_request_items, "document_store": page_items}
@@ -240,3 +265,24 @@ def run_features(args, role_of=adapter_role):
     document = compute(routine, sources, collections, window, load_recap(args.recap))
     state.write_all([(args.out, state.dump(document))])
     return 0
+
+
+def check_features(document):
+    state.check(document, FEATURES_SPEC, "")
+    for key in document["items"]:
+        ITEM_KEY(key, f"items.{state.clean_text(key, recap_state.KEY_CAP)}")
+
+
+def load_input(path, label, checker):
+    try:
+        return state.load(path, label, checker)
+    except Rejected as error:
+        raise state.InputError(str(error)) from error
+
+
+def load_features(path):
+    return load_input(path, "features", check_features)
+
+
+def load_summary(path):
+    return load_input(path, "summary", lambda document: state.check(document, SUMMARY_SPEC, ""))

@@ -1587,7 +1587,7 @@ A degraded run's message is one line that starts with `degraded:` and names the 
   - all texts hold at most 220 words together;
   - exit 3 names the key path; the template allows one correction, then a degraded run.
 - `apply --state --summary --window --out <run>/next.json --record <run>/record.json`: the state holds `schema` (`weekly-1`), `digest` and `last_run` (`run_at`, `week_start`); the record holds the window, the item counts per role, the counts per section, the cited keys and the sources read (AC-54.5, BR-75).
-- `message --summary --features --tz --out <run>/message.md` renders (AC-54.4, BR-73):
+- `message --summary --features --out <run>/message.md` renders (AC-54.4, BR-73); the week date comes from `week_start`, already in the zone:
   - `**Weekly status, week of <Mon 13 Oct>**`;
   - `**Key accomplishments**`, `**Decisions**` (`- None recorded` when empty), `**Still open / next week**` (` (owner: <name>)` when set);
   - each bullet's links after its text, labelled by kind: the issue key, `<repo name>#<number>`, `thread in #<channel>` or `DM`, the page title cut to 6 words;

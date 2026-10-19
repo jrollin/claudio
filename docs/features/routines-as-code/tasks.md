@@ -1126,7 +1126,7 @@ Owner-gated: needs the merged pull request, a release tag, the transport and its
 - **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
 - **Blocked by**: T-102
 - **Rules**: BR-73, BR-75
-- **Status**: Not Started
+- **Status**: Complete
 
 ### T-104: Runnable weekly status template
 - `templates/weekly-status.md` loses the not-runnable marker and runs the steps of TD-69, with the save block, retry rule, raw folders and run folder of the other templates.
