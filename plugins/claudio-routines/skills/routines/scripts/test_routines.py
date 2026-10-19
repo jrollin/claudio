@@ -1770,6 +1770,52 @@ class PinnedClaudioCase(Case):
         self.write_config(make_config(sha=git(self.claudio, "rev-parse", "HEAD")))
 
 
+class RuntimeCopyLintTest(PinnedClaudioCase):
+    PUBLIC = "{{chat.channel}}\n"
+
+    def setUp(self):
+        super().setUp()
+        self.write_template("prod-watch", "Post to {{chat.channel}}.\n")
+
+    def pin_template(self, name, text):
+        write(os.path.join(self.claudio, "plugins/claudio-routines/skills/routines/templates", f"{name}.md"), text)
+        git(self.claudio, "add", "-A")
+        git(self.claudio, "commit", "-q", "-m", "template")
+        git(self.claudio, "tag", "-f", "v0.1.0")
+        self.write_config(make_config(sha=git(self.claudio, "rev-parse", "HEAD")))
+
+    def test_a_runtime_copy_equal_to_the_pinned_public_template_passes(self):
+        self.pin_template("prod-watch", self.PUBLIC)
+        self.write_template("prod-watch-runtime", self.PUBLIC)
+        self.assertEqual(self.lint()[:2], (0, ""))
+
+    def test_a_runtime_copy_that_differs_is_a_finding_naming_the_public_template(self):
+        self.pin_template("prod-watch", self.PUBLIC)
+        path = self.write_template("prod-watch-runtime", "{{chat.channel}} changed\n")
+        self.assertEqual(self.lint()[:2], (1, f"{path}:1:runtime-copy-differs:prod-watch.md\n"))
+
+    def test_a_runtime_copy_without_a_pinned_public_template_is_a_finding(self):
+        path = self.write_template("chat-recap-runtime", self.PUBLIC)
+        self.assertEqual(self.lint()[:2], (1, f"{path}:1:runtime-copy-missing:chat-recap.md\n"))
+
+    def test_a_template_that_is_not_a_runtime_copy_is_not_compared(self):
+        self.pin_template("prod-watch", self.PUBLIC)
+        self.assertEqual(self.lint()[:2], (0, ""))
+
+    def test_the_copy_is_compared_with_the_public_template_at_the_pinned_commit(self):
+        self.pin_template("prod-watch", self.PUBLIC)
+        pinned = self.sha_of_config()
+        write(os.path.join(self.claudio, "plugins/claudio-routines/skills/routines/templates", "prod-watch.md"), "newer\n")
+        git(self.claudio, "add", "-A")
+        git(self.claudio, "commit", "-q", "-m", "newer")
+        self.write_config(make_config(sha=pinned))
+        self.write_template("prod-watch-runtime", self.PUBLIC)
+        self.assertEqual(self.lint()[:2], (0, ""))
+
+    def sha_of_config(self):
+        return json.loads(read(os.path.join(self.private, "config.json")))["runtime"]["sha"]
+
+
 class PrivateLintTest(PinnedClaudioCase):
     def test_marked_template_passes_without_a_warning(self):
         self.write_template("prod-watch", MARKED)

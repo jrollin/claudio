@@ -1369,6 +1369,19 @@ A degraded run's message is one line that starts with `degraded:` and names the 
 
 **Rationale**: the owner reads the message in the chat client, often on a phone; this layout is the one the routine posted for weeks.
 
+### TD-65: Runtime template copies are checked against the pinned commit
+
+**Choice**:
+- A private `<name>-runtime.md` template is a byte copy of the public runnable template `<name>.md`; the copy exists because the private mirror of a live routine shadows the public name.
+- `routines.py lint --private` reads `<name>.md` at the pinned `runtime.sha` from the claudio checkout (`git show`) and reports `runtime-copy-differs:<name>.md` when the bytes differ, `runtime-copy-missing:<name>.md` when the commit has none.
+- The role check of `lint --private` covers the routines whose template calls the runtime (it holds `{{runtime.dir}}`); a prompt-only mirror has no sources to check.
+
+**Alternatives considered**:
+- Comparing with the checkout's working tree: rejected, a checkout ahead of the pin would flag a copy that matches the runtime the cloud runs.
+- Rendering the public template directly for runtime routines: rejected for now, the mirror of each live routine keeps the public name.
+
+**Rationale**: the copies drifted twice before release 0.5.0, once in a way that would have failed every Prod watch run at its digest step.
+
 ### TD-58: Recap engine modules and CLI
 
 **Choice**:

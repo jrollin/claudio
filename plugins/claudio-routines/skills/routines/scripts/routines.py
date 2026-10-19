@@ -26,6 +26,8 @@ README_PATH = str(SCRIPT_PATH.parents[3] / "README.md")
 RUNTIME_PATH = str(SCRIPT_PATH.parents[3] / "runtime")
 PLUGIN_IN_REPO = "plugins/claudio-routines"
 RUNTIME_IN_REPO = "plugins/claudio-routines/runtime"
+TEMPLATES_IN_REPO = "plugins/claudio-routines/skills/routines/templates"
+RUNTIME_COPY_SUFFIX = "-runtime.md"
 PLACES = ("cloud", "local")
 SETTINGS_PARTS = (".claude", "settings.json")
 SETUP_TEMPLATE = "setup-env.sh"
@@ -698,10 +700,15 @@ def run_git(root, *args):
         raise UsageError(f"cannot run git in {root}: {error.strerror}") from error
 
 
-def extract_runtime(claudio, tag, sha, directory):
+def claudio_root(claudio):
     root = claudio or git_toplevel(SCRIPT_DIR)
     if root is None:
         raise UsageError("cannot find the claudio checkout of this script: pass --claudio DIR")
+    return root
+
+
+def extract_runtime(claudio, tag, sha, directory):
+    root = claudio_root(claudio)
     tagged = run_git(root, "rev-parse", "--verify", "--quiet", f"refs/tags/{tag}^{{commit}}")
     if tagged.returncode != 0 or tagged.stdout.decode(errors="replace").strip() != sha:
         raise UsageError(f"runtime.tag {tag} does not resolve to runtime.sha {sha} in {root}: fetch the tags or fix the config")
@@ -718,6 +725,22 @@ def extract_runtime(claudio, tag, sha, directory):
             archive.extractall(directory, filter="data")
     except (tarfile.TarError, OSError) as error:
         raise UsageError(f"cannot extract {RUNTIME_IN_REPO} at runtime commit {sha} into {directory}: {error}") from error
+
+
+def runtime_copy_findings(claudio, sha, private):
+    root = claudio_root(claudio)
+    findings = set()
+    for path in templates_in(os.path.join(private, "templates")):
+        name = os.path.basename(path)
+        if not name.endswith(RUNTIME_COPY_SUFFIX):
+            continue
+        public = name[: -len(RUNTIME_COPY_SUFFIX)] + ".md"
+        pinned = run_git(root, "show", f"{sha}:{TEMPLATES_IN_REPO}/{public}")
+        if pinned.returncode != 0:
+            findings.add((path, 1, f"runtime-copy-missing:{public}"))
+        elif pinned.stdout != read_bytes(path):
+            findings.add((path, 1, f"runtime-copy-differs:{public}"))
+    return findings
 
 
 def templates_in(directory):
@@ -786,7 +809,7 @@ def private_findings(args):
         extract_runtime(args.claudio, config["runtime"]["tag"], sha, directory)
         with runtime_imports(directory):
             contracts = load_contracts(directory, f"{sha}:{RUNTIME_IN_REPO}")
-    findings = settings_findings(private)
+    findings = settings_findings(private) | runtime_copy_findings(args.claudio, sha, private)
     for path in templates_in(os.path.join(private, "templates")):
         findings |= findings_in(path, lint.no_rules, contracts)
     used = set()

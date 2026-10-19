@@ -59,11 +59,14 @@ Run `R render <slug> [--place cloud|local] [--post]`.
   - It fails a provider name (`provider-name`: a module name under `runtime/providers/`) in the skeletons, the plugin README and this file.
 - Private templates: `R lint --private <path> [--claudio <checkout>]`. It checks every `state.py`, `collect.py`, `evaluate.py`, `digest.py`, `tribe.py` and `recap.py` command and flag against the runtime at the pinned tag, so the tag must exist in a local claudio checkout. Pass `--claudio` when the plugin runs from the plugin cache.
 - Each finding prints `path:line:rule`.
-- `lint --private` runs the role check of this checkout's runtime on every routine file, for both places. It exits 2 naming the file and the key path of the first invalid value, and skips a routine whose template is marked not runnable.
+- `lint --private` runs the role check of this checkout's runtime on every routine file, for both places. It exits 2 naming the file and the key path of the first invalid value, and skips a routine whose template does not call the runtime (no `{{runtime.dir}}`): a prompt-only mirror or a template marked not runnable.
 - `lint --private` also checks `.claude/settings.json` of the private repository, the file the cloud session reads. It reports at line 1 of that file:
   - `settings-missing`: the file does not exist.
   - `settings-invalid`: the file is not a JSON object.
   - `deny-missing:<entry>`: `permissions.deny` lacks `<entry>`, one finding for each of `PushNotification`, `Bash(sleep *)` and `Monitor`.
+- `lint --private` compares each private `<name>-runtime.md` template with the public runnable template `<name>.md` at the pinned runtime commit, and reports at line 1:
+  - `runtime-copy-differs:<name>.md`: the copy differs; copy the public template again.
+  - `runtime-copy-missing:<name>.md`: the pinned commit has no such public template.
 - `marker`: the first line is an HTML comment holding `not runnable` but is not exactly `<!-- not runnable -->`, so the template would stay runnable. Both lints report it at line 1.
 - `lint --private` also prints warnings on stderr, naming keys and never values. They leave the exit code unchanged:
   - `literal-value`: a template holds the value of a routine key as literal text. Use the placeholder.
