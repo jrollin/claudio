@@ -9,6 +9,7 @@ THREAD_KINDS = ("thread", "mention", "group")
 UNIT_KINDS = DM_KINDS + THREAD_KINDS
 KEY_KINDS = {"dm": DM_KINDS, "thread": THREAD_KINDS}
 STATUSES = ("waiting", "promise", "waiting_on_others", "team_ask", "handled", "announcement")
+HELD_STATUSES = STATUSES[:2]
 TITLE_WORDS = 8
 KEY_CAP = 80
 CHANNEL_ID = "[A-Za-z0-9]{1,32}"

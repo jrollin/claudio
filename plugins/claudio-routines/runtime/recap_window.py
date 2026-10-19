@@ -1,10 +1,19 @@
 from datetime import datetime, timedelta
 
+import recap_state
 import state
-from state import Rejected
+from state import Nullable, Rejected
 
 FIRST_WEEKEND_DAY = 5
+LIMITS = ("baseline", "gap")
+WINDOW_SPEC = {"from_ts": state.INTEGER, "to_ts": state.INTEGER, "limited": Nullable(recap_state.one_of(LIMITS)), "explicit": state.BOOLEAN}
 MAX_LOOKBACK_WORKING_DAYS = 365
+
+
+def check_window(document):
+    state.check(document, WINDOW_SPEC, "")
+    if document["from_ts"] > document["to_ts"]:
+        raise Rejected(f"from_ts {document['from_ts']} is after to_ts {document['to_ts']}")
 
 
 def is_working_day(day):

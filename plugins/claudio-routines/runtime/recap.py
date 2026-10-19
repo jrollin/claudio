@@ -1,12 +1,14 @@
 import argparse
 import sys
 
+import recap_features
 import recap_seed
 import recap_state
 import recap_window
+import roles
 import state
 
-STUBS = ("features", "judge", "apply", "message")
+STUBS = ("judge", "apply", "message")
 
 
 def lookback_days(text):
@@ -43,7 +45,7 @@ def run_stub(args):
     raise state.InputError(f"{args.command}: not implemented yet")
 
 
-COMMANDS = {"init": run_init, "window": run_window, "seed": run_seed, **{name: run_stub for name in STUBS}}
+COMMANDS = {"init": run_init, "window": run_window, "seed": run_seed, "features": recap_features.run_features, **{name: run_stub for name in STUBS}}
 
 
 def build_parser():
@@ -63,6 +65,9 @@ def build_parser():
     seed.add_argument("--from", dest="source", required=True, help="the stored state, extracted as JSON (schema 1)")
     for flag in ("--digest", "--out"):
         seed.add_argument(flag, required=True)
+    features = commands.add_parser("features", help="write the features, base and rules files; decides nothing")
+    for flag in ("--config", "--routine", "--state", "--window", "--collections", "--place", "--out", "--base-out", "--rules-out"):
+        features.add_argument(flag, required=True, **({"choices": roles.PLACES} if flag == "--place" else {}))
     for name in STUBS:
         commands.add_parser(name, help="not implemented yet").add_argument("rest", nargs=argparse.REMAINDER)
     return parser

@@ -112,7 +112,7 @@ def search_parse(source, responses):
 
 
 def unit_message(user, name, ts, text, root=None, bot=False, **extra):
-    return {"user": user, "name": name, "bot": bot, "ts": ts, "root_ts": root, "text": text, **extra}
+    return {"user": user, "name": name, "bot": bot, "ts": ts, "root_ts": root, "mentions": [], "group_mentions": [], "text": text, **extra}
 
 
 def full_responses():
@@ -804,6 +804,268 @@ class SearchTransportEqualityTest(unittest.TestCase):
         over_relay, over_api = self.over_relay(), self.over_api()
 
         self.assertEqual(state.dump([over_relay["entries"], over_relay["cursor"]]), state.dump([over_api["entries"], over_api["cursor"]]))
+
+STORED_ROOT = "1792300500.000200"
+STORED_LAST = "1792300000.000100"
+LATE_REPLY = "1792395000.000100"
+DM_REREAD = {"kind": "dm", "channel": "D5", "root_ts": None, "last_ts": STORED_LAST}
+THREAD_REREAD = {"kind": "thread", "channel": "C6", "root_ts": STORED_ROOT, "last_ts": "1792300600.000300"}
+
+
+def reread_source(*rereads, **options):
+    return search_source(rereads=list(rereads), **options)
+
+
+class SearchRereadRelayTest(unittest.TestCase):
+    def reads(self, source, *hits):
+        seen, _, _ = drive(source, {"team-chat-1": search_text(*hits)})
+        return [(tool, arguments["channel_id"], arguments.get("oldest"), arguments.get("message_ts")) for tool, arguments in seen]
+
+    def test_reads_a_stored_conversation_again_from_just_before_its_last_message_outside_the_window(self):
+        reads = self.reads(reread_source(DM_REREAD))
+
+        self.assertEqual(reads, [(TOOL, "D5", "1792300000.000099", None)])
+
+    def test_reads_a_stored_thread_again_by_its_root_outside_the_window(self):
+        reads = self.reads(reread_source(THREAD_REREAD))
+
+        self.assertEqual(reads, [(THREAD_TOOL, "C6", None, STORED_ROOT)])
+
+    def test_reads_a_conversation_found_by_a_hit_and_a_reread_once_from_the_earlier_start(self):
+        reads = self.reads(reread_source(DM_REREAD), hit("D5", "DM", PEER, "1792395000.000100"))
+
+        self.assertEqual(reads, [(TOOL, "D5", "1792300000.000099", None)])
+
+    def test_reads_a_conversation_hit_from_the_window_start_when_the_stored_message_is_newer(self):
+        newer = {**DM_REREAD, "last_ts": "1792395500.000100"}
+
+        reads = self.reads(reread_source(newer), hit("D5", "DM", PEER, "1792395000.000100"))
+
+        self.assertEqual(reads, [(TOOL, "D5", "1792390000", None)])
+
+    def test_reads_a_thread_found_by_a_hit_and_a_reread_once(self):
+        reads = self.reads(reread_source(THREAD_REREAD), hit("C6", "#ops", PEER, "1792396000.000100", thread=STORED_ROOT))
+
+        self.assertEqual(reads, [(THREAD_TOOL, "C6", None, STORED_ROOT)])
+
+    def test_reads_the_same_stored_unit_listed_twice_once(self):
+        reads = self.reads(reread_source(DM_REREAD, DM_REREAD, THREAD_REREAD, THREAD_REREAD))
+
+        self.assertEqual([tool for tool, _, _, _ in reads], [TOOL, THREAD_TOOL])
+
+    def test_names_a_group_conversation_reread_group_dm(self):
+        responses = {"team-chat-1": saved("search_empty.json"), "team-chat-2": conversation_page("G5", (PEER, LATE_REPLY, "still open"))}
+
+        result = search_parse(reread_source({**DM_REREAD, "kind": "group_dm", "channel": "G5"}), responses)
+
+        self.assertEqual(result["records"]["units"][0]["name"], "group DM")
+
+    def test_keeps_the_reread_conversation_as_a_unit_without_participants(self):
+        responses = {"team-chat-1": saved("search_empty.json"), "team-chat-2": conversation_page("D5", (PEER, LATE_REPLY, "still open"))}
+
+        result = search_parse(reread_source(DM_REREAD), responses)
+
+        self.assertEqual(
+            result["records"]["units"],
+            [{"channel": "D5", "name": "DM", "participants": [], "messages": [unit_message(PEER, "Peer Name", LATE_REPLY, "still open")]}],
+        )
+
+    def test_keeps_the_reread_thread_with_its_parent_and_replies(self):
+        reply = thread_reply(PEER, LATE_REPLY, "Thanks", index=1, total=1)
+        responses = {"team-chat-1": saved("search_empty.json"), "team-chat-2": thread_page(reply, root=STORED_ROOT, total=1)}
+
+        unit = search_parse(reread_source(THREAD_REREAD), responses)["records"]["units"][0]
+
+        self.assertEqual((unit["channel"], unit["name"], [message["ts"] for message in unit["messages"]]), ("C6", "C6", [STORED_ROOT, LATE_REPLY]))
+
+    def test_names_a_reread_thread_after_the_channel_of_a_hit(self):
+        hits = (hit("C6", "#ops", PEER, "1792396000.000100"),)
+        responses = {"team-chat-1": search_text(*hits), "team-chat-2": thread_page(thread_reply(PEER, LATE_REPLY, "Thanks", index=1, total=1), root=STORED_ROOT, total=1)}
+
+        units = search_parse(reread_source(THREAD_REREAD), responses)["records"]["units"]
+
+        self.assertEqual([(unit["channel"], unit["name"]) for unit in units], [("C6", "#ops"), ("C6", "#ops")])
+
+    def test_drops_a_reread_conversation_without_a_message(self):
+        responses = {"team-chat-1": saved("search_empty.json"), "team-chat-2": conversation_page("D5")}
+
+        self.assertEqual(search_parse(reread_source(DM_REREAD), responses)["records"]["units"], [])
+
+    def test_records_a_failed_reread_conversation_as_an_entry(self):
+        responses = {"team-chat-1": saved("search_empty.json"), "team-chat-2": json.dumps({"error": "channel_not_found"})}
+
+        result = search_parse(reread_source(DM_REREAD), responses)
+
+        self.assertEqual((result["records"]["units"], result["entries"]), ([], {"D5": failed("channel_not_found")}))
+
+    def test_a_source_without_rereads_plans_the_same_calls(self):
+        self.assertEqual(self.reads(search_source(rereads=[])), [])
+
+
+class SearchRereadApiTest(unittest.TestCase):
+    def test_reads_a_stored_conversation_again_from_just_before_its_last_message(self):
+        message = {"type": "message", "user": "U2", "text": "still open", "ts": "1760004000.000400"}
+        routes = {SEARCH_PATH: [search_doc()], HISTORY_PATH: [history_doc(message)]}
+        stored = {"kind": "dm", "channel": "D5", "root_ts": None, "last_ts": "1759900000.000100"}
+
+        opener, result = api_units(routes, source=reread_source(stored))
+
+        self.assertEqual(
+            (query(requests_to(opener, HISTORY_PATH)[0])["oldest"], path_counts(opener).get(INFO_PATH), result["records"]["units"]),
+            (["1759900000.000099"], None, [{"channel": "D5", "name": "DM", "participants": [], "messages": [unit_message("U2", "Bea Example", "1760004000.000400", "still open")]}]),
+        )
+
+    def test_reads_a_stored_thread_again_and_once_for_a_hit_in_it(self):
+        replies = history_doc(root_item(ROOT_TS, 1), reply_item("1760005000.000500", root=ROOT_TS))
+        routes = {SEARCH_PATH: [search_doc(api_match("C3", "1760005000.000500", thread=ROOT_TS))], REPLIES_PATH: [replies]}
+        stored = {"kind": "thread", "channel": "C3", "root_ts": ROOT_TS, "last_ts": "1759900000.000100"}
+
+        opener, result = api_units(routes, source=reread_source(stored))
+
+        self.assertEqual((path_counts(opener)[REPLIES_PATH], len(result["records"]["units"])), (1, 1))
+
+    def test_counts_the_reread_in_the_call_cap(self):
+        stored = {"kind": "dm", "channel": "D5", "root_ts": None, "last_ts": "1759900000.000100"}
+
+        with self.assertRaises(_http.PartialRead) as caught:
+            api_units({SEARCH_PATH: [search_doc()], HISTORY_PATH: [history_doc()]}, source=reread_source(stored, call_cap=1))
+
+        self.assertEqual(str(caught.exception), "partial: call cap")
+
+
+class SearchRereadTransportEqualityTest(unittest.TestCase):
+    ROOT, REPLY, MESSAGE = "1792300500.000200", "1792396000.000300", "1792395000.000100"
+
+    def sources(self):
+        stored = [
+            {"kind": "dm", "channel": "D5", "root_ts": None, "last_ts": "1792300000.000100"},
+            {"kind": "thread", "channel": "C6", "root_ts": self.ROOT, "last_ts": "1792300600.000300"},
+        ]
+        return reread_source(*stored, owner="U2")
+
+    def over_relay(self):
+        responses = {
+            "team-chat-1": saved("search_empty.json"),
+            "team-chat-2": conversation_page("D5", ("U1", self.MESSAGE, "still open"), names=USERS),
+            "team-chat-3": thread_page(thread_reply("U2", self.REPLY, "Thanks", index=1, total=1), root=self.ROOT, total=1),
+        }
+        return search_parse(self.sources(), responses)
+
+    def over_api(self):
+        root = {"type": "message", "user": "U1", "text": "Release notes", "ts": self.ROOT, "thread_ts": self.ROOT, "reply_count": 1}
+        routes = {
+            SEARCH_PATH: [search_doc()],
+            HISTORY_PATH: [history_doc({"type": "message", "user": "U1", "text": "still open", "ts": self.MESSAGE})],
+            REPLIES_PATH: [history_doc(root, reply_item(self.REPLY, text="Thanks", user="U2", root=self.ROOT))],
+        }
+        return api_units(routes, window=SEARCH_WINDOW, source=self.sources())[1]
+
+    def test_both_transports_give_the_same_units_for_a_reread_conversation_and_thread(self):
+        self.assertEqual(state.dump(self.over_relay()["records"]), state.dump(self.over_api()["records"]))
+
+
+MENTION_CASES = {
+    "a_user_mention": ("ping <@U000001> now", ["U000001"], []),
+    "a_user_mention_with_a_name": ("ping <@U000001|Owner Name> now", ["U000001"], []),
+    "an_enterprise_user_mention": ("ping <@W000001> now", ["W000001"], []),
+    "a_group_mention": ("ping <!subteam^S000001> now", [], ["S000001"]),
+    "a_group_mention_with_a_label": ("ping <!subteam^S000001|@core> now", [], ["S000001"]),
+    "duplicates_sorted": ("<@U000003> <@U000001> <@U000003> <!subteam^S000002> <!subteam^S000001> <!subteam^S000002>", ["U000001", "U000003"], ["S000001", "S000002"]),
+    "a_mention_past_the_300_character_cut": ("x" * 310 + " <@U000001> <!subteam^S000001>", ["U000001"], ["S000001"]),
+    "no_mention": ("hello", [], []),
+    "an_id_written_as_plain_text": ("see U000001 and S000001 and @U000001 and subteam^S000001", [], []),
+    "a_channel_or_broadcast_markup": ("<!here> <!channel> <#C000001|ops>", [], []),
+}
+
+
+def mentions_over_relay(text):
+    responses = {"team-chat-1": search_text(hit("C4", "#dev", PEER, "1792397500.000100", text=text))}
+    return search_parse(search_source(), responses)["records"]["units"][0]["messages"][0]
+
+
+def mentions_over_api(text):
+    match = api_match("C4", "1760004000.000400", text=text, channel_name="dev")
+    return api_units({SEARCH_PATH: [search_doc(match)]})[1]["records"]["units"][0]["messages"][0]
+
+
+def mention_tests(read, transport):
+    def build(text, mentions, groups):
+        def test(self):
+            message = read(text)
+            self.assertEqual((message["mentions"], message["group_mentions"]), (mentions, groups))
+
+        return test
+
+    return {f"test_reads_{transport}_{name}": build(*case) for name, case in MENTION_CASES.items()}
+
+
+class SearchRelayMentionsTest(unittest.TestCase):
+    def test_cuts_the_text_but_not_the_mentions(self):
+        text = "x" * 310 + " <@U000001>"
+
+        self.assertEqual(len(mentions_over_relay(text)["text"]), 300)
+
+    def test_reads_the_mentions_of_a_search_hit_fixture(self):
+        message = search_parse(search_source(), {"team-chat-1": saved("search_mentions.json")})["records"]["units"][0]["messages"][0]
+
+        self.assertEqual((message["mentions"], message["group_mentions"]), (["U000001"], ["S000001"]))
+
+    def test_reads_the_mentions_of_a_channel_read_fixture(self):
+        responses = {"team-chat-1": search_text(hit("D000005", "DM", PEER, "1792395500.000200")), "team-chat-2": saved("read_mentions.json")}
+
+        message = search_parse(search_source(), responses)["records"]["units"][0]["messages"][0]
+
+        self.assertEqual((message["mentions"], message["group_mentions"]), (["U000001"], ["S000002"]))
+
+    def test_reads_the_mentions_of_a_thread_read_fixture(self):
+        responses = {"team-chat-1": search_text(hit("C000003", "#ops", PEER, "1792398500.000100", thread=THREAD_ROOT)), "team-chat-2": saved("thread_mentions.json")}
+
+        messages = search_parse(search_source(), responses)["records"]["units"][0]["messages"]
+
+        self.assertEqual([(item["mentions"], item["group_mentions"]) for item in messages], [([], ["S000001"]), (["U000001"], [])])
+
+    def test_keeps_the_text_cleaned_of_the_mention_markup(self):
+        message = search_parse(search_source(), {"team-chat-1": saved("search_mentions.json")})["records"]["units"][0]["messages"][0]
+
+        self.assertEqual([char in message["text"] for char in "<>@"], [False, False, False])
+
+
+class SearchApiMentionsTest(unittest.TestCase):
+    def test_reads_the_mentions_of_a_conversation_read(self):
+        history = history_doc({"type": "message", "user": "U2", "text": "hi <@U000001> and <!subteam^S000002|@core>", "ts": "1760004000.000400"})
+        routes = {SEARCH_PATH: [search_doc(api_match("D1", "1760004000.000400", im=True))], HISTORY_PATH: [history], INFO_PATH: [info_doc("D1", "U2")]}
+
+        message = api_units(routes)[1]["records"]["units"][0]["messages"][0]
+
+        self.assertEqual((message["mentions"], message["group_mentions"]), (["U000001"], ["S000002"]))
+
+    def test_reads_the_mentions_of_a_thread_read(self):
+        replies = history_doc(
+            {**root_item(ROOT_TS, 1), "text": "Hey <!subteam^S000001> :wave:"},
+            reply_item("1760005000.000500", text="Hi <@U000001|Peer Name> question", root=ROOT_TS),
+        )
+        routes = {SEARCH_PATH: [search_doc(api_match("C3", "1760005000.000500", thread=ROOT_TS))], REPLIES_PATH: [replies]}
+
+        messages = api_units(routes)[1]["records"]["units"][0]["messages"]
+
+        self.assertEqual([(item["mentions"], item["group_mentions"]) for item in messages], [([], ["S000001"]), (["U000001"], [])])
+
+
+class SearchMentionsTransportEqualityTest(unittest.TestCase):
+    TEXT = MENTION_CASES["duplicates_sorted"][0] + " <!subteam^S000009|@x> <@U000001|name>"
+
+    def test_both_transports_give_the_same_mentions_for_the_same_text(self):
+        relay, api = mentions_over_relay(self.TEXT), mentions_over_api(self.TEXT)
+
+        self.assertEqual(
+            ((relay["mentions"], relay["group_mentions"]), (api["mentions"], api["group_mentions"])),
+            ((["U000001", "U000003"], ["S000001", "S000002", "S000009"]),) * 2,
+        )
+
+
+for _name, _test in {**mention_tests(mentions_over_relay, "over_the_connector"), **mention_tests(mentions_over_api, "over_the_api")}.items():
+    target = SearchRelayMentionsTest if "connector" in _name else SearchApiMentionsTest
+    setattr(target, _name, _test)
 
 
 if __name__ == "__main__":

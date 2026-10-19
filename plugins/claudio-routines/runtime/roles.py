@@ -23,9 +23,10 @@ TREND_MIN = 7
 TREND_CAP = 31
 FIRST_READ_CAP = 31
 CHANNEL_TYPES = ("public_channel", "private_channel", "mpim", "im")
-ENGINES = ("watch", "tribe")
+ENGINES = ("watch", "tribe", "recap")
 DEFAULT_ENGINE = ENGINES[0]
 TRIBE_ENGINE = ENGINES[1]
+RECAP_ENGINE = ENGINES[2]
 PAGE_FROM_STATE = ("previous_page",)
 TREND_AGGREGATORS = ("max", "min", "sum", "avg", "last")
 COLLECTION_SCHEMA = 1
@@ -316,6 +317,8 @@ ROLE_SCHEMAS = {
                                 "bot": BOOLEAN,
                                 "ts": STRING,
                                 "root_ts": Nullable(STRING),
+                                "mentions": ListOf(STRING),
+                                "group_mentions": ListOf(STRING),
                                 "text": STRING,
                                 "owner_reacted": Omittable(BOOLEAN),
                             }

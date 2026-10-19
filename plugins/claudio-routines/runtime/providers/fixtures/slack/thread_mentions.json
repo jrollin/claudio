@@ -1,0 +1,4 @@
+{
+  "messages": "=== THREAD PARENT MESSAGE ===\nFrom: Ada Example <ada@example.test> (U000003)\nTime: 2026-10-19 10:00:00 UTC\nMessage TS: 1792398000.000050\nHey <!subteam^S000001> :wave:\n\n=== THREAD REPLIES (1 total) ===\n\n--- Reply 1 of 1 ---\nFrom: Peer Name <peer@example.test> (U000002)\nTime: 2026-10-19 10:10:00 UTC\nMessage TS: 1792398500.000100\nHi <@U000001|Peer Name> i have a question",
+  "pagination_info": "There are no more messages in this thread."
+}

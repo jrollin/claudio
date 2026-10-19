@@ -816,6 +816,29 @@ class WindowExitCodeTest(FileCase):
         self.assertEqual(self.window(make_state(), NOW, "--bogus")[0], 2)
 
 
+class WindowCheckTest(unittest.TestCase):
+    WINDOW = {"from_ts": ts(PREVIOUS), "to_ts": ts(NOW), "limited": None, "explicit": False}
+
+    def rejection(self, document):
+        with self.assertRaises(state.Rejected) as caught:
+            recap_window.check_window(document)
+        return str(caught.exception)
+
+    def test_accepts_the_window_file_of_the_window_command(self):
+        self.assertIsNone(recap_window.check_window({**self.WINDOW, "limited": "gap"}))
+
+    def test_rejects_an_unknown_limit_naming_the_key_path(self):
+        self.assertIn("limited", self.rejection({**self.WINDOW, "limited": "other"}))
+
+    def test_rejects_a_missing_explicit_flag(self):
+        window = {key: value for key, value in self.WINDOW.items() if key != "explicit"}
+
+        self.assertIn("explicit", self.rejection(window))
+
+    def test_rejects_a_start_after_the_end(self):
+        self.assertIn("is after to_ts", self.rejection({**self.WINDOW, "from_ts": ts(NOW) + 1}))
+
+
 class StubTest(unittest.TestCase):
     def test_registers_every_subcommand_of_the_design(self):
         self.assertEqual(set(recap.COMMANDS), {"init", "seed", "window", "features", "judge", "apply", "message"})

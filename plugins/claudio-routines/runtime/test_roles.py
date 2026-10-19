@@ -843,6 +843,9 @@ class EngineTest(ConfigCase):
     def test_accepts_the_tribe_engine(self):
         self.assertIsNone(roles.validate_config(self.with_engine("tribe"), ROUTINE, "local", role_of))
 
+    def test_accepts_the_recap_engine(self):
+        self.assertIsNone(roles.validate_config(self.with_engine("recap"), ROUTINE, "local", role_of))
+
     def test_rejects_an_unknown_engine(self):
         self.assert_config_error(self.with_engine("legacy"), self.KEY_PATH)
 
@@ -2352,6 +2355,8 @@ def unit_records():
         "bot": False,
         "ts": "1780000000.000100",
         "root_ts": None,
+        "mentions": [],
+        "group_mentions": [],
         "text": "hello",
     }
     unit = {"channel": "D000001", "name": "DM", "participants": [{"id": "U000002", "name": "Peer Name"}], "messages": [message]}
@@ -2492,6 +2497,20 @@ class ChatSearchOptionsTest(ConfigCase):
         with self.assertRaises(ValueError) as caught:
             roles.validate_collection(make_collection("chat", records, {"ts": {}}))
         self.assertEqual(str(caught.exception).partition(": ")[0], "records.units[0].messages[0].bot")
+
+    def test_rejects_a_unit_message_without_its_user_mentions(self):
+        records = unit_records()
+        del records["units"][0]["messages"][0]["mentions"]
+        with self.assertRaises(ValueError) as caught:
+            roles.validate_collection(make_collection("chat", records, {"ts": {}}))
+        self.assertEqual(str(caught.exception).partition(": ")[0], "records.units[0].messages[0].mentions")
+
+    def test_rejects_a_unit_message_with_group_mentions_that_are_not_a_list(self):
+        records = unit_records()
+        records["units"][0]["messages"][0]["group_mentions"] = "S000001"
+        with self.assertRaises(ValueError) as caught:
+            roles.validate_collection(make_collection("chat", records, {"ts": {}}))
+        self.assertEqual(str(caught.exception).partition(": ")[0], "records.units[0].messages[0].group_mentions")
 
 
 class DumpTest(unittest.TestCase):

@@ -57,6 +57,7 @@ NAME_SEPARATOR = " \u2014 "
 SEARCH_PAGE_SIZE = 20
 SEARCH_PAGE_CAP = 10
 REACTIONS_PER_UNIT = 3
+REREAD_MARGIN = decimal.Decimal("0.000001")
 TEXT_CAP = 300
 DAY_SECONDS = 86400
 DM = "DM"
@@ -73,6 +74,8 @@ REACTION_USER = re.compile(r"\(([UW][A-Z0-9]+)\)(?=,|$)")
 CHANNEL_ID = re.compile(r"[A-Z0-9]+")
 USER_ID = re.compile(r"[UW][A-Z0-9]+")
 SEARCH_BLOCK_END = "---"
+USER_MENTION = re.compile(r"<@([UW][A-Z0-9]+)(?:\|[^>]*)?>")
+GROUP_MENTION = re.compile(r"<!subteam\^(S[A-Z0-9]+)(?:\|[^>]*)?>")
 
 Hit = collections.namedtuple("Hit", "channel name kind participants root item kind_type", defaults=(None,))
 
@@ -91,6 +94,7 @@ class _Unit:
         self.participants = hit.participants
         self.items = {}
         self.reacted = {}
+        self.reread_only = False
 
     def add(self, item):
         key = decimal.Decimal(item.ts)
@@ -108,6 +112,11 @@ def _since(search, window):
     return window["from_ts"] if since == "window" else window["to_ts"] - since["lookback_days"] * DAY_SECONDS
 
 
+def _unit_window(window, start):
+    first = window["from_ts"] if start is None else min(window["from_ts"], start)
+    return {**window, "first_read_from_ts": first}
+
+
 def _within(hit, start, window):
     return start < decimal.Decimal(hit.item.ts) <= window["to_ts"]
 
@@ -121,9 +130,10 @@ def _search_units(source, window, reader):
         if cut is not None:
             lost[f"search:{search['name']}"] = f"{PAGE_CAP_PARTIAL}: {cut} page(s) read"
     conversations, threads, singles = _grouped(hits)
-    lost.update(_read_conversations(reader, conversations))
+    starts = _add_rereads(source.get("rereads") or [], hits, conversations, threads)
+    lost.update(_read_conversations(reader, conversations, starts))
     lost.update(_read_threads(reader, threads, lost))
-    units = [*conversations.values(), *threads.values(), *singles.values()]
+    units = [unit for unit in (*conversations.values(), *threads.values(), *singles.values()) if unit.items]
     for unit in units:
         unit.items = {key: reader.named(item) for key, item in unit.items.items()}
     if source.get("reactions") is True:
@@ -145,10 +155,32 @@ def _grouped(hits):
     return conversations, threads, singles
 
 
-def _read_conversations(reader, conversations):
+def _add_rereads(rereads, hits, conversations, threads):
+    names = {hit.channel: hit.name for hit in hits}
+    starts = {}
+    for reread in rereads:
+        channel, root = reread["channel"], reread["root_ts"]
+        if root is not None:
+            if (channel, root) not in threads:
+                threads[(channel, root)] = _reread_unit(Hit(channel, names.get(channel, channel), None, [], root, None))
+            continue
+        kind = GROUP_DM if reread["kind"] == "group_dm" else DM
+        if channel not in conversations:
+            conversations[channel] = _reread_unit(Hit(channel, kind, kind, [], None, None))
+        starts[channel] = min(starts.get(channel, decimal.Decimal("Infinity")), decimal.Decimal(reread["last_ts"]) - REREAD_MARGIN)
+    return starts
+
+
+def _reread_unit(hit):
+    unit = _Unit(hit)
+    unit.reread_only = True
+    return unit
+
+
+def _read_conversations(reader, conversations, starts):
     lost = {}
     for channel, unit in list(conversations.items()):
-        read = reader.conversation(channel)
+        read = reader.conversation(channel, starts.get(channel))
         if read.failure is not None:
             lost[channel] = read.failure
             del conversations[channel]
@@ -156,7 +188,8 @@ def _read_conversations(reader, conversations):
         for item in (*read.history, *read.replies):
             unit.add(item)
         try:
-            unit.participants = reader.participants(unit)
+            if not unit.reread_only:
+                unit.participants = reader.participants(unit)
         except ChannelFailed as failure:
             lost[channel] = failure.code
             del conversations[channel]
@@ -210,6 +243,8 @@ def _unit_message(item, reacted):
         "bot": item.bot,
         "ts": item.ts,
         "root_ts": item.thread_ts,
+        "mentions": sorted(set(USER_MENTION.findall(item.text))),
+        "group_mentions": sorted(set(GROUP_MENTION.findall(item.text))),
         "text": clean_text(item.text, TEXT_CAP),
     }
     seen = reacted.get(decimal.Decimal(item.ts))
@@ -233,7 +268,6 @@ class _RelayReader:
     def __init__(self, relay, window):
         self.relay = relay
         self.window = window
-        self.unit_window = {**window, "first_read_from_ts": window["from_ts"]}
 
     def search(self, search, start, cap):
         arguments = _search_arguments(search, start, self.window)
@@ -254,8 +288,8 @@ class _RelayReader:
             cut = None
         return [hit for hit in kept if _within(hit, start, self.window)], cut
 
-    def conversation(self, channel):
-        return _relay_read(self.relay, channel, self.unit_window, {}, [])
+    def conversation(self, channel, start=None):
+        return _relay_read(self.relay, channel, _unit_window(self.window, start), {}, [])
 
     def thread(self, channel, root):
         arguments = {"channel_id": channel, "message_ts": root, "response_format": "detailed"}
@@ -393,7 +427,6 @@ class _ApiReader:
         self.calls = calls
         self.window = window
         self.owner = owner
-        self.unit_window = {**window, "first_read_from_ts": window["from_ts"]}
         self.names = {}
 
     def search(self, search, start, cap):
@@ -413,8 +446,8 @@ class _ApiReader:
                 break
         return [hit for hit in found if _within(hit, start, self.window)], cut
 
-    def conversation(self, channel):
-        return _api_read(channel, self.unit_window, {}, self.http, self.calls, [])
+    def conversation(self, channel, start=None):
+        return _api_read(channel, _unit_window(self.window, start), {}, self.http, self.calls, [])
 
     def thread(self, channel, root):
         params = {"channel": channel, "ts": root, "latest": str(self.window["to_ts"]), "limit": str(API_PAGE_SIZE)}
