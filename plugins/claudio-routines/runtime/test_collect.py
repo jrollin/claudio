@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -339,19 +340,21 @@ class ParserTest(unittest.TestCase):
     def parse(self, *argv):
         return collect.build_parser().parse_args(list(argv))
 
-    def test_parses_the_five_commands(self):
+    def test_parses_the_six_commands(self):
         fetch = ["--source", "s", "--window", "w", "--state", "s", "--out", "o"]
         relay = [*fetch, "--responses", "d"]
+        replay = ["--window", "w", "--state", "s", "--raw", "r", "--out", "o"]
         parsed = [
             self.parse("sources", *self.COMMON).command,
             self.parse("check-env", *self.COMMON).command,
             self.parse("fetch", *self.COMMON, *fetch).command,
             self.parse("plan", *self.COMMON, *relay).command,
             self.parse("parse", *self.COMMON, *relay).command,
+            self.parse("replay", *self.COMMON, *replay).command,
         ]
-        self.assertEqual(parsed, ["sources", "check-env", "fetch", "plan", "parse"])
+        self.assertEqual(parsed, ["sources", "check-env", "fetch", "plan", "parse", "replay"])
 
-    def test_rejects_a_command_outside_the_five(self):
+    def test_rejects_a_command_outside_the_six(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
             self.parse("relay", *self.COMMON)
         self.assertEqual(raised.exception.code, 2)
@@ -1460,6 +1463,137 @@ CITED_THREADS = [{"channel": CHAT_CHANNEL, "root_ts": CITED_ROOT}]
 CONFIG_THREADS = [{"channel": "CHAN9", "root_ts": "junk"}]
 STORED_THREADS = [{**thread, "links": ["https://chat.example.test/archives/cited"]} for thread in CITED_THREADS]
 NO_CHAT_RESULT = {"records": {"messages": []}, "cursor": {"ts": {}}, "entries": {}}
+
+
+class ReplayTest(RelayTestCase):
+    def setUp(self):
+        super().setUp()
+        self.opener = FakeOpener()
+        self.obs.api_client = lambda provider, opener=None, environ=None, sleep=None: make_client(self.opener, sleeps=[])
+        self.raw = self.path("raw")
+        os.mkdir(self.path("run"))
+        self.adapter_fetch = self.obs.fetch
+        self.reads(lambda http: http.get(HTTP_PATH, {"page": 1}))
+
+    def reads(self, *calls):
+        def fetch(source, window, cursor, entries, http):
+            for call in calls:
+                call(http)
+            return self.adapter_fetch(source, window, cursor, entries, http)
+
+        self.obs.fetch = fetch
+
+    def record_api_sources(self):
+        self.opener.outcomes = [FakeResponse(b'{"n": 1}'), FakeResponse(b'{"n": 2}')]
+        for name in ("metrics", "monitors"):
+            self.fetch(source=name, out=self.path(f"run/{name}.json"), responses=os.path.join(self.raw, "observability", name))
+
+    def record_run(self):
+        self.record_api_sources()
+        self.record_mcp_source()
+
+    def record_mcp_source(self):
+        self.loop()
+        self.parse()
+        shutil.copytree(self.path(RESPONSES), os.path.join(self.raw, "document_store", "sources-page"))
+        os.rename(self.path("collection.json"), self.path("run/sources-page.json"))
+
+    def replay(self, place="cloud"):
+        config = self.write("config.json", self.config)
+        window = self.write("window.json", self.window)
+        stored = self.write("state.json", self.state)
+        return self.run_main(
+            "replay", "--config", config, "--routine", ROUTINE, "--place", place,
+            "--window", window, "--state", stored, "--raw", self.raw, "--out", self.path("replayed"),
+        )
+
+    def bytes_of(self, name, folder="replayed"):
+        with open(self.path(f"{folder}/{name}.json"), "rb") as handle:
+            return handle.read()
+
+    def test_writes_one_collection_per_source_in_the_out_folder(self):
+        self.record_run()
+        self.assertEqual((self.replay()[0], sorted(os.listdir(self.path("replayed")))), (0, ["metrics.json", "monitors.json", "sources-page.json"]))
+
+    def test_rebuilds_an_api_source_byte_identical_to_its_fetch(self):
+        self.record_run()
+        self.replay()
+        self.assertEqual([self.bytes_of(name) for name in ("metrics", "monitors")], [self.bytes_of(name, "run") for name in ("metrics", "monitors")])
+
+    def test_rebuilds_an_mcp_source_byte_identical_to_its_parse(self):
+        self.reads()
+        self.record_mcp_source()
+        self.replay()
+        self.assertEqual(self.bytes_of("sources-page"), self.bytes_of("sources-page", "run"))
+
+    def test_rebuilds_the_collection_of_an_adapter_refused_config_byte_identical(self):
+        def refuse(provider, opener=None, environ=None, sleep=None):
+            raise SourceUnreadable("api.credentials: must name api_key")
+
+        self.obs.api_client = refuse
+        self.fetch(source="monitors", out=self.path("run/monitors.json"), responses=os.path.join(self.raw, "observability", "monitors"))
+        self.record_mcp_source()
+        self.replay()
+        self.assertEqual((self.bytes_of("monitors"), json.loads(self.bytes_of("monitors"))["read"]), (self.bytes_of("monitors", "run"), False))
+
+    def test_rebuilds_a_recorded_http_error_as_the_same_not_read_collection(self):
+        self.opener.outcomes = [http_error(404)]
+        self.fetch(source="metrics", out=self.path("run/metrics.json"), responses=os.path.join(self.raw, "observability", "metrics"))
+        self.opener.outcomes = [http_error(404)]
+        self.fetch(source="monitors", out=self.path("run/monitors.json"), responses=os.path.join(self.raw, "observability", "monitors"))
+        self.record_mcp_source()
+        self.replay()
+        self.assertEqual((self.bytes_of("metrics"), json.loads(self.bytes_of("metrics"))["read"]), (self.bytes_of("metrics", "run"), False))
+
+    def test_rebuilds_a_source_skipped_by_the_run_as_the_same_not_read_collection(self):
+        self.config["routines"][ROUTINE]["engine"] = "tribe"
+        self.config["routines"][ROUTINE].update(publication_values())
+        self.config["routines"][ROUTINE]["sources"] = {
+            "sources-page": {"provider": "docs", "transport": {"cloud": "mcp", "local": "api"}, "page_from_state": "previous_page"}
+        }
+        self.config["routines"][ROUTINE]["query_pack"] = []
+        self.state = make_tribe_state()
+        self.state["run"]["previous_page"] = None
+        self.parse()
+        os.rename(self.path("collection.json"), self.path("run/sources-page.json"))
+        self.replay()
+        self.assertEqual((self.bytes_of("sources-page"), json.loads(self.bytes_of("sources-page"))["reason"]), (self.bytes_of("sources-page", "run"), collect.NO_PREVIOUS_PAGE))
+
+    def test_a_request_that_differs_from_its_record_exits_3_naming_the_source_the_call_and_the_request(self):
+        self.record_run()
+        self.reads(lambda http: http.get(HTTP_PATH, {"page": 2}))
+        code, _, stderr = self.replay()
+        expected = f"collect.py: rejected: source metrics call 1 GET {HTTP_PATH}: request differs from its record in query\n"
+        self.assertEqual((code, stderr, os.path.exists(self.path("replayed/metrics.json"))), (3, expected, False))
+
+    def test_a_call_past_the_last_record_exits_3_naming_the_source_the_call_and_the_request(self):
+        self.record_run()
+        self.reads(lambda http: http.get(HTTP_PATH, {"page": 1}), lambda http: http.get(HTTP_PATH, {"page": 1}))
+        code, _, stderr = self.replay()
+        self.assertEqual((code, stderr), (3, f"collect.py: rejected: source metrics call 2 GET {HTTP_PATH}: no record, 1 recorded\n"))
+
+    def test_a_source_with_no_raw_folder_replays_with_zero_records(self):
+        self.reads()
+        self.record_mcp_source()
+        self.assertEqual((self.replay()[0], os.path.exists(self.path("replayed/monitors.json"))), (0, True))
+
+    def test_a_malformed_record_exits_3_naming_the_file(self):
+        os.makedirs(os.path.join(self.raw, "observability", "metrics"))
+        with open(os.path.join(self.raw, "observability", "metrics", "metrics-1.json"), "w", encoding="utf-8") as handle:
+            handle.write("{}")
+        code, _, stderr = self.replay()
+        self.assertEqual((code, stderr), (3, "collect.py: rejected: record metrics-1.json: missing key method\n"))
+
+    def test_an_mcp_source_without_its_saved_responses_exits_2(self):
+        self.reads()
+        os.makedirs(self.raw)
+        self.assertEqual(self.replay()[0], 2)
+
+    def test_an_out_folder_that_cannot_be_created_exits_2_naming_it(self):
+        with open(self.path("replayed"), "w", encoding="utf-8") as handle:
+            handle.write("")
+        code, _, stderr = self.replay()
+        self.assertEqual((code, self.path("replayed") in stderr), (2, True))
 
 
 class TribeChatCase(RelayTestCase):

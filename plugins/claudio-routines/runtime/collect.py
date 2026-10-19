@@ -19,6 +19,7 @@ import tribe_state
 from config import adapter_role, config_directory, load_zone, read_routine
 from providers._common import ended
 from providers._http import BODY_CAP
+from providers._replay import OFFLINE, ReplayClient, ReplayMismatch
 from providers._errors import CALL_CAP, CALL_CAP_PARTIAL, CredentialsMissing, PartialRead, SourceUnreadable
 
 NOT_REPORTED = "not reported by the adapter"
@@ -30,6 +31,7 @@ CALLS_FILE = "calls.json"
 DAY_SECONDS = 86400
 RESPONSE_SUFFIX = ".txt"
 RECORD_SUFFIX = ".json"
+COLLECTION_SUFFIX = ".json"
 LONE_SURROGATE = re.compile(r"[\ud800-\udfff]")
 REPLACEMENT = "\ufffd"
 SPACE_RUN = re.compile(r" {2,}")
@@ -55,6 +57,16 @@ STEP_SPEC = {
     "calls": [{"id": state.TEXT, "tool": state.TEXT, "arguments": {}, "digest": state.Nullable(state.TEXT)}],
 }
 CALLS_SPEC = {"calls": {"*": state.Nullable(state.TEXT)}, "done": state.BOOLEAN, "partial": state.Nullable(state.TEXT)}
+RECORD_SPEC = {
+    "method": state.TEXT,
+    "path": state.TEXT,
+    "query": state.TEXT,
+    "body": state.PRESENT,
+    "status": state.PRESENT,
+    "link": state.Nullable(state.TEXT),
+    "response": state.PRESENT,
+    "error": state.Nullable({"class": state.TEXT, "message": state.TEXT, "status": state.PRESENT}),
+}
 
 
 def load_routine(args):
@@ -273,7 +285,7 @@ def read_source(draft, where, read):
         collection = draft.read(read())
     except SourceUnreadable as error:
         return draft.not_read(failure_reason(error, where))
-    except state.InputError:
+    except (state.InputError, ReplayMismatch):
         raise
     except Exception as error:
         return draft.not_read(f"{where}: adapter error: {type(error).__name__}")
@@ -374,19 +386,19 @@ def recording_client(adapter, provider, args):
     return client
 
 
+def fetch_collection(provider, source, window, draft, client_of):
+    if draft.skipped is not None:
+        return draft.not_read(draft.skipped)
+    adapter = providers.load(provider["adapter"])
+    host = urlsplit(provider["api"]["base_url"]).hostname
+    return read_source(draft, host, lambda: adapter.fetch(source, window, draft.cursor, draft.selected, client_of(adapter)))
+
+
 def run_fetch(args):
     provider, source, window, draft = prepare(args, "api")
     if args.responses is not None:
         open_records(args.responses)
-    if draft.skipped is not None:
-        write_collection(args, draft.not_read(draft.skipped))
-        return 0
-    adapter = providers.load(provider["adapter"])
-    host = urlsplit(provider["api"]["base_url"]).hostname
-    write_collection(
-        args,
-        read_source(draft, host, lambda: adapter.fetch(source, window, draft.cursor, draft.selected, recording_client(adapter, provider, args))),
-    )
+    write_collection(args, fetch_collection(provider, source, window, draft, lambda adapter: recording_client(adapter, provider, args)))
     return 0
 
 
@@ -561,7 +573,50 @@ def run_parse(args):
     return 0
 
 
-COMMANDS = {"sources": run_sources, "check-env": run_check_env, "fetch": run_fetch, "plan": run_plan, "parse": run_parse}
+def check_record(document):
+    state.check(document, RECORD_SPEC, "")
+
+
+def read_records(directory, name):
+    records = []
+    for number in itertools.count(1):
+        file = f"{name}-{number}{RECORD_SUFFIX}"
+        path = os.path.join(directory, file)
+        if not os.path.exists(path):
+            return records
+        records.append(state.load(path, f"record {file}", check_record))
+
+
+def replaying_client(adapter, provider, name, records):
+    adapter.api_client(provider, opener=OFFLINE, environ={})
+    return ReplayClient(provider, name, records)
+
+
+def run_replay_fetch(args):
+    provider, source, window, draft = prepare(args, "api")
+    records = read_records(args.responses, args.source)
+    write_collection(args, fetch_collection(provider, source, window, draft, lambda adapter: replaying_client(adapter, provider, args.source, records)))
+    return 0
+
+
+REPLAYERS = {"api": run_replay_fetch, "mcp": run_parse}
+
+
+def run_replay(args):
+    _, routine, role_by_source = load_routine(args)
+    try:
+        os.makedirs(args.out, exist_ok=True)
+    except OSError as error:
+        raise state.InputError(f"out: cannot create {args.out}: {error.strerror}") from error
+    for name, source in sorted(routine["sources"].items()):
+        replayed = argparse.Namespace(
+            **{**vars(args), "source": name, "responses": os.path.join(args.raw, role_by_source[name], name), "out": os.path.join(args.out, name + COLLECTION_SUFFIX)}
+        )
+        REPLAYERS[source["transport"][args.place]](replayed)
+    return 0
+
+
+COMMANDS = {"sources": run_sources, "check-env": run_check_env, "fetch": run_fetch, "plan": run_plan, "parse": run_parse, "replay": run_replay}
 RELAY_FLAGS = ("--source", "--window", "--state", "--responses", "--out")
 
 
@@ -574,6 +629,7 @@ def build_parser():
         ("fetch", "read one api source and write its collection", ("--source", "--window", "--state", "--out")),
         ("plan", "write the next connector calls of one mcp source", RELAY_FLAGS),
         ("parse", "parse the saved connector responses of one mcp source into its collection", RELAY_FLAGS),
+        ("replay", "rebuild every collection of a run offline from its raw folder", ("--window", "--state", "--raw", "--out")),
     )
     for name, help_text, flags in specs:
         command = commands.add_parser(name, help=help_text)

@@ -27,6 +27,17 @@ One module per vendor reads one role through `_http.py`. This file lists, per ve
 - A lone surrogate in a record is written as U+FFFD, as in the collection.
 - A record holds the source's content, so the folder is never pushed to `claude/state`.
 
+## Replayed HTTP calls
+
+- `providers/_replay.py` holds `ReplayClient`, an `HttpClient` that serves the records of a source instead of calling the network. `collect.py replay` gives it the records of `<raw>/<role>/<source>/`, read in call order.
+- Call `n` is checked against record `n` on method, path, query and body. Request headers are never compared.
+- A request that differs, or a call past the last record, raises `ReplayMismatch`, a rejection with exit 3. The message names the source, the call number, the method and the path, and the differing parts (`method`, `path`, `query`, `body`), never a value.
+- A record whose `error` is set raises that error again with its recorded message and status. The class is `SourceUnreadable`, `PartialRead` or `CredentialsMissing`; another class is a `ReplayMismatch`.
+- A record with a `link` sets `response_headers` to `{"Link": <link>}` for that call, so an adapter follows the same next links as the run. Any other call leaves `response_headers` at `None`.
+- The client reads no environment variable and builds no network opener: a call that reaches the opener fails with `ReplayMismatch`, so a replay needs no credential and no network.
+- A link to another host than `base_url`'s is refused as in a run, before any record is used.
+- An adapter's `fetch` runs unchanged against it, so a parser change shows in the replayed collection.
+
 ## Credentials in the config
 
 - Credentials hold environment variable names, never values: `providers.<name>.api.credentials` maps each credential to a variable name matching `^[A-Z][A-Z0-9_]*$`.

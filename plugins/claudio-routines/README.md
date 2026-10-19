@@ -18,7 +18,7 @@ Manage claude.ai routines (scheduled cloud agents) as code:
 | Example | `example/` | A private directory to copy: `config.json` and one routine file per routine, placeholders only |
 | Skeletons | `skills/routines/templates/` | Generic `prod-watch.md`, `tribe-digest.md` and `chat-recap.md` prompts, `setup-env.sh` setup script and the not-runnable `weekly-status.md`, placeholders only |
 | State engine | `runtime/state.py` | Run window, item lifecycle, blind spots, mutes and run records for routine runs |
-| Collector | `runtime/collect.py` | Lists a routine's sources, checks the place's credentials and connectors, reads one source per command into a collection |
+| Collector | `runtime/collect.py` | Lists a routine's sources, checks the place's credentials and connectors, reads one source per command into a collection, and rebuilds every collection of a run offline from its raw folder |
 | Evaluator | `runtime/evaluate.py` | `features` computes the judgment features, `judge` checks the model's judgment and merges it into the facts, `annotate` adds the analysis of new and escalated items |
 | Digest | `runtime/digest.py` | Renders the posted message as Markdown from the change summary, the next state, the run record and the base file; the model posts it unchanged |
 | Features | `runtime/features.py` | Computes the features, base and rules files of one run; decides nothing |
@@ -267,12 +267,19 @@ python3 runtime/collect.py check-env --config C --routine R --place P
 python3 runtime/collect.py fetch     --config C --routine R --source NAME --place P --window W --state S [--responses DIR] --out COLLECTION
 python3 runtime/collect.py plan      --config C --routine R --source NAME --place P --window W --state S --responses DIR --out PLAN
 python3 runtime/collect.py parse     --config C --routine R --source NAME --place P --window W --state S --responses DIR --out COLLECTION
+python3 runtime/collect.py replay    --config C --routine R --place P --window W --state S --raw RAW --out DIR
 python3 runtime/evaluate.py features --config C --routine R --state S --window W --collections DIR --place P --runtime SHA --out FEATURES --base-out BASE --rules-out RULES
 python3 runtime/evaluate.py judge    --features FEATURES --base BASE --judgment J --out F
 python3 runtime/evaluate.py annotate --features FEATURES --facts F --analysis A --preview SUMMARY --out F
 ```
 
 `collect.py` also reads one source outside any routine run, with a window from `state.py window --since` over a state from `state.py init`.
+
+`collect.py replay` rebuilds every source's collection of the run's place offline (see Offline replay):
+- It writes `DIR/<source>.json` for each source of the routine.
+- An `mcp` source goes through `parse` of `<RAW>/<role>/<source>`.
+- An `api` source goes through the adapter's `fetch` against a replay client that serves the records of `<RAW>/<role>/<source>`.
+- A source the run skipped, or an `api` config the adapter refuses, gives the same not-read collection as the run.
 
 Discovery:
 - A `monitors` source with a `discovery_query` also searches the monitors that match it.
@@ -431,6 +438,30 @@ Settings:
 - The run reads the working tree's `config.json` and the routine's file `config/routines/<slug>.json`.
 - `config_dirty` in the run record covers both files: it is true when either holds uncommitted changes, an untracked routine file included.
 - A local run with `--post` and a cloud run at the same time both post; the second save finds the routine's state file changed since it started, stops and reports `state not saved`, and the next run collects the window again.
+
+## Offline replay
+
+A run folder holds its window, its state, its raw results and its judgment, so the run's result can be rebuilt offline to test a change to a parser, an evaluator or the digest.
+
+A watch routine replays in this order, `RUN` being the run folder and `OUT` a separate output folder:
+
+```text
+python3 runtime/collect.py replay    --config C --routine R --place P --window RUN/window.json --state RUN/state.json --raw RUN/raw --out OUT/collections
+python3 runtime/evaluate.py features --config C --routine R --state RUN/state.json --window RUN/window.json --collections OUT/collections --place P --runtime SHA --out OUT/features.json --base-out OUT/base.json --rules-out OUT/rules.json
+python3 runtime/evaluate.py judge    --features OUT/features.json --base OUT/base.json --judgment RUN/judgment.json --out OUT/facts.json
+python3 runtime/state.py apply       --state RUN/state.json --facts OUT/facts.json --window RUN/window.json --tz Z --out OUT/next.json --summary OUT/summary.json --record OUT/record.json
+python3 runtime/digest.py            --summary OUT/summary.json --state OUT/next.json --record OUT/record.json --base OUT/base.json --tz Z --out OUT/digest.md
+```
+
+- Each command reads the run's files and writes only under `OUT`, so the run folder stays as it was.
+- `P` is the place of the run, since it decides which transport each source replays through.
+- `replay` makes no network call and reads no environment variable.
+- A request that differs from its record, or one past the last record, exits 3 naming the source, the call number, the method and the path.
+- A recorded error replays as the same not-read collection.
+- A record that is not valid JSON exits 2 naming its file, and a record of the wrong shape exits 3 naming its file; an `mcp` source with no saved responses exits 2.
+- `judge` checks the run's stored judgment against the replayed features, so a feature change that the judgment no longer fits exits 3 with the key path.
+- When the run kept an analysis, `evaluate.py annotate` runs between `judge` and `apply` with the run's `analysis.json` and its `preview/summary.json`.
+- The tribe and recap engines follow the same order with their own commands: `replay`, then `features`, `judge` with the stored judgment, `apply`, and `render` or `message` (see Tribe engine and Recap engine).
 
 ## Runtime
 
