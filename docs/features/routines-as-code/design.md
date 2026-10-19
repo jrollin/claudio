@@ -1399,7 +1399,7 @@ A degraded run's message is one line that starts with `degraded:` and names the 
 - `call_cap` (default 50, at most 300) bounds every call of the source: search pages, conversation and thread reads, reactions and name lookups. A recap reads more than a tribe channel list, so its routine file raises it.
 - Each hit becomes a unit candidate. A direct or group conversation hit plans one conversation read from the window start; a hit in a thread, or a message with replies, plans one thread read by its root. A unit read once per run, whatever the number of hits.
 - `reactions: true` plans one reactions read for each message from someone else after the owner's last message in a unit, at most 3 per unit; the parsed record keeps the reacting user ids only.
-- Parsing keeps per unit the channel id and name and, for a direct or group conversation, its `participants` (id and display name); per message: user id, display name, bot flag, ts, root ts, text cut at 300 characters, and `owner_reacted` when the reactions were read. The search response's permalink is not kept; the message builds links (TD-63).
+- Parsing keeps per unit the channel id and name and, for a direct or group conversation, its `participants` (id and display name); per message: user id, display name, bot flag, ts, root ts, the user ids it mentions and the group ids it mentions (read from the raw text before cleaning, since cleaning blanks the mention markup), text cut at 300 characters, and `owner_reacted` when the reactions were read. The search response's permalink is not kept; the message builds links (TD-63).
 - Both transports give identical records for the same data (TD-22). Over `api`, every display name comes from a cached `users.info`, a direct conversation's participants from `conversations.info` and a group conversation's from `conversations.members`; the search query carries day-granularity `after:` and `before:` modifiers with one day of margin, and hits outside the window are dropped by ts.
 - A reactions result counts only when it is the connector's no-reaction text or starts with its reactions header; the reacting user ids are read per line after the name separator.
 
@@ -1418,19 +1418,20 @@ A degraded run's message is one line that starts with `degraded:` and names the 
 - Facts per unit, computed by the script (AC-46.1):
   - `last_author_is_owner`;
   - `unanswered_from`: the ts of the first message from someone else after the owner's last message or reaction, or null;
-  - `groups`: the configured groups mentioned, each with its landing section;
+  - `groups`: the configured groups mentioned (from the messages' group ids), each with its landing section and `answered`, true when someone other than the first mentioner wrote after the first mention;
   - `direct_mention`, `announcement_channel`, `owner_took_part`;
   - `age_working_days` of `unanswered_from`, in the config timezone (AC-46.3);
+  - `owner_answered`: a message from someone else exists and the owner replied after the last one or reacted to it;
   - `previous`: the stored unit, or null.
 - `allowed`: the kinds the facts allow, which the checker enforces (TD-61):
-  - `waiting on you` when `unanswered_from` is set and the unit is a direct conversation, a direct mention, a group landing in Waiting on you, or a thread the owner took part in;
+  - `waiting on you` when `unanswered_from` is set and the unit is a direct or group conversation, a direct mention (the owner's id in a message's user ids), a group landing in Waiting on you, or a thread the owner took part in;
   - `team ask` when `unanswered_from` is set, a group landing in Good to know is mentioned and nobody answered;
   - `you're waiting on` and `promise` when the last message is the owner's;
-  - `already handled` when the last message is the owner's, or the unit is stored as waiting or promise;
+  - `already handled` when the owner answered the last message from someone else, by a reply or a reaction, or the unit is stored as waiting or promise;
   - `announcement` when the unit is in an announcement channel;
   - `noise` always.
 - `features.json` holds message text for the judgment and stays in the run directory; nothing of it reaches the state or the run record (BR-67).
-- `rules.json` holds the ask rules text of the routine file, for the model.
+- `rules.json` holds the ask rules of the routine file, the definition of each kind and the announcement topics, for the model.
 
 **Alternatives considered**:
 - The model decides whether an ask is answered: rejected, a reaction or a reply is a fact the data holds (BR-69).
@@ -1459,7 +1460,7 @@ A degraded run's message is one line that starts with `degraded:` and names the 
 ### TD-62: Recap state and lifecycle
 
 **Choice**:
-- State: `{"schema": 1, "digest", "run": {"at", "previous_at", "window": {"from_ts", "to_ts"}}, "units": {"<key>": {"kind", "channel", "title", "first_seen", "last_ts", "status", "runs_waiting", "late", "due"}}, "blind_spots": [...]}`. No message text, no summary (BR-67).
+- State: `{"schema": 1, "digest", "run": {"at", "previous_at", "window": {"from_ts", "to_ts"}}, "units": {"<key>": {"kind", "channel", "channel_name", "person", "title", "first_seen", "last_ts", "status", "runs_waiting", "late", "due"}}, "blind_spots": [...]}`. `channel_name` and `person` (the id and display name the message names, TD-61) are kept so a unit read again outside any search still renders its label and person; both are null when unknown, as in a seeded unit. No message text, no summary (BR-67).
 - `apply` maps each judged kind to a status: `waiting on you` to `waiting`, `promise` to `promise`, `you're waiting on` to `waiting_on_others`, `team ask` to `team_ask`, `already handled` to `handled`, `announcement` to `announcement`; a `noise` unit is not stored.
 - `runs_waiting` counts the runs a unit stays `waiting` or `promise`; `late` is the age in working days once it exceeds `late_after_working_days` (default 3) for `waiting`, or once `due` has passed, or 1 business day after `first_seen` with no `due`, for `promise` (AC-48.2, AC-47.4).
 - A stored `waiting` or `promise` unit that turns `handled`, or whose facts show the owner answered, is resolved: listed once in the summary's `resolved`, then stored as `handled` (AC-48.3).

@@ -825,7 +825,7 @@ THE configuration lives in its routine file in the private repository and the st
 - Coverage notes are the model's data about what a run did not cover: they are stored nowhere, count no run, and change no warning, check or blind spot count *(BR-64)*
 - A read that succeeds with no datapoint is a blind spot unless its entry sets `empty` to `zero`; a read that fails is always a blind spot *(BR-65)*
 - A relayed result reaches its file through the file-write tool, never through a shell command: source text never becomes part of a command *(BR-66)*
-- The recap state and its run records hold ids, timestamps, titles of at most 8 words and counts, never message text *(BR-67)*
+- The recap state and its run records hold ids with their display names, timestamps, titles of at most 8 words and counts, never message text *(BR-67)*
 - Direct conversation content leaves the chat source only as a one-sentence summary in the digest channel *(BR-68)*
 - Scripts decide who wrote last, whether the owner answered, ages, lateness and landing sections; the model decides only what a message asks, its kind among those the facts allow, its summary and the reading *(BR-69)*
 
