@@ -84,11 +84,20 @@ def _read(source, bound, site, load):
 
 def _updated_jql(source, bound):
     since = _clock(bound - QUERY_MARGIN).strftime(QUERY_TIME_FORMAT)
-    clauses = [f"filter = {source['filter']}"]
+    clauses = [_selection(source)]
     query = (source.get("query") or "").strip()
     if query:
         clauses.append(f"({query})")
     return _ordered([*clauses, f'updated >= "{since}"'])
+
+
+def _selection(source):
+    jql = source.get("jql")
+    return f"filter = {source['filter']}" if jql is None else f"({jql})"
+
+
+def _origin(source):
+    return "jql" if "jql" in source else f"filter {source['filter']}"
 
 
 def _sprint_jql(source):
@@ -125,7 +134,7 @@ def _api_load(http, source):
             reason = REFUSALS.get(exc.status)
             if reason is None:
                 raise
-            raise SourceUnreadable(f"filter {source['filter']} {reason}: {exc}", exc.status) from None
+            raise SourceUnreadable(f"{_origin(source)} {reason}: {exc}", exc.status) from None
 
     return load
 
@@ -143,12 +152,12 @@ def _relay_load(source, site, ids, responses):
         if call["id"] not in responses:
             raise _Pending(call)
         where = f"{SEARCH_TOOL} {call['id']}"
-        return _data(responses[call["id"]], where, source["filter"]), where
+        return _data(responses[call["id"]], where, _origin(source)), where
 
     return load
 
 
-def _data(text, where, filter_id):
+def _data(text, where, origin):
     try:
         document = json.loads(text)
     except ValueError:
@@ -158,7 +167,7 @@ def _data(text, where, filter_id):
         return data
     error = dig(document, "error")
     if isinstance(error, str):
-        raise SourceUnreadable(f"{SEARCH_TOOL}: filter {filter_id} not read: connector error")
+        raise SourceUnreadable(f"{SEARCH_TOOL}: {origin} not read: connector error")
     raise SourceUnreadable(f"{where}: response without data")
 
 

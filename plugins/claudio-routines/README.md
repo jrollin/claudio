@@ -185,9 +185,10 @@ A source also holds the options of its provider's role:
 | Chat channel | `channels` | A non-empty list of channels; the replies of each thread whose root lies in the window are read too |
 | Code host | `repos` | A non-empty list of `owner/name` repositories |
 | Code host | `query` | Optional search query; a source with a non-empty one is not read, since neither transport takes a search query |
-| Issue tracker | `filter` | The saved filter id, digits only |
-| Issue tracker | `query` | Optional text that narrows the filter, written in the tracker's query language and holding no ordering |
-| Issue tracker | `open_sprints` | Optional boolean: also read the filter's issues that sit in an open sprint, whatever their update time, and flag them `in_open_sprint` |
+| Issue tracker | `filter` | The saved filter id, digits only; a source sets `filter` or `jql`, not both |
+| Issue tracker | `jql` | A query in the tracker's query language, holding no ordering, read instead of a saved filter |
+| Issue tracker | `query` | Optional text that narrows the filter or the `jql`, written in the tracker's query language and holding no ordering |
+| Issue tracker | `open_sprints` | Optional boolean, with `filter` only: also read the filter's issues that sit in an open sprint, whatever their update time, and flag them `in_open_sprint` |
 
 Query pack entry fields:
 
