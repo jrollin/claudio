@@ -307,7 +307,7 @@ Owner-gated: needs the private repository on the remote and the local credential
 - **Verify**: `python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --private "$CLAUDIO_PRIVATE_DIR" && python3 plugins/claudio-routines/skills/routines/scripts/routines.py diff prod-watch`
 - **Blocked by**: T-30
 - **Rules**: BR-22, BR-25, BR-31
-- **Status**: In Progress (config shape migrated locally, live prompt still in sync; the local runtime remains)
+- **Status**: Complete
 
 ## Phase 9: Chat channel and code host adapters
 
@@ -560,7 +560,7 @@ Runs in a local session; nothing is pushed to a live routine, and the private re
 - **Verify**: `S=plugins/claudio-routines/skills/routines/scripts/routines.py; R=plugins/claudio-routines/runtime/collect.py; python3 $S diff && python3 -B $R check-env --config "$CLAUDIO_PRIVATE_DIR/config.json" --routine prod-watch --place local && python3 -B $R check-env --config "$CLAUDIO_PRIVATE_DIR/config.json" --routine prod-watch --place cloud`
 - **Blocked by**: T-47, T-48
 - **Rules**: BR-43, BR-44, BR-45
-- **Status**: In Progress (all 5 routines split into routine files and mirrored, `diff` in sync for all 5, `check-env` exit 0 in both places; `lint --private` waits for the runtime pin of T-31)
+- **Status**: Complete
 
 ### T-52: Reject secrets in the private config
 - `config_tree` scans `config.json` and each routine file it reads, before the merge:
