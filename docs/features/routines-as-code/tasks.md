@@ -934,7 +934,7 @@ Runs in a local session with the chat, issue tracker, document store and observa
 - **Refs**: US-45, US-50, TD-58, TD-64
 - **Files**: `plugins/claudio-routines/runtime/config_tree.py` (modify), `plugins/claudio-routines/runtime/roles.py` (modify), `plugins/claudio-routines/runtime/test_roles.py` (modify), `plugins/claudio-routines/runtime/test_recap_pipeline.py` (new), `plugins/claudio-routines/skills/routines/templates/chat-recap.md` (modify), `plugins/claudio-routines/skills/routines/scripts/routines.py` (modify), `plugins/claudio-routines/skills/routines/scripts/test_routines.py` (modify), `plugins/claudio-routines/README.md` (modify), `README.md` (modify)
 - **Blocked by**: T-83, T-84
-- **Status**: Not Started
+- **Status**: Complete
 
 ### T-86: Roll out the chat recap
 Owner-gated: needs the merged pull request, a release tag, the transport and its credentials per place, and an approved sync.

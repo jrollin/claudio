@@ -843,9 +843,6 @@ class EngineTest(ConfigCase):
     def test_accepts_the_tribe_engine(self):
         self.assertIsNone(roles.validate_config(self.with_engine("tribe"), ROUTINE, "local", role_of))
 
-    def test_accepts_the_recap_engine(self):
-        self.assertIsNone(roles.validate_config(self.with_engine("recap"), ROUTINE, "local", role_of))
-
     def test_rejects_an_unknown_engine(self):
         self.assert_config_error(self.with_engine("legacy"), self.KEY_PATH)
 
@@ -857,6 +854,176 @@ class EngineTest(ConfigCase):
 
     def test_rejects_null(self):
         self.assert_config_error(self.with_engine(None), self.KEY_PATH)
+
+
+RECAP = "chat-recap"
+RECAP_OWNER = "U" + "1" * 6
+
+
+def make_recap_config(**changes):
+    config = make_config()
+    chat = config["routines"][ROUTINE]["sources"]["chat"]
+    chat.update(owner=RECAP_OWNER, searches=[{"name": "dms", "filters": "is:dm", "since": "window"}], reactions=True)
+    routine = {
+        "template": "chat-recap",
+        "cron": "0 9 * * 1-5",
+        "engine": "recap",
+        "owner": RECAP_OWNER,
+        "workspace": "chat.example.test",
+        "groups": [{"id": "S" + "1" * 6, "label": "Core team", "lands_in": "waiting"}],
+        "announcement": {"channels": ["C" + "2" * 6], "topics": ["releases"]},
+        "window": {"lookback_working_days": 3},
+        "exclude": {"authors": ["U" + "3" * 6], "channels": ["C" + "3" * 6], "keep_bots": []},
+        "history": {"late_after_working_days": 3, "drop_after_days": 14},
+        "rules": ["An ask needs a reply from the owner."],
+        "sources": {"chat": chat},
+    }
+    routine.update(changes)
+    for key in [key for key, value in changes.items() if value is None]:
+        del routine[key]
+    config["routines"] = {RECAP: routine}
+    return config
+
+
+class RecapConfigTest(unittest.TestCase):
+    def path_of(self, config, place="local"):
+        with self.assertRaises(roles.ConfigError) as caught:
+            roles.validate_config(config, RECAP, place, role_of)
+        return str(caught.exception).partition(": ")[0]
+
+    def rejected(self, path, **changes):
+        self.assertEqual(self.path_of(make_recap_config(**changes)), f"routines.{RECAP}.{path}")
+
+    def test_accepts_a_complete_recap_routine_for_both_places(self):
+        for place in ("cloud", "local"):
+            with self.subTest(place=place):
+                self.assertIsNone(roles.validate_config(make_recap_config(), RECAP, place, role_of))
+
+    def test_accepts_a_routine_without_history(self):
+        self.assertIsNone(roles.validate_config(make_recap_config(history=None), RECAP, "local", role_of))
+
+    def test_accepts_a_history_with_one_key(self):
+        config = make_recap_config(history={"drop_after_days": 30})
+        self.assertIsNone(roles.validate_config(config, RECAP, "local", role_of))
+
+    def test_accepts_announcement_and_exclude_lists_left_out(self):
+        config = make_recap_config(announcement={}, exclude={}, groups=[])
+        self.assertIsNone(roles.validate_config(config, RECAP, "local", role_of))
+
+    def test_rejects_a_missing_key_naming_it(self):
+        for key in ("owner", "workspace", "groups", "announcement", "window", "exclude", "rules"):
+            with self.subTest(key=key):
+                self.rejected(key, **{key: None})
+
+    def test_rejects_an_empty_owner(self):
+        self.rejected("owner", owner="")
+
+    def test_rejects_a_workspace_that_is_not_a_plain_host(self):
+        for value in ("", "https://chat.example.test", "chat.example.test/path", "chat example.test", 3):
+            with self.subTest(value=value):
+                self.rejected("workspace", workspace=value)
+
+    def test_rejects_groups_that_are_not_a_list(self):
+        self.rejected("groups", groups={})
+
+    def test_rejects_a_group_landing_outside_the_two_sections(self):
+        self.rejected("groups[0].lands_in", groups=[{"id": "S1", "label": "Core", "lands_in": "elsewhere"}])
+
+    def test_rejects_a_group_without_a_label_naming_its_index(self):
+        groups = [{"id": "S1", "label": "Core", "lands_in": "waiting"}, {"id": "S2", "lands_in": "waiting"}]
+        self.rejected("groups[1].label", groups=groups)
+
+    def test_rejects_a_group_without_an_id(self):
+        self.rejected("groups[0].id", groups=[{"label": "Core", "lands_in": "waiting"}])
+
+    def test_rejects_announcement_channels_that_are_not_a_list(self):
+        self.rejected("announcement.channels", announcement={"channels": "C1"})
+
+    def test_rejects_an_announcement_topic_that_is_not_text(self):
+        self.rejected("announcement.topics[1]", announcement={"topics": ["releases", 3]})
+
+    def test_rejects_an_excluded_author_that_is_not_text(self):
+        self.rejected("exclude.authors[0]", exclude={"authors": [7]})
+
+    def test_rejects_excluded_channels_that_are_not_a_list(self):
+        self.rejected("exclude.channels", exclude={"channels": "C1"})
+
+    def test_rejects_kept_bots_that_are_not_a_list(self):
+        self.rejected("exclude.keep_bots", exclude={"keep_bots": "B1"})
+
+    def test_rejects_a_lookback_outside_1_to_365(self):
+        for value in (0, 366, "3", True, 2.5, None):
+            with self.subTest(value=value):
+                self.rejected("window.lookback_working_days", window={"lookback_working_days": value})
+
+    def test_rejects_unexpected_keys_in_nested_mappings_naming_their_path(self):
+        cases = {
+            "announcement.channel": {"announcement": {"channel": []}},
+            "window.thread_lookback_days": {"window": {"lookback_working_days": 3, "thread_lookback_days": 7}},
+            "exclude.author": {"exclude": {"author": []}},
+            "history.drop_after_day": {"history": {"drop_after_day": 14}},
+            "groups[0].landing": {"groups": [{"id": "S1", "label": "Core", "lands_in": "waiting", "landing": "x"}]},
+        }
+        for path, changes in cases.items():
+            with self.subTest(path=path):
+                self.rejected(path, **changes)
+
+    def test_names_the_second_group_holding_an_unexpected_key(self):
+        groups = [
+            {"id": "S1", "label": "Core", "lands_in": "waiting"},
+            {"id": "S2", "label": "All", "lands_in": "good_to_know", "color": "red"},
+        ]
+        self.rejected("groups[1].color", groups=groups)
+
+    def test_accepts_other_keys_beside_the_recap_keys_in_the_routine(self):
+        config = make_recap_config()
+        config["routines"][RECAP]["values"] = {"digest": {"slug": "x"}}
+        self.assertIsNone(roles.validate_config(config, RECAP, "local", role_of))
+
+    def test_rejects_late_after_outside_0_to_365(self):
+        for value in (-1, 366, "3", True):
+            with self.subTest(value=value):
+                self.rejected("history.late_after_working_days", history={"late_after_working_days": value})
+
+    def test_rejects_drop_after_outside_1_to_365(self):
+        for value in (0, 366, "14", False):
+            with self.subTest(value=value):
+                self.rejected("history.drop_after_days", history={"drop_after_days": value})
+
+    def test_accepts_late_after_of_zero(self):
+        config = make_recap_config(history={"late_after_working_days": 0})
+        self.assertIsNone(roles.validate_config(config, RECAP, "local", role_of))
+
+    def test_rejects_history_that_is_not_a_mapping(self):
+        self.rejected("history", history=[])
+
+    def test_rejects_empty_rules(self):
+        self.rejected("rules", rules=[])
+
+    def test_rejects_a_rule_that_is_not_text(self):
+        self.rejected("rules[1]", rules=["An ask needs a reply.", 5])
+
+    def test_rejects_a_source_of_another_role(self):
+        config = make_recap_config()
+        config["routines"][RECAP]["sources"]["docs"] = make_config()["routines"][ROUTINE]["sources"]["sources-page"]
+        self.assertEqual(self.path_of(config), f"routines.{RECAP}.sources.docs.provider")
+
+    def test_rejects_a_chat_source_of_another_owner(self):
+        config = make_recap_config()
+        config["routines"][RECAP]["sources"]["chat"]["owner"] = "U" + "9" * 6
+        self.assertEqual(self.path_of(config), f"routines.{RECAP}.sources.chat.owner")
+
+    def test_rejects_a_chat_source_without_an_owner(self):
+        config = make_recap_config()
+        del config["routines"][RECAP]["sources"]["chat"]["owner"]
+        del config["routines"][RECAP]["sources"]["chat"]["searches"]
+        del config["routines"][RECAP]["sources"]["chat"]["reactions"]
+        config["routines"][RECAP]["sources"]["chat"]["channels"] = ["C" + "1" * 6]
+        self.assertEqual(self.path_of(config), f"routines.{RECAP}.sources.chat.owner")
+
+    def test_checks_no_recap_key_on_another_engine(self):
+        config = make_recap_config(engine="watch", owner=None, rules=None)
+        self.assertIsNone(roles.validate_config(config, RECAP, "local", role_of))
 
 
 class PublicationConfigTest(ConfigCase):

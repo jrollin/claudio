@@ -585,7 +585,7 @@ class CliTest(FileCase):
         self.fails_on("workspace", lambda routine: routine.update({"workspace": ""}))
 
     def test_a_routine_without_a_window_exits_2_with_the_key_path(self):
-        self.fails_on("window.lookback_working_days", lambda routine: routine.pop("window"))
+        self.fails_on("window", lambda routine: routine.pop("window"))
 
     def test_a_routine_without_a_lookback_exits_2_with_the_key_path(self):
         self.fails_on("window.lookback_working_days", lambda routine: routine.update({"window": {}}))

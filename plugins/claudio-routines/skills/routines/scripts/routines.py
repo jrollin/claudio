@@ -1,6 +1,7 @@
 import argparse
 import contextlib
 import difflib
+import functools
 import importlib
 import importlib.util
 import io
@@ -25,7 +26,6 @@ README_PATH = str(SCRIPT_PATH.parents[3] / "README.md")
 RUNTIME_PATH = str(SCRIPT_PATH.parents[3] / "runtime")
 PLUGIN_IN_REPO = "plugins/claudio-routines"
 RUNTIME_IN_REPO = "plugins/claudio-routines/runtime"
-RECAP_ENGINE = "recap"
 PLACES = ("cloud", "local")
 SETTINGS_PARTS = (".claude", "settings.json")
 SETUP_TEMPLATE = "setup-env.sh"
@@ -397,10 +397,50 @@ def routine_values(config, routine):
     return flatten(merge(config.get("values", {}), routine.get("values", {})))
 
 
+@functools.cache
+def runtime_module(directory, name):
+    with runtime_imports(directory):
+        return importlib.import_module(name)
+
+
+def runtime_roles():
+    return runtime_module(RUNTIME_PATH, "roles")
+
+
+def recap_values(routine):
+    lifecycle = runtime_module(RUNTIME_PATH, "recap_lifecycle")
+    history = routine.get("history", {})
+    return {
+        "window.lookback_working_days": routine["window"]["lookback_working_days"],
+        "history.late_after_working_days": history.get("late_after_working_days", lifecycle.DEFAULT_LATE_AFTER),
+        "history.drop_after_days": history.get("drop_after_days", lifecycle.DEFAULT_DROP_AFTER),
+    }
+
+
+def engine_values(routine):
+    return recap_values(routine) if routine.get("engine") == runtime_roles().RECAP_ENGINE else {}
+
+
+def role_error(error, private):
+    config_tree = runtime_module(RUNTIME_PATH, "config_tree")
+    return UsageError(config_tree.locate(str(error), private))
+
+
+def check_recap_keys(private, config, slug, place):
+    roles = runtime_roles()
+    if config["routines"][slug].get("engine") != roles.RECAP_ENGINE:
+        return
+    try:
+        roles.validate_config(config, slug, place)
+    except roles.ConfigError as error:
+        raise role_error(error, private) from error
+
+
 def build_context(config, routine, place, post):
     settings = config["places"][place]
     context = routine_values(config, routine)
     context.update(flatten({"runtime": config["runtime"]}))
+    context.update(engine_values(routine))
     context["timezone"] = config["timezone"]
     context.update({
         "runtime.dir": settings["runtime_dir"],
@@ -449,6 +489,7 @@ def configured(config, slug):
 def render_routine(private, config, slug, place="cloud", post=False):
     routine = configured(config, slug)
     path = template_path(private, routine["template"])
+    check_recap_keys(private, config, slug, place)
     context, own_keys = build_context(config, routine, place, post)
     rendered, used = render_text(read_text(path), context, path)
     unused = sorted(own_keys - used)
@@ -704,6 +745,33 @@ def public_findings():
     return findings
 
 
+RUNTIME_PLACEHOLDER = "{{runtime.dir}}"
+
+
+def calls_runtime(private, config, slug):
+    text = read_text(template_path(private, configured(config, slug)["template"]))
+    return not lint.is_marked(text) and RUNTIME_PLACEHOLDER in text
+
+
+def checked_routines(private, config):
+    config_tree = runtime_module(RUNTIME_PATH, "config_tree")
+    slugs = [slug for slug in sorted(config["routines"]) if config_tree.has_file(private, slug)]
+    return [slug for slug in slugs if calls_runtime(private, config, slug)]
+
+
+def check_routine_roles(private, config):
+    slugs = checked_routines(private, config)
+    roles = runtime_roles()
+    with runtime_imports(RUNTIME_PATH):
+        role_of = importlib.import_module("config").adapter_role
+        for slug in slugs:
+            for place in PLACES:
+                try:
+                    roles.validate_config(config, slug, place, role_of=role_of)
+                except roles.ConfigError as error:
+                    raise role_error(error, private) from error
+
+
 def settings_findings(private):
     path = os.path.join(private, *SETTINGS_PARTS)
     return lint.settings_findings(path, read_bytes(path) if os.path.isfile(path) else None)
@@ -712,6 +780,7 @@ def settings_findings(private):
 def private_findings(args):
     private = resolve_private(args.private)
     config = load_config(private)
+    check_routine_roles(private, config)
     sha = config["runtime"]["sha"]
     with tempfile.TemporaryDirectory(prefix="claudio-runtime-") as directory:
         extract_runtime(args.claudio, config["runtime"]["tag"], sha, directory)
@@ -756,14 +825,13 @@ def repeated_value_warnings(config):
 
 
 def seed_engine(config, slug):
-    with runtime_imports(RUNTIME_PATH):
-        roles = importlib.import_module("roles")
-        config_tree = importlib.import_module("config_tree")
+    roles = runtime_roles()
+    config_tree = runtime_module(RUNTIME_PATH, "config_tree")
     if config_tree.SLUG.fullmatch(slug) is None:
         raise UsageError(f"routine slug {slug} must match ^{config_tree.SLUG.pattern}$")
     engine = configured(config, slug).get("engine", roles.DEFAULT_ENGINE)
-    if engine not in (roles.TRIBE_ENGINE, RECAP_ENGINE):
-        raise UsageError(f"routine {slug} has engine {engine}: seeding needs engine {roles.TRIBE_ENGINE} or {RECAP_ENGINE}")
+    if engine not in (roles.TRIBE_ENGINE, roles.RECAP_ENGINE):
+        raise UsageError(f"routine {slug} has engine {engine}: seeding needs engine {roles.TRIBE_ENGINE} or {roles.RECAP_ENGINE}")
     return engine
 
 
@@ -814,7 +882,7 @@ def seed_summary(engine, slug, out):
     except json.JSONDecodeError as error:
         raise UsageError(f"seeded state {out} is not JSON: {error.msg}") from error
     try:
-        lines = (recap_seed_lines if engine == RECAP_ENGINE else tribe_seed_lines)(slug, out, document)
+        lines = (recap_seed_lines if engine == runtime_roles().RECAP_ENGINE else tribe_seed_lines)(slug, out, document)
     except (KeyError, TypeError, AttributeError) as error:
         raise UsageError(f"seeded state {out} has an unexpected shape") from error
     return "".join(f"{line}\n" for line in lines)
@@ -835,7 +903,7 @@ def seed_digest(config, slug):
 
 
 def seed_arguments(engine, config, args, private):
-    if engine == RECAP_ENGINE:
+    if engine == runtime_roles().RECAP_ENGINE:
         if args.source is None:
             raise UsageError(f"routine {args.slug} has engine {engine}: seeding takes --from <stored state>, not --page")
         return ["--from", args.source, "--digest", seed_digest(config, args.slug), "--out", args.out]

@@ -55,6 +55,7 @@ def make_routine():
         "engine": "recap",
         "owner": OWNER,
         "workspace": CHAT_HOST,
+        "window": {"lookback_working_days": 3},
         "groups": [
             {"id": GROUP_WAITING, "label": "Core team", "lands_in": "waiting"},
             {"id": GROUP_GOOD, "label": "Everyone", "lands_in": "good_to_know"},
@@ -678,63 +679,22 @@ class FilesTest(FeaturesCase):
 
 
 class RoutineKeyTest(FeaturesCase):
-    def rejected(self, **changes):
-        config = make_config(**changes)
-        for key, value in changes.items():
-            if value is None:
-                del config["routines"][SLUG][key]
-        code, _, err = self.run_features(config=config)
-        return code, err
+    def test_an_invalid_routine_key_exits_2_naming_its_key_path(self):
+        config = make_config(owner="")
 
-    def test_a_missing_owner_exits_2_naming_the_key_path(self):
-        code, err = self.rejected(owner=None)
+        code, _, err = self.run_features(config=config)
 
         self.assertEqual((code, "routines.chat-recap.owner: must be a non-empty string" in err), (2, True))
 
-    def test_a_missing_groups_list_exits_2(self):
-        code, err = self.rejected(groups=None)
-
-        self.assertEqual((code, "routines.chat-recap.groups: must be a list" in err), (2, True))
-
-    def test_a_group_landing_outside_the_two_sections_exits_2_naming_the_index(self):
-        code, err = self.rejected(groups=[{"id": GROUP_GOOD, "label": "Everyone", "lands_in": "elsewhere"}])
-
-        self.assertEqual((code, "groups[0].lands_in: must be one of waiting, good_to_know" in err), (2, True))
-
-    def test_a_group_without_a_label_exits_2(self):
-        code, err = self.rejected(groups=[{"id": GROUP_GOOD, "lands_in": "waiting"}])
-
-        self.assertEqual((code, "groups[0].label: must be a non-empty string" in err), (2, True))
-
-    def test_a_missing_announcement_exits_2(self):
-        code, err = self.rejected(announcement=None)
-
-        self.assertEqual((code, "routines.chat-recap.announcement: must be a mapping" in err), (2, True))
-
-    def test_announcement_channels_that_are_not_a_list_of_strings_exit_2(self):
-        code, err = self.rejected(announcement={"channels": "C1", "topics": []})
-
-        self.assertEqual((code, "announcement.channels: must be a list of non-empty strings" in err), (2, True))
-
-    def test_a_missing_exclude_exits_2(self):
-        code, err = self.rejected(exclude=None)
-
-        self.assertEqual((code, "routines.chat-recap.exclude: must be a mapping" in err), (2, True))
-
-    def test_exclude_authors_with_a_number_exit_2(self):
-        code, err = self.rejected(exclude={"authors": [7], "channels": [], "keep_bots": []})
-
-        self.assertEqual((code, "exclude.authors: must be a list of non-empty strings" in err), (2, True))
-
-    def test_missing_rules_exit_2(self):
-        code, err = self.rejected(rules=None)
-
-        self.assertEqual((code, "routines.chat-recap.rules: must be a list of non-empty strings" in err), (2, True))
-
     def test_exclude_lists_left_out_read_as_empty(self):
-        code, _ = self.rejected(exclude={})
+        config = make_config(exclude={})
 
-        self.assertEqual(code, 0)
+        self.assertEqual(self.run_features(config=config)[0], 0)
+
+    def test_an_announcement_without_channels_or_topics_reads_as_empty(self):
+        config = make_config(announcement={})
+
+        self.assertEqual(self.run_features(config=config)[0], 0)
 
 
 class CommandTest(FeaturesCase):

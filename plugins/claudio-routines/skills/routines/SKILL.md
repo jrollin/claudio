@@ -55,10 +55,11 @@ Run `R render <slug> [--place cloud|local] [--post]`.
 ## Lint
 
 - Public skeletons: `R lint --public`.
-  - It checks every `state.py`, `collect.py`, `evaluate.py`, `digest.py` and `tribe.py` command and flag against this checkout's runtime.
+  - It checks every `state.py`, `collect.py`, `evaluate.py`, `digest.py`, `tribe.py` and `recap.py` command and flag against this checkout's runtime.
   - It fails a provider name (`provider-name`: a module name under `runtime/providers/`) in the skeletons, the plugin README and this file.
-- Private templates: `R lint --private <path> [--claudio <checkout>]`. It checks every `state.py`, `collect.py`, `evaluate.py`, `digest.py` and `tribe.py` command and flag against the runtime at the pinned tag, so the tag must exist in a local claudio checkout. Pass `--claudio` when the plugin runs from the plugin cache.
+- Private templates: `R lint --private <path> [--claudio <checkout>]`. It checks every `state.py`, `collect.py`, `evaluate.py`, `digest.py`, `tribe.py` and `recap.py` command and flag against the runtime at the pinned tag, so the tag must exist in a local claudio checkout. Pass `--claudio` when the plugin runs from the plugin cache.
 - Each finding prints `path:line:rule`.
+- `lint --private` runs the role check of this checkout's runtime on every routine file, for both places. It exits 2 naming the file and the key path of the first invalid value, and skips a routine whose template is marked not runnable.
 - `lint --private` also checks `.claude/settings.json` of the private repository, the file the cloud session reads. It reports at line 1 of that file:
   - `settings-missing`: the file does not exist.
   - `settings-invalid`: the file is not a JSON object.

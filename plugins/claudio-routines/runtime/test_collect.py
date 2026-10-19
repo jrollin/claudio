@@ -15,6 +15,8 @@ import state
 from support import publication_values
 from providers._http import PAGE_CAP, PartialRead, SourceUnreadable
 from providers._errors import CredentialsMissing
+from test_recap_features import OWNER as RECAP_OWNER
+from test_recap_features import make_routine as make_recap_routine
 from test_recap_state import CHANNEL_A as RECAP_CHANNEL_A
 from test_recap_state import CHANNEL_B as RECAP_CHANNEL_B
 from test_recap_state import LAST_TS as RECAP_LAST_TS
@@ -1465,13 +1467,16 @@ class RecapChatCase(RelayTestCase):
             "api": {"base_url": "https://chat.example.test", "credentials": {"token": "CHAT_TOKEN"}},
             "mcp": {"connectors": {"cloud": "chat-cloud", "local": "chat-local"}},
         }
-        self.config["routines"][ROUTINE]["engine"] = "recap"
-        self.config["routines"][ROUTINE]["sources"]["team-chat"] = {
-            "provider": "chat",
-            "transport": {"cloud": "mcp", "local": "api"},
-            "owner": "U" + "1" * 6,
-            "searches": RECAP_SEARCHES,
+        routine = make_recap_routine()
+        routine["sources"] = {
+            "team-chat": {
+                "provider": "chat",
+                "transport": {"cloud": "mcp", "local": "api"},
+                "owner": RECAP_OWNER,
+                "searches": RECAP_SEARCHES,
+            }
         }
+        self.config["routines"][ROUTINE] = routine
         self.state = make_recap_state()
         self.window = {"from_ts": WINDOW_END - 3600, "to_ts": WINDOW_END, "limited": None, "explicit": False}
 
@@ -1504,9 +1509,12 @@ class RecapChatRereadsTest(RecapChatCase):
         self.fetch(source="team-chat", place="local")
         self.assertEqual([(item["kind"], item["root_ts"]) for item in self.chat.calls[0]["source"]["rereads"]], [("group_dm", None), ("mention", RECAP_ROOT_TS)])
 
+    def test_hands_a_document_source_no_rereads(self):
+        source = {"provider": "docs", "page_id": "page-1"}
+        self.assertEqual(collect.state_options(self.state, roles.RECAP_ENGINE, "document_store", source, "sources-page"), {})
+
     def test_hands_a_source_without_searches_no_rereads(self):
         del self.config["routines"][ROUTINE]["sources"]["team-chat"]["searches"]
-        del self.config["routines"][ROUTINE]["sources"]["team-chat"]["owner"]
         self.config["routines"][ROUTINE]["sources"]["team-chat"]["channels"] = [CHAT_CHANNEL]
         self.fetch(source="team-chat", place="local")
         self.assertNotIn("rereads", self.chat.calls[0]["source"])
@@ -1524,10 +1532,6 @@ class RecapChatRereadsTest(RecapChatCase):
         self.window = make_window()
         self.fetch(source="team-chat", place="local")
         self.assertNotIn("rereads", self.chat.calls[0]["source"])
-
-    def test_hands_a_document_source_no_rereads(self):
-        self.fetch(source="sources-page", place="local")
-        self.assertNotIn("rereads", self.doc.calls[0]["source"])
 
     def test_hands_the_adapter_no_stored_cursor(self):
         self.fetch(source="team-chat", place="local")

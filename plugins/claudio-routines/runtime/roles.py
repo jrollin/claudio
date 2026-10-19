@@ -27,6 +27,8 @@ ENGINES = ("watch", "tribe", "recap")
 DEFAULT_ENGINE = ENGINES[0]
 TRIBE_ENGINE = ENGINES[1]
 RECAP_ENGINE = ENGINES[2]
+RECAP_LANDINGS = ("waiting", "good_to_know")
+RECAP_LOOKBACK_CAP = 365
 PAGE_FROM_STATE = ("previous_page",)
 TREND_AGGREGATORS = ("max", "min", "sum", "avg", "last")
 COLLECTION_SCHEMA = 1
@@ -45,6 +47,7 @@ LINK_VALUES = ("id",)
 TITLE_VALUES = ("date",)
 DIGITS = re.compile(r"[0-9]+")
 DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+PLAIN_HOST = re.compile(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*")
 UTC_Z = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z")
 
 
@@ -77,6 +80,11 @@ class MapOf:
     def __init__(self, spec, non_empty=False):
         self.spec = spec
         self.non_empty = non_empty
+
+
+class Exact:
+    def __init__(self, spec):
+        self.spec = spec
 
 
 def _matches(pattern):
@@ -172,6 +180,28 @@ SINCE_LOOKBACK = {
     "lookback_days": Rule(lambda value: is_integer(value) and 1 <= value <= LOOKBACK_CAP, f"must be an integer from 1 to {LOOKBACK_CAP}")
 }
 
+
+def _whole_days(low, high):
+    return Rule(lambda value: is_integer(value) and low <= value <= high, f"must be an integer from {low} to {high}")
+
+
+RECAP_KEYS = {
+    "owner": TEXT,
+    "workspace": Rule(_matches(PLAIN_HOST), "must be a plain host name such as chat.example.test"),
+    "groups": ListOf(Exact({"id": TEXT, "label": TEXT, "lands_in": Choice(RECAP_LANDINGS)})),
+    "announcement": Exact({"channels": Omittable(ListOf(TEXT)), "topics": Omittable(ListOf(TEXT))}),
+    "window": Exact({"lookback_working_days": _whole_days(1, RECAP_LOOKBACK_CAP)}),
+    "exclude": Exact({"authors": Omittable(ListOf(TEXT)), "channels": Omittable(ListOf(TEXT)), "keep_bots": Omittable(ListOf(TEXT))}),
+    "history": Omittable(
+        Exact(
+            {
+                "late_after_working_days": Omittable(_whole_days(0, RECAP_LOOKBACK_CAP)),
+                "drop_after_days": Omittable(_whole_days(1, RECAP_LOOKBACK_CAP)),
+            }
+        )
+    ),
+    "rules": ListOf(TEXT, non_empty=True),
+}
 KEY_PATH = Rule(_matches(KEY_PATH_TEXT), "must be a dotted path of object keys")
 PAGE_LINK = Rule(
     lambda value: isinstance(value, str) and "{{id}}" in value, "must be a string holding the placeholder {{id}}"
@@ -402,6 +432,8 @@ def _conform(value, spec, path, error, exact):
             raise error(f"{path}: must be a non-empty mapping")
         for key in sorted(value):
             _conform(value[key], spec.spec, join(path, key), error, exact)
+    elif isinstance(spec, Exact):
+        _conform_fields(value, spec.spec, path, error, True)
     else:
         _conform_fields(value, spec, path, error, exact)
 
@@ -459,17 +491,20 @@ def validate_config(config, routine, place, role_of=None):
     routine_path = f"routines.{routine}"
     chosen = _config_field(routines, "routines", routine, {})
     _conform(chosen, {"first_read_days": FIRST_READ_DAYS, "engine": ENGINE}, routine_path, ConfigError, exact=False)
+    engine = chosen.get("engine", DEFAULT_ENGINE)
+    if engine == RECAP_ENGINE:
+        _conform(chosen, RECAP_KEYS, routine_path, ConfigError, exact=False)
     sources = _config_field(chosen, routine_path, "sources", MapOf({}, non_empty=True))
     for name in sorted(sources):
         if SOURCE_NAME.fullmatch(name) is None:
             raise ConfigError(f"{routine_path}.sources.{name}: the source name must match ^[a-z][a-z0-9-]*$")
     for name in sorted(sources):
-        _validate_source(sources[name], f"{routine_path}.sources.{name}", providers, place, role_of, chosen.get("engine", DEFAULT_ENGINE))
+        _validate_source(sources[name], f"{routine_path}.sources.{name}", providers, place, role_of, engine, chosen.get("owner"))
     if chosen.get("engine") == TRIBE_ENGINE:
         _validate_publication(chosen, routine_path, providers)
 
 
-def _validate_source(source, path, providers, place, role_of, engine):
+def _validate_source(source, path, providers, place, role_of, engine, owner=None):
     _conform(source, SOURCE, path, ConfigError, exact=False)
     name = source["provider"]
     if name not in providers:
@@ -489,12 +524,21 @@ def _validate_source(source, path, providers, place, role_of, engine):
     if role not in ROLES:
         raise ConfigError(f"{provider_path}.adapter: the adapter role must be one of " + ", ".join(ROLES))
     _conform(source, ROLE_OPTIONS[role], path, ConfigError, exact=False)
+    if engine == RECAP_ENGINE:
+        _validate_recap_source(source, path, role, owner)
     if role == "observability" and source["kind"] != "monitors" and "discovery_query" in source:
         raise ConfigError(f"{path}.discovery_query: only a monitors source takes a discovery query")
     if role == "document_store":
         _validate_page_options(source, path, engine)
     if role == "chat":
         _validate_chat_options(source, path)
+
+
+def _validate_recap_source(source, path, role, owner):
+    if role != "chat":
+        raise ConfigError(f"{path}.provider: a {RECAP_ENGINE} routine takes chat sources only, this adapter's role is {role}")
+    if source.get("owner") != owner:
+        raise ConfigError(f"{path}.owner: must equal the routine owner")
 
 
 def _validate_chat_options(source, path):

@@ -1,7 +1,6 @@
 import decimal
 import re
 
-import config_tree
 import evaluate
 import features
 import recap_state
@@ -9,7 +8,7 @@ import recap_window
 import roles
 import state
 import tribe_features
-from config import adapter_role, config_directory
+from config import adapter_role
 from providers._errors import PAGE_CAP_PARTIAL
 
 WAITING_ON_YOU = "waiting on you"
@@ -29,62 +28,22 @@ KIND_DEFINITIONS = {
     NOISE: "nothing for the owner to do or to know",
 }
 CONVERSATION_NAMES = {"DM": "dm", "group DM": "group_dm"}
-GROUP_LANDINGS = ("waiting", "good_to_know")
 SEARCH_PREFIX = "search:"
 SEARCH_CUT = re.compile(re.escape(PAGE_CAP_PARTIAL) + r": ([0-9]+) page\(s\) read")
 MESSAGE_FIELDS = ("user", "name", "bot", "ts", "root_ts", "mentions", "group_mentions", "text")
 
 
 class Settings:
-    def __init__(self, routine, slug, directory):
-        self.slug, self.directory = slug, directory
-        self.owner = self.text(routine, "owner")
-        self.groups = [self.group(item, f"groups[{index}]") for index, item in enumerate(self.items(routine, "groups"))]
-        announcement = self.mapping(routine, "announcement")
-        self.announcement_channels = self.strings(announcement, "announcement.channels", "channels")
-        self.topics = self.strings(announcement, "announcement.topics", "topics")
-        exclude = self.mapping(routine, "exclude")
-        self.exclude_authors = self.strings(exclude, "exclude.authors", "authors")
-        self.exclude_channels = self.strings(exclude, "exclude.channels", "channels")
-        self.keep_bots = self.strings(exclude, "exclude.keep_bots", "keep_bots")
-        self.rules = self.strings(routine, "rules", "rules", required=True)
-
-    def error(self, path, why):
-        raise state.InputError(config_tree.locate(f"config: routines.{self.slug}.{path}: {why}", self.directory))
-
-    def text(self, parent, key, path=None):
-        value = parent.get(key)
-        if not isinstance(value, str) or not value:
-            self.error(path or key, "must be a non-empty string")
-        return value
-
-    def mapping(self, parent, key):
-        value = parent.get(key)
-        if not isinstance(value, dict):
-            self.error(key, "must be a mapping")
-        return value
-
-    def items(self, parent, key):
-        value = parent.get(key)
-        if not isinstance(value, list):
-            self.error(key, "must be a list")
-        return value
-
-    def strings(self, parent, path, key, required=False):
-        if key not in parent and not required:
-            return []
-        value = parent.get(key)
-        if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
-            self.error(path, "must be a list of non-empty strings")
-        return value
-
-    def group(self, item, path):
-        if not isinstance(item, dict):
-            self.error(path, "must be a mapping")
-        landing = item.get("lands_in")
-        if landing not in GROUP_LANDINGS:
-            self.error(f"{path}.lands_in", "must be one of " + ", ".join(GROUP_LANDINGS))
-        return {"id": self.text(item, "id", f"{path}.id"), "label": self.text(item, "label", f"{path}.label"), "lands_in": landing}
+    def __init__(self, routine):
+        self.owner = routine["owner"]
+        self.groups = [{"id": item["id"], "label": item["label"], "lands_in": item["lands_in"]} for item in routine["groups"]]
+        announcement, exclude = routine["announcement"], routine["exclude"]
+        self.announcement_channels = announcement.get("channels", [])
+        self.topics = announcement.get("topics", [])
+        self.exclude_authors = exclude.get("authors", [])
+        self.exclude_channels = exclude.get("channels", [])
+        self.keep_bots = exclude.get("keep_bots", [])
+        self.rules = routine["rules"]
 
 
 def kept(message, settings):
@@ -249,7 +208,7 @@ def load_inputs(args, role_of):
     config, routine, sources = evaluate.load_config(args.config, args.routine, args.place, role_of)
     if routine.get("engine") != roles.RECAP_ENGINE:
         raise state.InputError(f"config: routine {args.routine} is not a recap routine")
-    settings = Settings(routine, args.routine, config_directory(args.config))
+    settings = Settings(routine)
     zone = evaluate.config_zone(config)
     stored = recap_state.load(args.state)
     window = state.load(args.window, "window", recap_window.check_window)
