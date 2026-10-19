@@ -1134,6 +1134,136 @@ class RecapConfigTest(unittest.TestCase):
         self.assertIsNone(roles.validate_config(config, RECAP, "local", role_of))
 
 
+WEEKLY = "weekly-status"
+
+
+def make_weekly_config(**changes):
+    config = make_config()
+    config["providers"]["tracker"] = {
+        "adapter": "trackervendor",
+        "api": {"base_url": "https://api.tracker.example.test", "credentials": {"email": "TRACKER_EMAIL", "token": "TRACKER_TOKEN"}},
+    }
+    sources = config["routines"][ROUTINE]["sources"]
+    api = {"cloud": "api", "local": "api"}
+    routine = {
+        "template": "weekly-status",
+        "cron": "0 16 * * 5",
+        "engine": "weekly",
+        "owner": RECAP_OWNER,
+        "workspace": "chat.example.test",
+        "recap": RECAP,
+        "exclude": {"channels": ["C" + "3" * 6]},
+        "values": {"digest": {"name": "Weekly status", "slug": WEEKLY}},
+        "sources": {
+            "issues": {"provider": "tracker", "transport": api, "jql": "assignee = currentUser()"},
+            "code": {"provider": "code", "transport": api, "searches": ["is:pr org:example-org author:dev"]},
+            "chat": {
+                "provider": "chat",
+                "transport": {"cloud": "mcp", "local": "mcp"},
+                "owner": RECAP_OWNER,
+                "searches": [{"name": "dms", "filters": "is:dm", "since": "window"}],
+            },
+            "docs": {"provider": "docs", "transport": api, "edited_by": "user-ab12"},
+        },
+    }
+    routine.update(changes)
+    for key in [key for key, value in changes.items() if value is None]:
+        del routine[key]
+    config["routines"] = {WEEKLY: routine}
+    return config
+
+
+class WeeklyConfigTest(unittest.TestCase):
+    def path_of(self, config, place="local"):
+        with self.assertRaises(roles.ConfigError) as caught:
+            roles.validate_config(config, WEEKLY, place, role_of)
+        return str(caught.exception).partition(": ")[0]
+
+    def rejected(self, path, **changes):
+        self.assertEqual(self.path_of(make_weekly_config(**changes)), f"routines.{WEEKLY}.{path}")
+
+    def rejected_source(self, path, mutate):
+        config = make_weekly_config()
+        mutate(config["routines"][WEEKLY]["sources"])
+        self.assertEqual(self.path_of(config), f"routines.{WEEKLY}.sources.{path}")
+
+    def test_lists_weekly_among_the_engines(self):
+        self.assertEqual(roles.WEEKLY_ENGINE, "weekly")
+        self.assertIn("weekly", roles.ENGINES)
+
+    def test_accepts_a_complete_weekly_routine_for_both_places(self):
+        for place in ("cloud", "local"):
+            with self.subTest(place=place):
+                self.assertIsNone(roles.validate_config(make_weekly_config(), WEEKLY, place, role_of))
+
+    def test_accepts_a_routine_without_a_recap_or_exclude(self):
+        config = make_weekly_config(recap=None, exclude=None)
+        self.assertIsNone(roles.validate_config(config, WEEKLY, "local", role_of))
+
+    def test_accepts_an_exclude_without_channels(self):
+        self.assertIsNone(roles.validate_config(make_weekly_config(exclude={}), WEEKLY, "local", role_of))
+
+    def test_accepts_a_routine_without_a_chat_source(self):
+        config = make_weekly_config()
+        del config["routines"][WEEKLY]["sources"]["chat"]
+        self.assertIsNone(roles.validate_config(config, WEEKLY, "local", role_of))
+
+    def test_rejects_a_missing_key_naming_it(self):
+        for key in ("owner", "workspace"):
+            with self.subTest(key=key):
+                self.rejected(key, **{key: None})
+
+    def test_rejects_a_blank_owner(self):
+        for value in ("", "  ", 7):
+            with self.subTest(value=value):
+                self.rejected("owner", owner=value)
+
+    def test_rejects_a_workspace_that_is_not_a_plain_host(self):
+        for value in ("", "https://chat.example.test", "chat.example.test/path", 3):
+            with self.subTest(value=value):
+                self.rejected("workspace", workspace=value)
+
+    def test_rejects_a_recap_that_is_not_a_routine_slug(self):
+        for value in ("", "Chat Recap", 3):
+            with self.subTest(value=value):
+                self.rejected("recap", recap=value)
+
+    def test_rejects_excluded_channels_that_are_not_a_list(self):
+        self.rejected("exclude.channels", exclude={"channels": "C1"})
+
+    def test_rejects_an_excluded_channel_that_is_not_text(self):
+        self.rejected("exclude.channels[1]", exclude={"channels": ["C1", 4]})
+
+    def test_rejects_an_unexpected_exclude_key(self):
+        self.rejected("exclude.authors", exclude={"authors": []})
+
+    def test_rejects_an_observability_source_naming_its_path(self):
+        def add(sources):
+            sources["monitors"] = {"provider": "obs", "transport": {"cloud": "api", "local": "api"}, "kind": "monitors", "scope_filter": ""}
+
+        self.rejected_source("monitors.provider", add)
+
+    def test_rejects_a_chat_source_without_searches(self):
+        def drop(sources):
+            del sources["chat"]["searches"]
+            sources["chat"]["channels"] = ["chan-alerts"]
+
+        self.rejected_source("chat.searches", drop)
+
+    def test_rejects_a_chat_source_of_another_owner(self):
+        self.rejected_source("chat.owner", lambda sources: sources["chat"].update(owner="U" + "9" * 6))
+
+    def test_rejects_a_chat_source_without_an_owner(self):
+        self.rejected_source("chat.owner", lambda sources: sources["chat"].pop("owner"))
+
+    def test_rejects_a_source_option_of_its_role_naming_its_path(self):
+        self.rejected_source("issues", lambda sources: sources["issues"].update(filter="10042"))
+
+    def test_checks_no_weekly_key_on_another_engine(self):
+        config = make_weekly_config(engine="watch", owner=None)
+        self.assertIsNone(roles.validate_config(config, WEEKLY, "local", role_of))
+
+
 class PublicationConfigTest(ConfigCase):
     ROUTINE_PATH = "routines.prod-watch"
 

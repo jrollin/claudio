@@ -23,10 +23,12 @@ TREND_MIN = 7
 TREND_CAP = 31
 FIRST_READ_CAP = 31
 CHANNEL_TYPES = ("public_channel", "private_channel", "mpim", "im")
-ENGINES = ("watch", "tribe", "recap")
+ENGINES = ("watch", "tribe", "recap", "weekly")
 DEFAULT_ENGINE = ENGINES[0]
 TRIBE_ENGINE = ENGINES[1]
 RECAP_ENGINE = ENGINES[2]
+WEEKLY_ENGINE = ENGINES[3]
+WEEKLY_ROLES = ("issue_tracker", "code_host", "chat", "document_store")
 RECAP_LANDINGS = ("waiting", "good_to_know")
 RECAP_LOOKBACK_CAP = 365
 PAGE_FROM_STATE = ("previous_page",)
@@ -50,6 +52,7 @@ TITLE_VALUES = ("date",)
 DIGITS = re.compile(r"[0-9]+")
 DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 PLAIN_HOST = re.compile(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*")
+ROUTINE_SLUG = re.compile(r"[a-z0-9-]+")
 UTC_Z = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z")
 
 
@@ -195,9 +198,17 @@ def _whole_days(low, high):
     return Rule(lambda value: is_integer(value) and low <= value <= high, f"must be an integer from {low} to {high}")
 
 
+WORKSPACE = Rule(_matches(PLAIN_HOST), "must be a plain host name such as chat.example.test")
+SLUG = Rule(_matches(ROUTINE_SLUG), "must be a routine slug of lowercase letters, digits and dashes")
+WEEKLY_KEYS = {
+    "owner": NON_BLANK,
+    "workspace": WORKSPACE,
+    "recap": Omittable(SLUG),
+    "exclude": Omittable(Exact({"channels": Omittable(ListOf(TEXT))})),
+}
 RECAP_KEYS = {
     "owner": TEXT,
-    "workspace": Rule(_matches(PLAIN_HOST), "must be a plain host name such as chat.example.test"),
+    "workspace": WORKSPACE,
     "groups": ListOf(Exact({"id": TEXT, "label": TEXT, "lands_in": Choice(RECAP_LANDINGS)})),
     "announcement": Exact({"channels": Omittable(ListOf(TEXT)), "topics": Omittable(ListOf(TEXT))}),
     "window": Exact({"lookback_working_days": _whole_days(1, RECAP_LOOKBACK_CAP)}),
@@ -517,6 +528,8 @@ def validate_config(config, routine, place, role_of=None):
     engine = chosen.get("engine", DEFAULT_ENGINE)
     if engine == RECAP_ENGINE:
         _conform(chosen, RECAP_KEYS, routine_path, ConfigError, exact=False)
+    if engine == WEEKLY_ENGINE:
+        _conform(chosen, WEEKLY_KEYS, routine_path, ConfigError, exact=False)
     sources = _config_field(chosen, routine_path, "sources", MapOf({}, non_empty=True))
     for name in sorted(sources):
         if SOURCE_NAME.fullmatch(name) is None:
@@ -549,6 +562,8 @@ def _validate_source(source, path, providers, place, role_of, engine, owner=None
     _conform(source, ROLE_OPTIONS[role], path, ConfigError, exact=False)
     if engine == RECAP_ENGINE:
         _validate_recap_source(source, path, role, owner)
+    if engine == WEEKLY_ENGINE:
+        _validate_weekly_source(source, path, role, owner)
     if role == "observability" and source["kind"] != "monitors" and "discovery_query" in source:
         raise ConfigError(f"{path}.discovery_query: only a monitors source takes a discovery query")
     if role == "document_store":
@@ -573,6 +588,15 @@ def _validate_recap_source(source, path, role, owner):
     if role != "chat":
         raise ConfigError(f"{path}.provider: a {RECAP_ENGINE} routine takes chat sources only, this adapter's role is {role}")
     if source.get("owner") != owner:
+        raise ConfigError(f"{path}.owner: must equal the routine owner")
+
+
+def _validate_weekly_source(source, path, role, owner):
+    if role not in WEEKLY_ROLES:
+        raise ConfigError(f"{path}.provider: a {WEEKLY_ENGINE} routine takes {', '.join(WEEKLY_ROLES)} sources, this adapter's role is {role}")
+    if role == "chat" and "searches" not in source:
+        raise ConfigError(f"{path}.searches: missing, a chat source of a {WEEKLY_ENGINE} routine reads searches")
+    if role == "chat" and source.get("owner") != owner:
         raise ConfigError(f"{path}.owner: must equal the routine owner")
 
 

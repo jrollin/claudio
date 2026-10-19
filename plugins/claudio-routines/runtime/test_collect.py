@@ -1826,6 +1826,25 @@ class RecapStateTest(RecapChatCase):
         self.assertEqual(self.fetch(source="team-chat", place="local")[0], 3)
 
 
+class WeeklyCollectTest(RecapChatCase):
+    def setUp(self):
+        super().setUp()
+        routine = self.config["routines"][ROUTINE]
+        for key in ("groups", "announcement", "window", "history"):
+            routine.pop(key, None)
+        routine.update(engine="weekly", exclude={"channels": []})
+        self.state = {"schema": "weekly-1", "digest": ROUTINE, "last_run": None}
+        self.window = {"from_ts": WINDOW_END - 3600, "to_ts": WINDOW_END, "week_start": "2025-10-06", "report_only": False}
+
+    def test_reads_a_weekly_state_and_window(self):
+        self.assertEqual(self.fetch(source="team-chat", place="local")[0], 0)
+
+    def test_rejects_a_recap_state_for_a_weekly_routine(self):
+        self.state = make_recap_state()
+        code, _, err = self.fetch(source="team-chat", place="local")
+        self.assertEqual((code, "state: " in err), (3, True))
+
+
 class TribePreviousPageTest(RelayTestCase):
     def setUp(self):
         super().setUp()

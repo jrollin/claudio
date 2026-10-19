@@ -1108,15 +1108,15 @@ Owner-gated: needs the merged pull request, a release tag, the transport and its
 - **Status**: Complete
 
 ### T-102: Weekly engine: state, window and features
-- `roles.ENGINES` gains `weekly`; a weekly routine takes issue tracker, code host, chat and document store sources, `owner`, `workspace`, `recap` (a routine slug), `exclude.channels` and `digest`; the role check names the key path of an invalid value.
+- `roles.ENGINES` gains `weekly`; a weekly routine takes issue tracker, code host, chat and document store sources, `owner`, `workspace`, `recap` (a routine slug) and `exclude.channels`; `values.digest` holds the digest name and slug, as in the other routines; the role check names the key path of an invalid value.
 - `weekly_state.py` holds the `weekly-1` schema; `weekly.py init`, `window` and `features` follow TD-68. `features` takes `--recap <run>/recap` and reads the recap state and run records from it, through `recap_state`'s checks.
 - Tests: the window starts Monday 00:00 in the timezone, across a DST change; items per role with their keys, links and excerpts; excerpt and count caps; a recap unit seen in the week makes an item with its title, status and link, one outside the week makes none; `recap_counts` counts the week's records only; a direct chat unit adds its messages to the recap item with the same key; a chat unit in an excluded channel or the digest channel is dropped; a source not read is listed with its reason; an activity outside the window makes no item.
 - **Refs**: US-54, TD-68
-- **Files**: `plugins/claudio-routines/runtime/roles.py` (modify), `plugins/claudio-routines/runtime/test_roles.py` (modify), `plugins/claudio-routines/runtime/weekly_state.py` (new), `plugins/claudio-routines/runtime/weekly.py` (new), `plugins/claudio-routines/runtime/test_weekly.py` (new), `plugins/claudio-routines/README.md` (modify)
+- **Files**: `plugins/claudio-routines/runtime/roles.py` (modify), `plugins/claudio-routines/runtime/test_roles.py` (modify), `plugins/claudio-routines/runtime/weekly_state.py` (new), `plugins/claudio-routines/runtime/weekly.py` (new), `plugins/claudio-routines/runtime/test_weekly.py` (new), `plugins/claudio-routines/README.md` (modify), `plugins/claudio-routines/runtime/weekly_window.py` (new), `plugins/claudio-routines/runtime/weekly_features.py` (new), `plugins/claudio-routines/runtime/collect.py` (modify), `plugins/claudio-routines/runtime/test_collect.py` (modify), `plugins/claudio-routines/runtime/test_config_tree.py` (modify)
 - **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
 - **Blocked by**: T-99, T-100, T-101
 - **Rules**: BR-74, BR-75
-- **Status**: Not Started
+- **Status**: Complete
 
 ### T-103: Weekly judgment check, apply and message
 - `weekly.py judge`, `apply` and `message` follow TD-68.
