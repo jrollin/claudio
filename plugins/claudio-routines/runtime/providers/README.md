@@ -45,6 +45,8 @@ One module per vendor reads one role through `_http.py`. This file lists, per ve
 - The loader also rejects a string or a key shaped like a known token or a private key header, anywhere in `config.json` or a routine file. The token shapes are those of the leak guard's `token` rule. The error names the file, the key path and the rule (`secret-key` or `token`), never the value.
 - A secret without a known token shape, held under a key with an ordinary name, is not detected.
 - A provider read only through its connector sets no `api` block.
+- A credential variable that is unset, empty or whitespace-only counts as missing: `check-env`, the transport choice and `HttpClient` all refuse it, and the source is not read with `credentials missing: <variable>`.
+- A provider listed as `["api", "mcp"]` in a place with a missing or blank variable is read through its connector instead (see the collectors section of the plugin README).
 
 ## datadog
 

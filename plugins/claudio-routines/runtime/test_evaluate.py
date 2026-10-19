@@ -119,7 +119,7 @@ class UnreadSourceTest(EvaluateCase):
     def test_missing_collection_is_collected_unread_with_reason_no_collection(self):
         base = self.base(docs={"alerts": alerts(), "notes": notes()})
 
-        expected = {"role": "observability", "transport": "api", "read": False, "reason": "no collection"}
+        expected = {"role": "observability", "transport": "api", "skipped": [], "read": False, "reason": "no collection"}
         self.assertEqual((base["run_context"]["collected"]["gauges"], base["sources"]["metrics"]["read"]), (expected, False))
 
 
@@ -611,11 +611,41 @@ class RunContextTest(EvaluateCase):
         base = self.base(docs=collections(notes=unread_notes()))
 
         expected = {
-            "alerts": {"role": "observability", "transport": "api", "read": True, "reason": None},
-            "gauges": {"role": "observability", "transport": "api", "read": True, "reason": None},
-            "notes": {"role": "document_store", "transport": "api", "read": False, "reason": "HTTP 404 GET /pages"},
+            "alerts": {"role": "observability", "transport": "api", "skipped": [], "read": True, "reason": None},
+            "gauges": {"role": "observability", "transport": "api", "skipped": [], "read": True, "reason": None},
+            "notes": {"role": "document_store", "transport": "api", "skipped": [], "read": False, "reason": "HTTP 404 GET /pages"},
         }
         self.assertEqual(base["run_context"]["collected"], expected)
+
+
+class PreferredTransportTest(EvaluateCase):
+    SKIPPED = [{"transport": "api", "missing": ["EXAMPLE_TOKEN"]}]
+
+    def listed_config(self):
+        return make_config(
+            alerts=source("observer", cloud="api", kind="monitors", scope_filter=""),
+            gauges=source("observer", cloud=["api", "mcp"], kind="metrics", scope_filter=""),
+        )
+
+    def fallback_docs(self):
+        return collections(gauges=gauges(transport="mcp") | {"skipped": self.SKIPPED})
+
+    def test_accepts_the_collection_of_the_second_listed_transport(self):
+        self.assertEqual(self.run_evaluate(config=self.listed_config(), docs=self.fallback_docs())[0], 0)
+
+    def test_the_run_context_names_the_chosen_transport_of_a_fallback_source(self):
+        base = self.base(config=self.listed_config(), docs=self.fallback_docs())
+        self.assertEqual(base["run_context"]["collected"]["gauges"]["transport"], "mcp")
+
+    def test_the_run_context_holds_the_skipped_transports_of_a_source(self):
+        base = self.base(config=self.listed_config(), docs=self.fallback_docs())
+        self.assertEqual(base["run_context"]["collected"]["gauges"]["skipped"], self.SKIPPED)
+
+    def test_the_run_context_holds_no_skipped_transport_for_a_collection_without_the_key(self):
+        self.assertEqual(self.base()["run_context"]["collected"]["alerts"]["skipped"], [])
+
+    def test_a_collection_of_a_transport_the_source_does_not_list_exits_2(self):
+        self.assertEqual(self.run_evaluate(docs=collections(gauges=gauges(transport="mcp")))[0], 2)
 
 
 class MoreSourcesPageTest(EvaluateCase):

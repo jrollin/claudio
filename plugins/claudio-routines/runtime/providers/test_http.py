@@ -145,6 +145,17 @@ class CredentialsTest(unittest.TestCase):
             make_client(FakeOpener(), environ={VAR: ""}).get(PATH)
         self.assertEqual(str(ctx.exception), "credentials missing: " + VAR)
 
+    def test_blank_variable_counts_as_missing(self):
+        with self.assertRaises(_http.CredentialsMissing) as ctx:
+            make_client(FakeOpener(), environ={VAR: " \t "}).get(PATH)
+        self.assertEqual(str(ctx.exception), "credentials missing: " + VAR)
+
+    def test_a_blank_variable_sends_no_request(self):
+        opener = FakeOpener()
+        with self.assertRaises(_http.CredentialsMissing):
+            make_client(opener, environ={VAR: "  "}).get(PATH)
+        self.assertEqual(opener.requests, [])
+
     def test_names_every_missing_variable(self):
         client = make_client(FakeOpener(), environ={}, credentials={"token": VAR, "app": "EXAMPLE_APP"})
         with self.assertRaises(_http.SourceUnreadable) as ctx:

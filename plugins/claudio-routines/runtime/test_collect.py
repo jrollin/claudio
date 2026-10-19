@@ -47,6 +47,7 @@ DOC_HOST = "docs.example.test"
 OBS_KEY_VAR = "OBS_API_KEY"
 OBS_APP_VAR = "OBS_APP_KEY"
 DOC_TOKEN_VAR = "DOC_TOKEN"
+CREDENTIALS = {OBS_KEY_VAR: "set", OBS_APP_VAR: "set", DOC_TOKEN_VAR: "set"}
 WINDOW_END = 1_780_011_000
 UTC_DAY = "2026-05-28"
 PARIS_DAY = "2026-05-29"
@@ -272,12 +273,15 @@ class CollectTestCase(unittest.TestCase):
         self.doc = fake_adapter("fakedoc", "document_store")
         self.modules = mock.patch.dict(sys.modules, {"providers.fakeobs": self.obs, "providers.fakedoc": self.doc})
         self.modules.start()
+        self.environment = mock.patch.dict(os.environ, CREDENTIALS, clear=True)
+        self.environment.start()
         self.tmp = tempfile.TemporaryDirectory()
         self.config = make_config()
         self.state = make_state()
         self.window = make_window()
 
     def tearDown(self):
+        self.environment.stop()
         self.modules.stop()
         self.tmp.cleanup()
 
@@ -495,9 +499,9 @@ class McpTransportTest(CollectTestCase):
 class SourcesTest(CollectTestCase):
     def test_lists_each_source_with_its_role_provider_and_place_transport(self):
         expected = [
-            {"provider": "obs", "role": "observability", "source": "metrics", "transport": "mcp"},
-            {"provider": "obs", "role": "observability", "source": "monitors", "transport": "api"},
-            {"provider": "docs", "role": "document_store", "source": "sources-page", "transport": "api"},
+            {"provider": "obs", "role": "observability", "source": "metrics", "transport": "mcp", "skipped": []},
+            {"provider": "obs", "role": "observability", "source": "monitors", "transport": "api", "skipped": []},
+            {"provider": "docs", "role": "document_store", "source": "sources-page", "transport": "api", "skipped": []},
         ]
         self.assertEqual(self.run_command("sources", place="local")[1], state.dump(expected).decode("utf-8"))
 
@@ -530,6 +534,172 @@ class CheckEnvTest(CollectTestCase):
         self.assertEqual(self.check_env(environ, place="local")[1], "connector metrics obs-local\n")
 
 
+class PreferenceCase(CollectTestCase):
+    def setUp(self):
+        super().setUp()
+        sources = self.config["routines"][ROUTINE]["sources"]
+        sources["monitors"]["transport"] = {"cloud": ["api", "mcp"], "local": ["api"]}
+        sources["metrics"]["transport"] = {"cloud": ["mcp", "api"], "local": ["mcp"]}
+
+    def sources(self, environ, place="cloud", out=None):
+        config = self.write("config.json", self.config)
+        extra = [] if out is None else ["--out", out]
+        with mock.patch.dict(os.environ, environ, clear=True):
+            return self.run_main("sources", "--config", config, "--routine", ROUTINE, "--place", place, *extra)
+
+    def chosen(self, environ, source="monitors", place="cloud"):
+        listed = json.loads(self.sources(environ, place)[1])
+        return next(item for item in listed if item["source"] == source)
+
+    def write_sources(self, entries):
+        return self.write("sources.json", entries)
+
+    def entry(self, transport, skipped=(), source="monitors"):
+        return {"source": source, "role": "observability", "provider": "obs", "transport": transport, "skipped": list(skipped)}
+
+    def command(self, command, *extra, source="monitors", place="cloud", environ=None, **flags):
+        config = self.write("config.json", self.config)
+        window = self.write("window.json", self.window)
+        stored = self.write("state.json", self.state)
+        responses = self.path("responses")
+        argv = [
+            command, "--config", config, "--routine", ROUTINE, "--source", source, "--place", place,
+            "--window", window, "--state", stored, "--out", self.path("collection.json"),
+        ]
+        if command != "fetch":
+            argv += ["--responses", responses]
+        with mock.patch.dict(os.environ, CREDENTIALS if environ is None else environ, clear=True):
+            return self.run_main(*argv, *extra)
+
+
+class TransportChoiceTest(PreferenceCase):
+    def test_chooses_api_when_every_variable_holds_a_value(self):
+        self.assertEqual(self.chosen(CREDENTIALS)["transport"], "api")
+
+    def test_skips_nothing_when_api_is_chosen(self):
+        self.assertEqual(self.chosen(CREDENTIALS)["skipped"], [])
+
+    def test_chooses_the_next_transport_when_a_variable_is_unset(self):
+        self.assertEqual(self.chosen({OBS_KEY_VAR: "set"})["transport"], "mcp")
+
+    def test_chooses_the_next_transport_when_a_variable_is_empty(self):
+        self.assertEqual(self.chosen({OBS_KEY_VAR: "set", OBS_APP_VAR: ""})["transport"], "mcp")
+
+    def test_chooses_the_next_transport_when_a_variable_is_blank(self):
+        self.assertEqual(self.chosen({OBS_KEY_VAR: "set", OBS_APP_VAR: " \t"})["transport"], "mcp")
+
+    def test_names_the_missing_variables_of_a_skipped_transport_sorted(self):
+        self.assertEqual(self.chosen({})["skipped"], [{"transport": "api", "missing": [OBS_KEY_VAR, OBS_APP_VAR]}])
+
+    def test_keeps_the_listed_order_when_the_connector_comes_first(self):
+        chosen = self.chosen(CREDENTIALS, source="metrics")
+        self.assertEqual((chosen["transport"], chosen["skipped"]), ("mcp", []))
+
+    def test_chooses_nothing_when_the_only_transport_is_unusable(self):
+        self.assertEqual(self.chosen({OBS_KEY_VAR: "set"}, place="local")["transport"], None)
+
+    def test_names_the_missing_variables_when_nothing_is_usable(self):
+        self.assertEqual(self.chosen({OBS_KEY_VAR: "set"}, place="local")["skipped"], [{"transport": "api", "missing": [OBS_APP_VAR]}])
+
+    def test_chooses_each_place_on_its_own(self):
+        self.assertEqual((self.chosen({}, place="cloud")["transport"], self.chosen({}, place="local")["transport"]), ("mcp", None))
+
+    def test_writes_the_choice_to_the_out_file(self):
+        code, out, _ = self.sources({OBS_KEY_VAR: "set"}, out=self.path("run-sources.json"))
+        with open(self.path("run-sources.json"), encoding="utf-8") as handle:
+            self.assertEqual((code, handle.read()), (0, out))
+
+    def test_writes_no_file_without_out(self):
+        self.sources({})
+        self.assertFalse(os.path.exists(self.path("run-sources.json")))
+
+    def test_prints_the_role_provider_transport_and_skipped_of_each_source(self):
+        self.assertEqual(
+            self.chosen({OBS_KEY_VAR: "set"}),
+            {"source": "monitors", "role": "observability", "provider": "obs", "transport": "mcp", "skipped": [{"transport": "api", "missing": [OBS_APP_VAR]}]},
+        )
+
+
+class CheckEnvPreferenceTest(PreferenceCase):
+    def check_env(self, environ, place="cloud"):
+        config = self.write("config.json", self.config)
+        with mock.patch.dict(os.environ, environ, clear=True):
+            return self.run_main("check-env", "--config", config, "--routine", ROUTINE, "--place", place)
+
+    def test_prints_a_fallback_line_per_missing_variable_and_exits_0(self):
+        expected = (
+            "connector metrics obs-cloud\nconnector monitors obs-cloud\nconnector sources-page docs-cloud\n"
+            f"fallback monitors api mcp {OBS_KEY_VAR}\nfallback monitors api mcp {OBS_APP_VAR}\n"
+        )
+        self.assertEqual(self.check_env({DOC_TOKEN_VAR: "set"}), (0, expected, ""))
+
+    def test_prints_a_missing_line_only_for_a_source_with_no_usable_transport(self):
+        code, out, _ = self.check_env({OBS_KEY_VAR: "set", DOC_TOKEN_VAR: "set"}, place="local")
+        self.assertEqual((code, out), (1, f"connector metrics obs-local\nmissing monitors {OBS_APP_VAR}\n"))
+
+    def test_prints_the_connector_of_the_chosen_fallback(self):
+        self.assertIn("connector monitors obs-cloud\n", self.check_env({})[1])
+
+    def test_prints_the_connector_of_a_listed_connector_that_comes_first(self):
+        self.assertIn("connector metrics obs-cloud\n", self.check_env(CREDENTIALS)[1])
+
+    def test_prints_nothing_for_a_source_whose_api_is_usable(self):
+        self.assertNotIn("monitors", self.check_env(CREDENTIALS)[1])
+
+
+class RelayPreferenceTest(PreferenceCase):
+    def test_fetch_on_a_source_whose_choice_is_mcp_exits_2(self):
+        self.assertEqual(self.command("fetch", environ={})[0], 2)
+
+    def test_fetch_on_a_source_whose_choice_is_mcp_names_the_chosen_transport(self):
+        self.assertIn("source monitors uses the mcp transport at place cloud", self.command("fetch", environ={})[2])
+
+    def test_fetch_reads_a_source_whose_choice_is_api(self):
+        self.assertEqual((self.command("fetch")[0], self.collection()["transport"]), (0, "api"))
+
+    def test_plan_on_a_source_whose_choice_is_api_exits_2(self):
+        self.assertEqual(self.command("plan")[0], 2)
+
+    def test_the_sources_file_wins_over_an_environment_that_holds_every_variable(self):
+        path = self.write_sources([self.entry("mcp", [{"transport": "api", "missing": [OBS_APP_VAR]}])])
+        self.assertEqual(self.command("fetch", "--sources", path)[0], 2)
+
+    def test_the_sources_file_wins_over_an_environment_that_misses_a_variable(self):
+        path = self.write_sources([self.entry("api")])
+        self.assertEqual((self.command("fetch", "--sources", path, environ={})[0], self.collection()["transport"]), (0, "api"))
+
+    def test_a_null_choice_in_the_sources_file_still_fetches_the_lone_api_transport(self):
+        path = self.write_sources([self.entry(None, [{"transport": "api", "missing": [OBS_APP_VAR]}])])
+        self.assertEqual((self.command("fetch", "--sources", path, place="local", environ={})[0], self.collection()["transport"]), (0, "api"))
+
+    def test_a_null_choice_makes_plan_exit_2(self):
+        path = self.write_sources([self.entry(None, [{"transport": "api", "missing": [OBS_APP_VAR]}])])
+        self.assertEqual(self.command("plan", "--sources", path, place="local")[0], 2)
+
+    def test_a_sources_file_choosing_a_transport_the_source_does_not_list_exits_2(self):
+        path = self.write_sources([self.entry("mcp")])
+        code, _, err = self.command("plan", "--sources", path, place="local")
+        self.assertEqual((code, "lists api" in err), (2, True))
+
+    def test_a_source_the_sources_file_does_not_list_exits_2(self):
+        path = self.write_sources([self.entry("api", source="other")])
+        code, _, err = self.command("fetch", "--sources", path)
+        self.assertEqual((code, "monitors" in err), (2, True))
+
+    def test_a_sources_file_that_is_not_a_list_is_rejected(self):
+        path = self.write_sources({"monitors": "api"})
+        self.assertEqual(self.command("fetch", "--sources", path)[0], 3)
+
+    def test_the_collection_holds_an_empty_skipped_list_for_the_chosen_first_transport(self):
+        self.command("fetch")
+        self.assertEqual(self.collection()["skipped"], [])
+
+    def test_the_collection_of_a_null_choice_holds_the_skipped_transport(self):
+        skipped = [{"transport": "api", "missing": [OBS_APP_VAR]}]
+        self.command("fetch", "--sources", self.write_sources([self.entry(None, skipped)]), place="local", environ={})
+        self.assertEqual(self.collection()["skipped"], skipped)
+
+
 class RoutineFileCase(CollectTestCase):
     def setUp(self):
         super().setUp()
@@ -556,9 +726,9 @@ class RoutineFileTest(RoutineFileCase):
 
     def test_sources_prints_the_transport_resolved_from_the_provider_default(self):
         expected = [
-            {"provider": "obs", "role": "observability", "source": "metrics", "transport": "mcp"},
-            {"provider": "obs", "role": "observability", "source": "monitors", "transport": "api"},
-            {"provider": "docs", "role": "document_store", "source": "sources-page", "transport": "api"},
+            {"provider": "obs", "role": "observability", "source": "metrics", "transport": "mcp", "skipped": []},
+            {"provider": "obs", "role": "observability", "source": "monitors", "transport": "api", "skipped": []},
+            {"provider": "docs", "role": "document_store", "source": "sources-page", "transport": "api", "skipped": []},
         ]
         self.assertEqual(self.run_command("sources", place="local")[1], state.dump(expected).decode("utf-8"))
 
@@ -645,6 +815,7 @@ class FetchReadTest(CollectTestCase):
             "role": "observability",
             "provider": "obs",
             "transport": "api",
+            "skipped": [],
             "place": "cloud",
             "window": {"from_ts": WINDOW_END - 3600, "to_ts": WINDOW_END},
             "read": True,
@@ -673,6 +844,7 @@ class FetchReadTest(CollectTestCase):
         self.fetch()
         expected = {
             **self.config["routines"][ROUTINE]["sources"]["monitors"],
+            "transport": {"cloud": ["api"], "local": ["api"]},
             "name": "monitors",
             "provider_config": self.config["providers"]["obs"],
         }
@@ -1394,13 +1566,13 @@ def digest(page):
 
 
 class RelayTestCase(CollectTestCase):
-    def relay(self, command, out, source, place):
+    def relay(self, command, out, source, place, extra=()):
         config = self.write("config.json", self.config)
         window = self.write("window.json", self.window)
         stored = self.write("state.json", self.state)
         return self.run_main(
             command, "--config", config, "--routine", ROUTINE, "--source", source, "--place", place,
-            "--window", window, "--state", stored, "--responses", self.path(RESPONSES), "--out", out,
+            "--window", window, "--state", stored, "--responses", self.path(RESPONSES), "--out", out, *extra,
         )
 
     def plan(self, source="sources-page", place="cloud"):
@@ -1457,6 +1629,43 @@ class RelayTestCase(CollectTestCase):
         return [call["id"] for call in self.plan_doc()["calls"]]
 
 
+class RelayParsePreferenceTest(RelayTestCase):
+    SKIPPED = [{"transport": "api", "missing": [DOC_TOKEN_VAR]}]
+
+    def setUp(self):
+        super().setUp()
+        self.config["routines"][ROUTINE]["sources"]["sources-page"]["transport"] = {"cloud": ["api", "mcp"], "local": "api"}
+
+    def listing(self, transport, skipped=()):
+        entry = {"source": "sources-page", "role": "document_store", "provider": "docs", "transport": transport, "skipped": list(skipped)}
+        return self.write("sources.json", [entry])
+
+    def relay_with(self, command, environ, *extra):
+        with mock.patch.dict(os.environ, environ, clear=True):
+            return self.relay(command, self.path("collection.json" if command == "parse" else "plan.json"), "sources-page", "cloud", extra)
+
+    def test_plan_reads_the_choice_from_the_sources_file(self):
+        self.assertEqual(self.relay_with("plan", {DOC_TOKEN_VAR: "set"}, "--sources", self.listing("mcp", self.SKIPPED))[0], 0)
+
+    def test_plan_chooses_from_the_environment_without_a_sources_file(self):
+        self.assertEqual(self.relay_with("plan", {})[0], 0)
+
+    def test_plan_refuses_a_source_the_environment_gives_to_api(self):
+        self.assertEqual(self.relay_with("plan", {DOC_TOKEN_VAR: "set"})[0], 2)
+
+    def test_parse_writes_the_skipped_transports_to_the_collection(self):
+        listing = self.listing("mcp", self.SKIPPED)
+        self.relay_with("plan", {}, "--sources", listing)
+        self.respond("sources-page-1")
+        self.relay_with("plan", {}, "--sources", listing)
+        self.respond("sources-page-2")
+        self.relay_with("plan", {}, "--sources", listing)
+        code = self.relay_with("parse", {}, "--sources", listing)[0]
+        with open(self.path("collection.json"), encoding="utf-8") as handle:
+            written = json.load(handle)
+        self.assertEqual((code, written["transport"], written["skipped"]), (0, "mcp", self.SKIPPED))
+
+
 CHAT_CHANNEL = "CHAN1"
 CITED_ROOT = "1791990000.000100"
 CITED_THREADS = [{"channel": CHAT_CHANNEL, "root_ts": CITED_ROOT}]
@@ -1498,13 +1707,13 @@ class ReplayTest(RelayTestCase):
         shutil.copytree(self.path(RESPONSES), os.path.join(self.raw, "document_store", "sources-page"))
         os.rename(self.path("collection.json"), self.path("run/sources-page.json"))
 
-    def replay(self, place="cloud"):
+    def replay(self, place="cloud", extra=()):
         config = self.write("config.json", self.config)
         window = self.write("window.json", self.window)
         stored = self.write("state.json", self.state)
         return self.run_main(
             "replay", "--config", config, "--routine", ROUTINE, "--place", place,
-            "--window", window, "--state", stored, "--raw", self.raw, "--out", self.path("replayed"),
+            "--window", window, "--state", stored, "--raw", self.raw, "--out", self.path("replayed"), *extra,
         )
 
     def bytes_of(self, name, folder="replayed"):
@@ -1515,10 +1724,30 @@ class ReplayTest(RelayTestCase):
         self.record_run()
         self.assertEqual((self.replay()[0], sorted(os.listdir(self.path("replayed")))), (0, ["metrics.json", "monitors.json", "sources-page.json"]))
 
+    def test_replays_through_the_first_listed_transport_whatever_the_environment(self):
+        self.record_run()
+        provider = self.config["routines"][ROUTINE]["sources"]["monitors"]["provider"]
+        self.config["providers"][provider].setdefault("mcp", {"connectors": {"cloud": "obs-cloud", "local": "obs-local"}})
+        self.config["routines"][ROUTINE]["sources"]["monitors"]["transport"] = {"cloud": ["api", "mcp"], "local": ["api"]}
+        with mock.patch.dict(os.environ, {}, clear=True):
+            code = self.replay()[0]
+        self.assertEqual((code, self.bytes_of("monitors")), (0, self.bytes_of("monitors", "run")))
+
     def test_rebuilds_an_api_source_byte_identical_to_its_fetch(self):
         self.record_run()
         self.replay()
         self.assertEqual([self.bytes_of(name) for name in ("metrics", "monitors")], [self.bytes_of(name, "run") for name in ("metrics", "monitors")])
+
+    def test_replays_a_source_through_the_transport_of_the_sources_file(self):
+        self.config["routines"][ROUTINE]["sources"]["monitors"]["transport"]["cloud"] = ["api", "mcp"]
+        self.record_run()
+        names = {"metrics": ("observability", "api"), "monitors": ("observability", "api"), "sources-page": ("document_store", "mcp")}
+        listing = self.write("sources.json", [
+            {"source": name, "role": role, "provider": "obs", "transport": transport, "skipped": []} for name, (role, transport) in names.items()
+        ])
+        with mock.patch.dict(os.environ, {}, clear=True):
+            code = self.replay(extra=("--sources", listing))[0]
+        self.assertEqual((code, self.bytes_of("monitors")), (0, self.bytes_of("monitors", "run")))
 
     def test_rebuilds_an_mcp_source_byte_identical_to_its_parse(self):
         self.reads()
@@ -2287,6 +2516,7 @@ class ParseReadTest(RelayTestCase):
             "role": "document_store",
             "provider": "docs",
             "transport": "mcp",
+            "skipped": [],
             "place": "cloud",
             "window": {"from_ts": WINDOW_END - 3600, "to_ts": WINDOW_END},
             "read": True,

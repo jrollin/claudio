@@ -66,6 +66,7 @@ python3 -B {{runtime.dir}}/plugins/claudio-routines/runtime/collect.py check-env
 
 - Exit 0, or exit 1 with at least one `missing` line: continue with Step 5.
 - Each `missing <source> <variable>` line is a credential variable this place lacks. Name each missing variable and its source in the message of Step 13. That source ends not read.
+- Each `fallback <source> <from> <to> <variable>` line says that source is read through `<to>`, because `<variable>` is missing for `<from>`. Report nothing for it and continue.
 - Each `connector <source> <connector>` line is the connector of an `mcp` source. Check that this session lists a tool from that connector. Name each missing connector and its source in the message of Step 13. That source ends not read.
 - Exit 2 or 3 means the config or the query pack is invalid. Report the error and the key path it names, and stop. Write no state.
 - Exit 1 with no `missing` line is a failure. Report it and stop. Write no state. Report any other failure the same way.
@@ -75,21 +76,23 @@ python3 -B {{runtime.dir}}/plugins/claudio-routines/runtime/collect.py check-env
 Run `mkdir -p <run>/collections`, then list the sources of this place:
 
 ```bash
-python3 -B {{runtime.dir}}/plugins/claudio-routines/runtime/collect.py sources --config {{state.dir}}/config.json --routine {{digest.slug}} --place {{place}}
+python3 -B {{runtime.dir}}/plugins/claudio-routines/runtime/collect.py sources --config {{state.dir}}/config.json --routine {{digest.slug}} --place {{place}} --out <run>/sources.json
 ```
 
-It prints each source with its `role` and `transport`. Collect every source, one at a time, and write its name literally wherever a command says `<source>` and its `role` wherever a command says `<role>`.
+It prints each source with its `role`, the `transport` it chose and the transports it `skipped`, and writes the same list to `<run>/sources.json`. Collect every source, one at a time, through the `transport` printed for it, and write its name literally wherever a command says `<source>` and its `role` wherever a command says `<role>`.
 
 An `api` source is one command:
 
 ```bash
-python3 -B {{runtime.dir}}/plugins/claudio-routines/runtime/collect.py fetch --config {{state.dir}}/config.json --routine {{digest.slug}} --source <source> --place {{place}} --window <run>/window.json --state <run>/state.json --responses <run>/raw/<role>/<source> --out <run>/collections/<source>.json
+python3 -B {{runtime.dir}}/plugins/claudio-routines/runtime/collect.py fetch --config {{state.dir}}/config.json --routine {{digest.slug}} --source <source> --place {{place}} --sources <run>/sources.json --window <run>/window.json --state <run>/state.json --responses <run>/raw/<role>/<source> --out <run>/collections/<source>.json
 ```
+
+A source whose `transport` is null has no usable transport: run the `fetch` command for it once. Its collection says `credentials missing` and has `read` false.
 
 An `mcp` source is a relay loop. Write the next calls:
 
 ```bash
-python3 -B {{runtime.dir}}/plugins/claudio-routines/runtime/collect.py plan --config {{state.dir}}/config.json --routine {{digest.slug}} --source <source> --place {{place}} --window <run>/window.json --state <run>/state.json --responses <run>/raw/<role>/<source> --out <run>/plan.json
+python3 -B {{runtime.dir}}/plugins/claudio-routines/runtime/collect.py plan --config {{state.dir}}/config.json --routine {{digest.slug}} --source <source> --place {{place}} --sources <run>/sources.json --window <run>/window.json --state <run>/state.json --responses <run>/raw/<role>/<source> --out <run>/plan.json
 ```
 
 - When `done` in `<run>/plan.json` is false, make each call of `calls`:
@@ -103,7 +106,7 @@ python3 -B {{runtime.dir}}/plugins/claudio-routines/runtime/collect.py plan --co
 - When `done` is true, write the collection:
 
 ```bash
-python3 -B {{runtime.dir}}/plugins/claudio-routines/runtime/collect.py parse --config {{state.dir}}/config.json --routine {{digest.slug}} --source <source> --place {{place}} --window <run>/window.json --state <run>/state.json --responses <run>/raw/<role>/<source> --out <run>/collections/<source>.json
+python3 -B {{runtime.dir}}/plugins/claudio-routines/runtime/collect.py parse --config {{state.dir}}/config.json --routine {{digest.slug}} --source <source> --place {{place}} --sources <run>/sources.json --window <run>/window.json --state <run>/state.json --responses <run>/raw/<role>/<source> --out <run>/collections/<source>.json
 ```
 
 - An `mcp` source whose connector Step 4 found missing: run the plan command once, make no call, then run the parse command. When the plan is not done, its collection says `plan not done`.

@@ -559,6 +559,27 @@ class ValidateConfigTest(ConfigCase):
         routine_sources(config)["code"]["transport"]["local"] = "mcp"
         self.assert_config_error(config, "providers.code.mcp")
 
+    def test_requires_the_api_block_and_the_connector_of_a_listed_transport(self):
+        config = make_config()
+        routine_sources(config)["code"]["transport"]["local"] = ["api", "mcp"]
+        self.assert_config_error(config, "providers.code.mcp")
+
+    def test_accepts_a_listed_transport_when_the_provider_holds_both_blocks(self):
+        config = make_config()
+        config["providers"]["code"]["mcp"] = {"connectors": {"cloud": "code-cloud", "local": "code-local"}}
+        routine_sources(config)["code"]["transport"]["local"] = ["api", "mcp"]
+        self.assertIsNone(roles.validate_config(config, ROUTINE, "local", role_of))
+
+    def test_rejects_a_repeated_transport_in_a_list(self):
+        config = make_config()
+        routine_sources(config)["metrics"]["transport"]["local"] = ["api", "api"]
+        self.assert_config_error(config, "routines.prod-watch.sources.metrics.transport.local")
+
+    def test_rejects_an_empty_transport_list(self):
+        config = make_config()
+        routine_sources(config)["metrics"]["transport"]["local"] = []
+        self.assert_config_error(config, "routines.prod-watch.sources.metrics.transport.local")
+
     def test_checks_only_the_connector_of_the_requested_place(self):
         config = make_config()
         del config["providers"]["chat"]["mcp"]["connectors"]["cloud"]
@@ -766,6 +787,14 @@ class CodeHostSearchesTest(ConfigCase):
         config = self.searches_config(transport={"cloud": "mcp", "local": "api"})
         self.assert_config_error(config, self.SOURCE_PATH + ".searches")
 
+    def test_rejects_searches_over_a_listed_transport_holding_mcp(self):
+        config = self.searches_config(transport={"cloud": ["api", "mcp"], "local": "api"})
+        self.assert_config_error(config, self.SOURCE_PATH + ".searches")
+
+    def test_accepts_searches_over_a_listed_transport_without_mcp(self):
+        config = self.searches_config(transport={"cloud": ["api"], "local": ["api"]})
+        self.assertIsNone(roles.validate_config(config, ROUTINE, "local", role_of))
+
 
 class DocumentPagesOptionTest(ConfigCase):
     SOURCE_PATH = "routines.prod-watch.sources.sources-page"
@@ -894,6 +923,10 @@ class DocumentEditedByOptionTest(ConfigCase):
 
     def test_rejects_edited_by_over_the_mcp_transport_of_the_other_place(self):
         config = self.edited_config(transport={"cloud": "mcp", "local": "api"})
+        self.assert_config_error(config, self.SOURCE_PATH + ".edited_by")
+
+    def test_rejects_edited_by_over_a_listed_transport_holding_mcp(self):
+        config = self.edited_config(transport={"cloud": ["api", "mcp"], "local": "api"})
         self.assert_config_error(config, self.SOURCE_PATH + ".edited_by")
 
 
@@ -2101,6 +2134,16 @@ class ValidateCollectionTest(CollectionCase):
 
     def test_rejects_a_transport_outside_api_and_mcp(self):
         self.assert_collection_error(monitors_collection(transport="ftp"), "transport")
+
+    def test_accepts_the_skipped_transports_of_a_source(self):
+        doc = monitors_collection(skipped=[{"transport": "api", "missing": ["OBS_APP_KEY"]}])
+        self.assertIsNone(roles.validate_collection(doc))
+
+    def test_rejects_a_skipped_transport_outside_api_and_mcp(self):
+        self.assert_collection_error(monitors_collection(skipped=[{"transport": "ftp", "missing": []}]), "skipped[0].transport")
+
+    def test_rejects_skipped_missing_variables_that_are_not_a_list(self):
+        self.assert_collection_error(monitors_collection(skipped=[{"transport": "api", "missing": "OBS_APP_KEY"}]), "skipped[0].missing")
 
     def test_rejects_a_place_outside_cloud_and_local(self):
         self.assert_collection_error(monitors_collection(place="moon"), "place")

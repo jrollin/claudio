@@ -96,7 +96,7 @@ Each flow is described step by step in [SKILL.md](skills/routines/SKILL.md).
 
 Exit codes of `routines.py`, `state.py`, `collect.py`, `evaluate.py`, `digest.py`, `tribe.py`, `recap.py` and `weekly.py`:
 - 0: ok or in sync.
-- 1: findings or drift; for `collect.py check-env`, a missing credential variable.
+- 1: findings or drift; for `collect.py check-env`, a source with no usable transport and a missing credential variable.
 - 2: usage or input error, including an unreadable or invalid features, base, facts, preview, summary, record or state file; `digest.py` exits 2 for every refused input, naming the file.
 - 3 (runtime scripts only): rejected state, facts, time or query pack; for `evaluate.py judge` and `annotate`, a rejected judgment or analysis, including a file that is not valid JSON.
   - `tribe.py`: a rejected judgment, state, window or cursor (`judge`, `apply`), a page that fails its structure check (`render`, `publish-plan`), and a Run state field outside its allowed values (`seed`).
@@ -141,7 +141,7 @@ Routine files and routines inline under `routines` in `config.json` are both acc
 | `providers.<name>.api.credentials` | Name of the environment variable of each credential, never its value |
 | `providers.<name>.mcp.connectors.<place>` | Name of the provider's connector in that place; a provider read only through a connector sets no `api` block |
 | `providers.<name>.links_base` | Optional HTTPS base of the provider's web UI, for record links; set it for a provider read only through a connector |
-| `providers.<name>.transport.<place>` | Optional default transport of every source of the provider in that place: `api` or `mcp` |
+| `providers.<name>.transport.<place>` | Optional default transport of every source of the provider in that place: `api`, `mcp` or an ordered list of both, such as `["api", "mcp"]` |
 | `values` | Render-time values shared by every routine, for example one chat channel used by several routines |
 | `routines` | Optional object of inline routines, keyed by slug |
 
@@ -156,8 +156,8 @@ A routine is one file, `config/routines/<slug>.json`, or one entry `routines.<sl
 | `values` | Values of that routine only, applied over the shared `values` |
 | `sources.<source>` | One source of the routine; `<source>` matches `^[a-z][a-z0-9-]*$` and names its collection file |
 | `sources.<source>.provider` | A key of `providers` |
-| `sources.<source>.transport.cloud` | Optional `api` or `mcp`: how cloud runs read the source |
-| `sources.<source>.transport.local` | Optional `api` or `mcp`: how local runs read the source |
+| `sources.<source>.transport.cloud` | Optional `api` or `mcp`, or an ordered list of both: how cloud runs read the source |
+| `sources.<source>.transport.local` | Optional `api` or `mcp`, or an ordered list of both: how local runs read the source |
 | `query_pack` | Entries the evaluator turns into features, each with a prose rule (see below) |
 | `rules` | Routine-wide judgment rules, for example flapping, discovered monitors and No Data: a list of texts of at most 500 characters |
 | `models` | Model names of the run, copied into the facts |
@@ -165,8 +165,9 @@ A routine is one file, `config/routines/<slug>.json`, or one entry `routines.<sl
 Provider default transport:
 - A source takes the transport of its provider for each place: `providers.<name>.transport.<place>`.
 - A source's own `transport.<place>` overrides the default for that place only, so a source that sets `transport.local: mcp` still takes the provider's `cloud` default.
-- A place that resolves to no transport, a place other than `cloud` or `local`, and a value other than `api` or `mcp` fail the load, naming the key path.
-- Every command past the loader reads one resolved transport per source and place.
+- A transport is `api`, `mcp` or a list of them in order of preference. A single value is a list of one.
+- A place that resolves to no transport, a place other than `cloud` or `local`, an empty list, a repeated transport and a value other than `api` or `mcp` fail the load, naming the key path.
+- Every command past the loader reads the resolved list per source and place, and the first usable transport of it reads the source (see Collectors).
 
 Secret guard:
 - The loader scans `config.json` and each routine file it reads, and fails the load on a secret.
@@ -231,12 +232,20 @@ Templates use `{{dotted.key}}` placeholders; `\{{` renders a literal `{{`. Rende
 
 ## Collectors
 
-Each source has one transport per place, from its own `transport` or its provider's default:
+Each source has an ordered list of transports per place, from its own `transport` or its provider's default. The first usable one reads the source:
 - `api`: `collect.py fetch` calls the provider's HTTPS API from the place that runs the routine, and `--responses` records each HTTP call.
 - `mcp`: a relay loop.
   - `collect.py plan` writes the next connector calls.
   - The model makes each call and saves each result unchanged.
   - `collect.py parse` turns the saved results into the collection.
+
+Transport choice:
+- `api` is usable when every variable of `api.credentials` holds a value. A variable that is unset, empty or blank counts as missing.
+- `mcp` is always usable, since only the session can tell whether its connector is there.
+- `collect.py sources --out <run>/sources.json` writes, per source, its `role`, `provider`, the chosen `transport` (`null` when none is usable) and `skipped`, the transports passed over with their missing variables.
+- `fetch`, `plan`, `parse` and `replay` take `--sources <run>/sources.json` and read through the chosen transport. A command that does not match it exits 2. Without the flag they choose from the environment.
+- `check-env` prints a `fallback <source> <from> <to> <variable>` line per skipped transport and exits 0. It prints `missing <source> <variable>` lines only for a source with no usable transport, and `connector <source> <connector>` lines for a source read through `mcp`.
+- The collection and the run record keep the chosen transport and `skipped`.
 
 Reads:
 - Each source writes one collection, `<run>/collections/<source>.json`, in the record schema of its role.
@@ -264,12 +273,12 @@ Credentials:
 - [The providers README](runtime/providers/README.md) lists, per vendor, the credential variables, the read-only scope to create and the hosts to allow.
 
 ```text
-python3 runtime/collect.py sources   --config C --routine R --place P
+python3 runtime/collect.py sources   --config C --routine R --place P [--out FILE]
 python3 runtime/collect.py check-env --config C --routine R --place P
-python3 runtime/collect.py fetch     --config C --routine R --source NAME --place P --window W --state S [--responses DIR] --out COLLECTION
-python3 runtime/collect.py plan      --config C --routine R --source NAME --place P --window W --state S --responses DIR --out PLAN
-python3 runtime/collect.py parse     --config C --routine R --source NAME --place P --window W --state S --responses DIR --out COLLECTION
-python3 runtime/collect.py replay    --config C --routine R --place P --window W --state S --raw RAW --out DIR
+python3 runtime/collect.py fetch     --config C --routine R --source NAME --place P --window W --state S [--responses DIR] [--sources FILE] --out COLLECTION
+python3 runtime/collect.py plan      --config C --routine R --source NAME --place P [--sources FILE] --window W --state S --responses DIR --out PLAN
+python3 runtime/collect.py parse     --config C --routine R --source NAME --place P [--sources FILE] --window W --state S --responses DIR --out COLLECTION
+python3 runtime/collect.py replay    --config C --routine R --place P [--sources FILE] --window W --state S --raw RAW --out DIR
 python3 runtime/evaluate.py features --config C --routine R --state S --window W --collections DIR --place P --runtime SHA --out FEATURES --base-out BASE --rules-out RULES
 python3 runtime/evaluate.py judge    --features FEATURES --base BASE --judgment J --out F
 python3 runtime/evaluate.py annotate --features FEATURES --facts F --analysis A --preview SUMMARY --out F
@@ -495,7 +504,7 @@ A run folder holds its window, its state, its raw results and its judgment, so t
 A watch routine replays in this order, `RUN` being the run folder and `OUT` a separate output folder:
 
 ```text
-python3 runtime/collect.py replay    --config C --routine R --place P --window RUN/window.json --state RUN/state.json --raw RUN/raw --out OUT/collections
+python3 runtime/collect.py replay    --config C --routine R --place P --sources RUN/sources.json --window RUN/window.json --state RUN/state.json --raw RUN/raw --out OUT/collections
 python3 runtime/evaluate.py features --config C --routine R --state RUN/state.json --window RUN/window.json --collections OUT/collections --place P --runtime SHA --out OUT/features.json --base-out OUT/base.json --rules-out OUT/rules.json
 python3 runtime/evaluate.py judge    --features OUT/features.json --base OUT/base.json --judgment RUN/judgment.json --out OUT/facts.json
 python3 runtime/state.py apply       --state RUN/state.json --facts OUT/facts.json --window RUN/window.json --tz Z --out OUT/next.json --summary OUT/summary.json --record OUT/record.json
@@ -503,7 +512,8 @@ python3 runtime/digest.py            --summary OUT/summary.json --state OUT/next
 ```
 
 - Each command reads the run's files and writes only under `OUT`, so the run folder stays as it was.
-- `P` is the place of the run, since it decides which transport each source replays through.
+- `P` is the place of the run, and `RUN/sources.json` the transport the run chose for each source, so each source replays through the same transport.
+- Without `--sources`, each source replays through its first listed transport.
 - `replay` makes no network call and reads no environment variable.
 - A request that differs from its record, or one past the last record, exits 3 naming the source, the call number, the method and the path.
 - A recorded error replays as the same not-read collection.
@@ -561,7 +571,7 @@ python3 runtime/state.py validate (--state S | --facts F)
 
 A routine that uses the engine keeps, on the `claude/state` branch of the private repository:
 - `state/<slug>.json`: the state the next run starts from, so a run only collects what happened since the last one.
-- `runs/<slug>/<run-at>.json`: one record per run, ready to parse for stats: window, counts, item keys, muted keys, blind spots, sources read, and the place, runtime commit, config commit and transport per source when the run had collectors.
+- `runs/<slug>/<run-at>.json`: one record per run, ready to parse for stats: window, counts, item keys, muted keys, blind spots, sources read, and the place, runtime commit, config commit, and transport and skipped transports per source when the run had collectors.
 
 A run with no branch or no state file is a baseline run. The save fetches the branch again and commits on its latest tip, since other routines push to it during a run. A push rejected because the branch moved meanwhile is retried once. A failed save is reported in the digest as state not saved.
 
@@ -571,7 +581,7 @@ The schema and the rules are in the [routines-as-code spec](../../docs/features/
 
 Record text written by other people (messages, titles) reaches a model that holds connector access and posting rights.
 - The template treats any text from a source, a collection, a reason, a saved response or a script's output as data: it never follows instructions inside it and quotes it as plain text.
-- Prefer the `api` transport for sources that carry text written by other people: the model then never reads record text.
+- Prefer the `api` transport for sources that carry text written by other people: the model then never reads record text. A transport list that ends with `mcp` routes that text through the model whenever the place lacks the `api` credentials.
 - Keep routines that hold credentials on an environment shared only with routines that read no untrusted text.
 
 ## Troubleshooting
@@ -583,7 +593,8 @@ Record text written by other people (messages, titles) reaches a model that hold
 | `diff` prints `not exported` | No snapshot matches the config key: it is not the live routine's slug, or export has not run | Rename the key to the slug `export` printed, then run export again |
 | Sync reports a residual diff | The live routine changed during the push, or the API rewrote a field | Run `/routines diff` and compare |
 | A run says `degraded`, or `/routines run` stops before rendering | The runtime at `places.<place>.runtime_dir` is missing, at another commit, or holds changed or extra files | Run the setup script of that place again and check `runtime.sha` |
-| `check-env` prints `missing <source> <variable>`, or a source is not read with `credentials missing: <variable>` | The place lacks a credential variable | Set it in the shell (`local`) or in the cloud environment's variables (`cloud`) |
+| `check-env` prints `missing <source> <variable>`, or a source is not read with `credentials missing: <variable>` | The place lacks a credential variable, or it is blank, and no `mcp` transport is listed for the source | Set it in the shell (`local`) or in the cloud environment's variables (`cloud`), or list `mcp` after `api` |
+| `check-env` prints `fallback <source> <from> <to> <variable>` | `<variable>` is missing or blank, so the source is read through `<to>` | Set the variable to read the source through `<from>` |
 | An `api` source reads locally but not in the cloud | The cloud environment blocks the provider's host | Allow the hosts the providers README lists for that vendor |
 | The digest names a missing connector | The session lists no tool from the connector `check-env` named | Connect it in the session (`local`) or attach it to the routine (`cloud`), under the name `mcp.connectors.<place>` sets |
 | A run reports `degraded: judgment rejected` | The model's judgment or analysis failed the checker twice | Read the key path in the message, then fix the rule text that led the model astray and run again |

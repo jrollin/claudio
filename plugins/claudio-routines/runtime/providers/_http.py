@@ -18,6 +18,10 @@ BODY_CAP = 10 * 1024 * 1024
 READ_CHUNK = 64 * 1024
 
 
+def has_value(value):
+    return isinstance(value, str) and value.strip() != ""
+
+
 class RefuseRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise urllib.error.HTTPError(req.full_url, code, "redirect refused", headers, fp)
@@ -94,7 +98,7 @@ class HttpClient:
 
     def _headers(self, data):
         values = {name: self.environ.get(var) for name, var in self.credentials.items()}
-        missing = sorted(self.credentials[name] for name, value in values.items() if not value)
+        missing = sorted(self.credentials[name] for name, value in values.items() if not has_value(value))
         if missing:
             raise CredentialsMissing("credentials missing: " + ", ".join(missing))
         invalid = sorted(self.credentials[name] for name, value in values.items() if not is_header_safe(value))

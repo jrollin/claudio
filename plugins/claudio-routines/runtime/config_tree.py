@@ -2,7 +2,7 @@ import json
 import os
 import re
 
-from roles import DEFAULT_ENGINE, ENGINES, ENV_VAR, PLACES, TRANSPORTS, ConfigError
+from roles import DEFAULT_ENGINE, ENGINES, ENV_VAR, PLACES, TRANSPORTS, ConfigError, transports_of
 
 SLUG = re.compile(r"[a-z0-9-]+")
 ROUTINE_FILE = re.compile(rf"({SLUG.pattern})\.json")
@@ -185,8 +185,22 @@ def _check_places(transport, where, path):
     for place in sorted(transport):
         if place not in PLACES:
             raise ConfigError(f"{where}{path}.{place}: the place must be one of " + ", ".join(PLACES))
-        if transport[place] not in TRANSPORTS:
-            raise ConfigError(f"{where}{path}.{place}: must be one of " + ", ".join(TRANSPORTS))
+        _check_transports(transport[place], f"{where}{path}.{place}")
+
+
+def _check_transports(value, path):
+    if not isinstance(value, list):
+        if value not in TRANSPORTS:
+            raise ConfigError(f"{path}: must be one of " + ", ".join(TRANSPORTS))
+        return
+    if not value:
+        raise ConfigError(f"{path}: must not be an empty list")
+    for index, item in enumerate(value):
+        if item not in TRANSPORTS:
+            raise ConfigError(f"{path}[{index}]: must be one of " + ", ".join(TRANSPORTS))
+    for index, item in enumerate(value):
+        if item in value[:index]:
+            raise ConfigError(f"{path}: lists {item} more than once")
 
 
 def _resolve_routine(routine, where, providers):
@@ -210,13 +224,17 @@ def _resolve_source(source, path, providers):
     _check_places(own, "", path)
     provider = _provider_of(source, providers)
     default = provider.get("transport", {}) if provider is not None else {}
-    chosen = {place: own.get(place, default.get(place)) for place in PLACES}
+    chosen = {place: _listed(own.get(place, default.get(place))) for place in PLACES}
     unresolved = [place for place in PLACES if chosen[place] is None]
     if unresolved and provider is None:
         return source
     if unresolved:
         raise ConfigError(f"{path}.{unresolved[0]}: not set on the source, and its provider sets no default")
     return {**source, "transport": chosen}
+
+
+def _listed(value):
+    return None if value is None else list(transports_of(value))
 
 
 def _provider_of(source, providers):

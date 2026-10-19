@@ -17,6 +17,10 @@ def full_transport():
     return {"cloud": "mcp", "local": "api"}
 
 
+def full_preference():
+    return {"cloud": ["mcp"], "local": ["api"]}
+
+
 def make_source(**overrides):
     source = {"provider": "obs", "kind": "monitors"}
     source.update(overrides)
@@ -27,7 +31,7 @@ def make_routine(**overrides):
     routine = {
         "template": "prod-watch",
         "cron": "0 7 * * *",
-        "sources": {"monitors": make_source(transport=full_transport())},
+        "sources": {"monitors": make_source(transport=full_preference())},
     }
     routine.update(overrides)
     return routine
@@ -433,7 +437,7 @@ class TransportTest(TreeCase):
     def test_takes_each_place_from_the_provider_default(self):
         config = with_default(make_config({ROUTINE: bare_routine()}), full_transport())
 
-        self.assertEqual(self.resolved(config)["transport"], full_transport())
+        self.assertEqual(self.resolved(config)["transport"], full_preference())
 
     def test_lets_a_source_value_win_over_the_provider_default(self):
         source = make_source(transport={"local": "mcp"})
@@ -441,13 +445,67 @@ class TransportTest(TreeCase):
             make_config({ROUTINE: make_routine(sources={"monitors": source})}), {"cloud": "api", "local": "api"}
         )
 
-        self.assertEqual(self.resolved(config)["transport"], {"cloud": "api", "local": "mcp"})
+        self.assertEqual(self.resolved(config)["transport"], {"cloud": ["api"], "local": ["mcp"]})
 
     def test_keeps_a_complete_source_transport_when_the_provider_has_no_default(self):
         source = make_source(transport={"cloud": "api", "local": "mcp"})
         config = make_config({ROUTINE: make_routine(sources={"monitors": source})})
 
-        self.assertEqual(self.resolved(config)["transport"], {"cloud": "api", "local": "mcp"})
+        self.assertEqual(self.resolved(config)["transport"], {"cloud": ["api"], "local": ["mcp"]})
+
+    def test_resolves_a_listed_transport_to_the_list(self):
+        source = make_source(transport={"cloud": ["api", "mcp"], "local": ["mcp", "api"]})
+        config = make_config({ROUTINE: make_routine(sources={"monitors": source})})
+
+        self.assertEqual(self.resolved(config)["transport"], {"cloud": ["api", "mcp"], "local": ["mcp", "api"]})
+
+    def test_resolves_a_single_value_to_a_one_item_list(self):
+        source = make_source(transport={"cloud": "api", "local": "mcp"})
+        config = make_config({ROUTINE: make_routine(sources={"monitors": source})})
+
+        self.assertEqual(self.resolved(config)["transport"], {"cloud": ["api"], "local": ["mcp"]})
+
+    def test_takes_a_listed_default_from_the_provider(self):
+        config = with_default(make_config({ROUTINE: bare_routine()}), {"cloud": ["api", "mcp"], "local": "api"})
+
+        self.assertEqual(self.resolved(config)["transport"], {"cloud": ["api", "mcp"], "local": ["api"]})
+
+    def test_rejects_a_repeated_transport_on_a_source(self):
+        source = make_source(transport={"cloud": ["api", "api"], "local": "api"})
+        path = self.tree(make_config({ROUTINE: make_routine(sources={"monitors": source})}))
+
+        self.assertEqual(
+            self.load_error(path),
+            "config.json: routines.prod-watch.sources.monitors.transport.cloud: lists api more than once",
+        )
+
+    def test_rejects_a_repeated_transport_on_a_provider(self):
+        path = self.tree(with_default(make_config(), {"cloud": ["mcp", "api", "mcp"]}))
+
+        self.assertEqual(self.load_error(path), "config.json: providers.obs.transport.cloud: lists mcp more than once")
+
+    def test_rejects_an_empty_list_on_a_source(self):
+        source = make_source(transport={"cloud": [], "local": "api"})
+        path = self.tree(make_config(), files={ROUTINE + ".json": make_routine(sources={"monitors": source})})
+
+        self.assertEqual(
+            self.load_error(path), "config/routines/prod-watch.json: sources.monitors.transport.cloud: must not be an empty list"
+        )
+
+    def test_rejects_an_empty_list_on_a_provider(self):
+        path = self.tree(with_default(make_config(), {"local": []}))
+
+        self.assertEqual(self.load_error(path), "config.json: providers.obs.transport.local: must not be an empty list")
+
+    def test_rejects_a_value_other_than_api_or_mcp_inside_a_list(self):
+        source = make_source(transport={"cloud": ["api", MARKER], "local": "api"})
+        path = self.tree(make_config({ROUTINE: make_routine(sources={"monitors": source})}))
+
+        message = self.load_error(path)
+        self.assertEqual(
+            (message, MARKER in message),
+            ("config.json: routines.prod-watch.sources.monitors.transport.cloud[1]: must be one of api, mcp", False),
+        )
 
     def test_keeps_the_other_keys_of_the_source(self):
         config = with_default(make_config({ROUTINE: bare_routine()}), full_transport())
@@ -458,14 +516,14 @@ class TransportTest(TreeCase):
         config = with_default(make_config(), full_transport())
 
         self.assertEqual(
-            self.resolved(config, files={ROUTINE + ".json": bare_routine()})["transport"], full_transport()
+            self.resolved(config, files={ROUTINE + ".json": bare_routine()})["transport"], full_preference()
         )
 
     def test_resolves_the_transport_in_a_one_routine_load(self):
         config = with_default(make_config(), full_transport())
         source = self.resolved(config, files={ROUTINE + ".json": bare_routine()}, routine=ROUTINE)
 
-        self.assertEqual(source["transport"], full_transport())
+        self.assertEqual(source["transport"], full_preference())
 
     def test_rejects_an_unresolved_place_of_an_inline_routine(self):
         source = make_source(transport={"cloud": "api"})

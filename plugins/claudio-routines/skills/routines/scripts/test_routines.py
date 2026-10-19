@@ -3391,6 +3391,44 @@ class ShippedFilesTest(Case):
                 fetch = [line for line in self.runnable_collect_step(name).splitlines() if "collect.py fetch " in line]
                 self.assertEqual([("--responses <run>/raw/<role>/<source> --out <run>/collections/<source>.json" in line) for line in fetch], [True])
 
+    def test_every_runnable_template_writes_the_transport_choice_to_the_run_directory(self):
+        for name in ("prod-watch", "tribe-digest", "chat-recap"):
+            with self.subTest(template=name):
+                sources = [line for line in self.runnable_collect_step(name).splitlines() if "collect.py sources " in line]
+                self.assertEqual([line.endswith("--place {{place}} --out <run>/sources.json") for line in sources], [True])
+
+    def test_every_runnable_template_passes_the_transport_choice_to_every_fetch_plan_and_parse(self):
+        for name in ("prod-watch", "tribe-digest", "chat-recap"):
+            with self.subTest(template=name):
+                commands = [
+                    line
+                    for line in self.runnable_collect_step(name).splitlines()
+                    if any(f"collect.py {verb} " in line for verb in ("fetch", "plan", "parse"))
+                ]
+                self.assertEqual(
+                    (len(commands), [line for line in commands if "--place {{place}} --sources <run>/sources.json " not in line]),
+                    (3, []),
+                )
+
+    def test_every_runnable_template_fetches_a_source_with_no_usable_transport_once(self):
+        expected = "A source whose `transport` is null has no usable transport: run the `fetch` command for it once."
+        for name in ("prod-watch", "tribe-digest", "chat-recap"):
+            with self.subTest(template=name):
+                self.assertIn(expected, self.runnable_collect_step(name))
+
+    def test_every_runnable_template_reports_nothing_for_a_fallback_line(self):
+        expected = "Report nothing for it and continue."
+        for name in ("prod-watch", "tribe-digest", "chat-recap"):
+            with self.subTest(template=name):
+                text = read(os.path.join(SHIPPED_TEMPLATES, f"{name}.md"))
+                line = next(line for line in text.splitlines() if line.startswith("- Each `fallback <source> <from> <to> <variable>` line"))
+                self.assertIn(expected, line)
+
+    def test_every_runnable_template_never_reads_a_source_through_the_other_transport(self):
+        for name in ("prod-watch", "tribe-digest", "chat-recap"):
+            with self.subTest(template=name):
+                self.assertIn("- Never read a source through the other transport, even when its read fails.", self.runnable_collect_step(name))
+
     def runnable_save_step(self, name):
         text = read(os.path.join(SHIPPED_TEMPLATES, f"{name}.md"))
         start = text.index(": Save the state\n")
@@ -3640,13 +3678,17 @@ class ShippedFilesTest(Case):
         sources = self.example_file("config", "routines", "prod-watch.json")["sources"]
         self.assertEqual({name: source.get("transport") for name, source in sources.items()}, {"monitors": None, "metrics": None, "sources-page": {"local": "mcp"}})
 
+    def test_example_issue_tracker_provider_prefers_api_then_the_connector_in_both_places(self):
+        transport = self.example_file("config.json")["providers"]["issue-tracker"]["transport"]
+        self.assertEqual(transport, {"cloud": ["api", "mcp"], "local": ["api", "mcp"]})
+
     def test_example_source_without_a_transport_takes_its_provider_default(self):
         sources = self.example()["routines"]["prod-watch"]["sources"]
-        self.assertEqual(sources["monitors"]["transport"], {"cloud": "api", "local": "api"})
+        self.assertEqual(sources["monitors"]["transport"], {"cloud": ["api"], "local": ["api"]})
 
     def test_example_source_override_replaces_the_provider_default_for_its_place_only(self):
         sources = self.example()["routines"]["prod-watch"]["sources"]
-        self.assertEqual(sources["sources-page"]["transport"], {"cloud": "api", "local": "mcp"})
+        self.assertEqual(sources["sources-page"]["transport"], {"cloud": ["api"], "local": ["mcp"]})
 
     def test_example_loads_through_the_secret_guard_with_secret_named_credential_keys(self):
         providers = self.example()["providers"]
@@ -3739,8 +3781,10 @@ class ShippedFilesTest(Case):
         )
 
     def test_example_tribe_sources_take_their_provider_default_transport(self):
-        transports = [source["transport"] for source in self.tribe()["sources"].values()]
-        self.assertEqual(transports, [{"cloud": "api", "local": "api"}] * len(transports))
+        transports = {name: source["transport"] for name, source in self.tribe()["sources"].items()}
+        api = {"cloud": ["api"], "local": ["api"]}
+        ordered = {"cloud": ["api", "mcp"], "local": ["api", "mcp"]}
+        self.assertEqual(transports, {"channels": api, "issues": ordered, "changed-pages": api, "monitors": api, "metrics": api, "previous-digest": api})
 
     def test_example_tribe_routine_sets_a_first_read_span(self):
         self.assertEqual(self.tribe()["first_read_days"], 7)

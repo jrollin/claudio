@@ -20,7 +20,7 @@ import weekly_state
 import weekly_window
 from config import adapter_role, config_directory, load_zone, read_routine
 from providers._common import ended
-from providers._http import BODY_CAP
+from providers._http import BODY_CAP, has_value
 from providers._replay import OFFLINE, ReplayClient, ReplayMismatch
 from providers._errors import CALL_CAP, CALL_CAP_PARTIAL, CredentialsMissing, PartialRead, SourceUnreadable
 
@@ -78,29 +78,57 @@ def load_routine(args):
     return config, routine, {name: source["role"] for name, source in sources.items()}
 
 
-def run_sources(args):
-    _, routine, role_by_source = load_routine(args)
-    listing = [
-        {"source": name, "role": role_by_source[name], "provider": source["provider"], "transport": source["transport"][args.place]}
+def missing_variables(provider):
+    return sorted({var for var in provider["api"]["credentials"].values() if not has_value(os.environ.get(var))})
+
+
+def choose_transport(transports, provider):
+    skipped = []
+    for transport in transports:
+        missing = missing_variables(provider) if transport == "api" else []
+        if not missing:
+            return {"transport": transport, "skipped": skipped}
+        skipped.append({"transport": transport, "missing": missing})
+    return {"transport": None, "skipped": skipped}
+
+
+def choose_sources(config, routine, role_by_source, place):
+    return [
+        {
+            "source": name,
+            "role": role_by_source[name],
+            "provider": source["provider"],
+            **choose_transport(source["transport"][place], config["providers"][source["provider"]]),
+        }
         for name, source in sorted(routine["sources"].items())
     ]
-    sys.stdout.write(state.dump(listing).decode("utf-8"))
+
+
+def run_sources(args):
+    config, routine, role_by_source = load_routine(args)
+    document = state.dump(choose_sources(config, routine, role_by_source, args.place))
+    if args.out is not None:
+        state.write_all([(args.out, document)])
+    sys.stdout.write(document.decode("utf-8"))
     return 0
 
 
-def env_lines(name, source, provider, place):
-    if source["transport"][place] == "mcp":
-        return [f"connector {name} {provider['mcp']['connectors'][place]}"]
-    return [f"missing {name} {var}" for var in provider["api"]["credentials"].values() if not os.environ.get(var)]
+def env_lines(choice, provider, place):
+    name, chosen = choice["source"], choice["transport"]
+    if chosen is None:
+        return [f"missing {name} {var}" for skip in choice["skipped"] for var in skip["missing"]]
+    fallbacks = [f"fallback {name} {skip['transport']} {chosen} {var}" for skip in choice["skipped"] for var in skip["missing"]]
+    connector = [f"connector {name} {provider['mcp']['connectors'][place]}"] if chosen == "mcp" else []
+    return connector + fallbacks
 
 
 def run_check_env(args):
-    config, routine, _ = load_routine(args)
+    config, routine, role_by_source = load_routine(args)
     lines = sorted(
         {
             line
-            for name, source in routine["sources"].items()
-            for line in env_lines(name, source, config["providers"][source["provider"]], args.place)
+            for choice in choose_sources(config, routine, role_by_source, args.place)
+            for line in env_lines(choice, config["providers"][choice["provider"]], args.place)
         }
     )
     for line in lines:
@@ -108,18 +136,42 @@ def run_check_env(args):
     return 1 if any(line.startswith("missing ") for line in lines) else 0
 
 
-def transport_source(routine, args, transport):
+def read_choice(path, name, listed):
+    listing = state.load(path, "sources", state.check_sources)
+    entry = next((item for item in listing if item["source"] == name), None)
+    if entry is None:
+        raise state.InputError(f"sources: {path} lists no source {name}")
+    if entry["transport"] is not None and entry["transport"] not in listed:
+        raise state.InputError(f"sources: {path} chooses {entry['transport']} for source {name}, which lists {', '.join(listed)}")
+    return entry
+
+
+def source_choice(config, source, name, args):
+    listed = source["transport"][args.place]
+    if args.sources is not None:
+        return read_choice(args.sources, name, listed)
+    if getattr(args, "replaying", False):
+        return {"transport": listed[0], "skipped": []}
+    return choose_transport(listed, config["providers"][source["provider"]])
+
+
+def read_through(choice, source, place):
+    return choice["transport"] or source["transport"][place][0]
+
+
+def transport_source(config, routine, args, transport):
     path = f"routines.{args.routine}.sources.{args.source}"
     if args.source not in routine["sources"]:
         raise roles.ConfigError(f"{path}: no such source in the routine")
     source = routine["sources"][args.source]
-    actual = source["transport"][args.place]
+    choice = source_choice(config, source, args.source, args)
+    actual = read_through(choice, source, args.place)
     if actual != transport:
         raise roles.ConfigError(
             f"{path}.transport.{args.place}: source {args.source} uses the {actual} transport at place {args.place}; "
             f"{args.command} reads {transport} sources only"
         )
-    return source
+    return source, choice["skipped"]
 
 
 def check_fetch_window(document):
@@ -302,7 +354,7 @@ def read_source(draft, where, read):
 
 def prepare(args, transport):
     config, routine, role_by_source = load_routine(args)
-    source = transport_source(routine, args, transport)
+    source, skipped = transport_source(config, routine, args, transport)
     engine = routine.get("engine", roles.DEFAULT_ENGINE)
     window = state.load(args.window, "window", WINDOW_CHECKERS[engine])
     window = {**window, "first_read_from_ts": first_read_from(routine, window), "timezone": config.get("timezone")}
@@ -324,6 +376,7 @@ def prepare(args, transport):
         "role": role,
         "provider": source["provider"],
         "transport": transport,
+        "skipped": skipped,
         "place": args.place,
         "window": {"from_ts": window["from_ts"], "to_ts": window["to_ts"]},
     }
@@ -607,16 +660,16 @@ REPLAYERS = {"api": run_replay_fetch, "mcp": run_parse}
 
 
 def run_replay(args):
-    _, routine, role_by_source = load_routine(args)
+    config, routine, role_by_source = load_routine(args)
     try:
         os.makedirs(args.out, exist_ok=True)
     except OSError as error:
         raise state.InputError(f"out: cannot create {args.out}: {error.strerror}") from error
     for name, source in sorted(routine["sources"].items()):
         replayed = argparse.Namespace(
-            **{**vars(args), "source": name, "responses": os.path.join(args.raw, role_by_source[name], name), "out": os.path.join(args.out, name + COLLECTION_SUFFIX)}
+            **{**vars(args), "source": name, "responses": os.path.join(args.raw, role_by_source[name], name), "out": os.path.join(args.out, name + COLLECTION_SUFFIX), "replaying": True}
         )
-        REPLAYERS[source["transport"][args.place]](replayed)
+        REPLAYERS[read_through(source_choice(config, source, name, replayed), source, args.place)](replayed)
     return 0
 
 
@@ -628,7 +681,7 @@ def build_parser():
     parser = argparse.ArgumentParser(prog="collect.py", description="Collect one source of a routine")
     commands = parser.add_subparsers(dest="command", required=True)
     specs = (
-        ("sources", "list the routine's sources with their role, provider and transport", ()),
+        ("sources", "choose and list the transport of each source of the routine", ()),
         ("check-env", "list missing credential variables and connector names for the place", ()),
         ("fetch", "read one api source and write its collection", ("--source", "--window", "--state", "--out")),
         ("plan", "write the next connector calls of one mcp source", RELAY_FLAGS),
@@ -640,7 +693,10 @@ def build_parser():
         for flag in ("--config", "--routine", *flags):
             command.add_argument(flag, required=True)
         command.add_argument("--place", required=True, choices=roles.PLACES)
+    commands.choices["sources"].add_argument("--out")
     commands.choices["fetch"].add_argument("--responses")
+    for name in ("fetch", "plan", "parse", "replay"):
+        commands.choices[name].add_argument("--sources")
     return parser
 
 
