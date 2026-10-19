@@ -103,9 +103,13 @@ def person_name(line):
     return "" if person is None else digest.text(person["name"]).strip()
 
 
+def summary_text(line):
+    return digest.text(line["summary"]).removesuffix(".")
+
+
 def waiting_line(line, context):
     mark = LATE_MARK if line["late"] is not None else ""
-    summary = digest.text(line["summary"])
+    summary = summary_text(line)
     if line["status"] == "promise":
         by = "no date given" if line["due"] is None else f"by {due_when(line['due'], context)}"
         head = f"**You** promised {summary}, {by}"
@@ -117,7 +121,7 @@ def waiting_line(line, context):
 
 
 def good_to_know_line(line, context):
-    summary = digest.text(line["summary"])
+    summary = summary_text(line)
     head = f"Team ask, no answer: {summary}" if line["status"] == "team_ask" else summary
     return f"- {head}{digest.SEPARATOR}{link_text(line, context)}"
 
@@ -126,7 +130,7 @@ def waiting_on_others_line(line, context):
     name = person_name(line)
     owes = f"**{name}** owes " if name else ""
     since = f"since {stamp_when(age_stamp(line), context)}"
-    return f"- {owes}{digest.text(line['summary'])} {since}{digest.SEPARATOR}{link_text(line, context)}"
+    return f"- {owes}{summary_text(line)} {since}{digest.SEPARATOR}{link_text(line, context)}"
 
 
 def handled_line(line, context):

@@ -3,7 +3,7 @@
 ---
 feature: routines-as-code
 spec_version: 1
-total_tasks: 89
+total_tasks: 90
 phases:
   - name: "Leak guard"
     tasks: [T-1, T-2, T-3]
@@ -38,7 +38,7 @@ phases:
   - name: "Monitor priority and seed fixes"
     tasks: [T-72, T-73, T-74]
   - name: "Cloud run fixes"
-    tasks: [T-75, T-76, T-77, T-87, T-88, T-89]
+    tasks: [T-75, T-76, T-77, T-87, T-88, T-89, T-90]
   - name: "Chat recap engine"
     tasks: [T-78, T-79, T-80, T-81, T-82, T-83, T-84, T-85, T-86]
 depends_on: []
@@ -884,6 +884,14 @@ Runs in a local session with the chat, issue tracker, document store and observa
 - **Refs**: US-28, TD-22
 - **Files**: `docs/features/routines-as-code/tasks.md` (modify), `plugins/claudio-routines/runtime/providers/_slack_read.py` (modify), `plugins/claudio-routines/runtime/providers/test_slack.py` (modify)
 - **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime`
+- **Status**: Complete
+
+### T-90: Recap summaries complete the line openings
+- The recap message prints a fixed opening before each summary (the person's name, `You promised`, `<name> owes`); the first local run showed summaries repeating them. The template's judge step says what each kind's summary completes, and the message drops a summary's trailing period before the text that follows it.
+- Tests: the judge step names each opening; a summary ending in a period renders without it in a waiting, a promise and a you're-waiting-on line.
+- **Refs**: US-47, US-49, TD-61, TD-63
+- **Files**: `docs/features/routines-as-code/tasks.md` (modify), `plugins/claudio-routines/runtime/recap_message.py` (modify), `plugins/claudio-routines/runtime/test_recap_message.py` (modify), `plugins/claudio-routines/skills/routines/templates/chat-recap.md` (modify), `plugins/claudio-routines/skills/routines/scripts/test_routines.py` (modify)
+- **Verify**: `for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
 - **Status**: Complete
 
 ## Phase 18: Chat recap engine

@@ -132,6 +132,11 @@ Read `<run>/features.json` and `<run>/rules.json`, and no other file. Write `<ru
 - Write one entry for each unit of `<run>/features.json`, and no other key.
 - `kind` is one of the unit's `allowed` kinds. `rules.json` defines each kind. The rules decide which allowed kind fits, and no fact the features hold may be contradicted.
 - `title` is at most 8 words. `summary` is one sentence of at most 200 characters.
+- The message prints a fixed opening before each summary, so a summary completes it and never repeats it:
+  - `waiting on you` and `team ask`: what the person needs, without their name, which the message prints first, e.g. `needs your re-review of the export PR`.
+  - `promise`: what the owner promised, as the object of `You promised`, e.g. `to settle the review app priority at the daily`; the time it names goes in `due`, not in the summary.
+  - `you're waiting on`: what is owed, as the object of `<name> owes`, e.g. `an impact measurement before the runtime upgrade`.
+  - `already handled`, `announcement` and `noise`: a plain sentence.
 - `blocking` is true only on `waiting on you`. `due` is null, or a time with a UTC offset, and only on a `promise`.
 - `reading` lists at most 4 bullets, each citing at least one unit key of the run. Leave out a bullet that changes nothing for the next 48 hours: a quiet run has none.
 - The checker reports only the first failure and one correction is allowed, so write within its limits:
