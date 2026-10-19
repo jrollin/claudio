@@ -78,23 +78,23 @@ Run `mkdir -p <run>/collections`, then list the sources of this place:
 python3 -B {{runtime.dir}}/plugins/claudio-routines/runtime/collect.py sources --config {{state.dir}}/config.json --routine {{digest.slug}} --place {{place}}
 ```
 
-It prints each source with its `transport`. Collect every source, one at a time, and write its name literally wherever a command says `<source>`.
+It prints each source with its `role` and `transport`. Collect every source, one at a time, and write its name literally wherever a command says `<source>` and its `role` wherever a command says `<role>`.
 
 An `api` source is one command:
 
 ```bash
-python3 -B {{runtime.dir}}/plugins/claudio-routines/runtime/collect.py fetch --config {{state.dir}}/config.json --routine {{digest.slug}} --source <source> --place {{place}} --window <run>/window.json --state <run>/state.json --out <run>/collections/<source>.json
+python3 -B {{runtime.dir}}/plugins/claudio-routines/runtime/collect.py fetch --config {{state.dir}}/config.json --routine {{digest.slug}} --source <source> --place {{place}} --window <run>/window.json --state <run>/state.json --responses <run>/raw/<role>/<source> --out <run>/collections/<source>.json
 ```
 
 An `mcp` source is a relay loop. Write the next calls:
 
 ```bash
-python3 -B {{runtime.dir}}/plugins/claudio-routines/runtime/collect.py plan --config {{state.dir}}/config.json --routine {{digest.slug}} --source <source> --place {{place}} --window <run>/window.json --state <run>/state.json --responses <run>/responses/<source> --out <run>/plan.json
+python3 -B {{runtime.dir}}/plugins/claudio-routines/runtime/collect.py plan --config {{state.dir}}/config.json --routine {{digest.slug}} --source <source> --place {{place}} --window <run>/window.json --state <run>/state.json --responses <run>/raw/<role>/<source> --out <run>/plan.json
 ```
 
 - When `done` in `<run>/plan.json` is false, make each call of `calls`:
   - Call the tool `tool` on the connector `connector`, with its `arguments` exactly as given.
-  - Save each result unchanged as `<run>/responses/<source>/<id>.txt`, with `<id>` the call's `id`.
+  - Save each result unchanged as `<run>/raw/<role>/<source>/<id>.txt`, with `<id>` the call's `id`.
   - When the harness saved the result to a file, copy that file.
   - Otherwise, write the result text as is with the Write tool. Never put a result in a shell command.
   - Never edit, summarize, filter or reformat a result.
@@ -103,7 +103,7 @@ python3 -B {{runtime.dir}}/plugins/claudio-routines/runtime/collect.py plan --co
 - When `done` is true, write the collection:
 
 ```bash
-python3 -B {{runtime.dir}}/plugins/claudio-routines/runtime/collect.py parse --config {{state.dir}}/config.json --routine {{digest.slug}} --source <source> --place {{place}} --window <run>/window.json --state <run>/state.json --responses <run>/responses/<source> --out <run>/collections/<source>.json
+python3 -B {{runtime.dir}}/plugins/claudio-routines/runtime/collect.py parse --config {{state.dir}}/config.json --routine {{digest.slug}} --source <source> --place {{place}} --window <run>/window.json --state <run>/state.json --responses <run>/raw/<role>/<source> --out <run>/collections/<source>.json
 ```
 
 - An `mcp` source whose connector Step 4 found missing: run the plan command once, make no call, then run the parse command. When the plan is not done, its collection says `plan not done`.

@@ -1513,7 +1513,7 @@ A degraded run's message is one line that starts with `degraded:` and names the 
 **Choice**:
 - Every source writes its raw results to `<run>/raw/<role>/<source>/`, with `<role>` the role `collect.py sources` prints (AC-51.1):
   - `mcp`: the relay files as before, `calls.json` and `<source>-<n>.txt`.
-  - `api`: `collect.py fetch --responses <dir>` records each HTTP call as `<source>-<n>.json`, in call order (AC-51.2). A record holds `method`, `path`, `query`, `body` (the request JSON or null), `status`, `link` (the `Link` response header or null), `response` (the decoded JSON or null) and `error` (null, or the class, message and status of the error the call raised). `HttpClient` takes an optional recorder; request headers never reach it (BR-71).
+  - `api`: `collect.py fetch --responses <dir>` records each HTTP call as `<source>-<n>.json`, in call order (AC-51.2). A record holds `method`, `path` (the URL path), `query`, `body` (the request JSON or null), `status`, `link` (the `Link` response header or null), `response` (the decoded JSON or null) and `error` (null, or the class, message and status of the error the call raised). `HttpClient` takes an optional recorder; request headers never reach it (BR-71).
 - `places.<place>.runs_dir` (optional, absolute) is where a run creates its folder: `mktemp -d <runs_dir>/<slug>/<YYYYMMDDTHHMMSSZ>-XXXXXX`. Without it the folder goes under `/tmp` (AC-51.3). The owner's local `runs_dir` is an ignored folder of the private repository (BR-70).
 - `collect.py replay --config --routine --place --window --state --raw <run>/raw --out <dir>` writes every source's collection offline (AC-51.4):
   - `mcp`: the `parse` of its raw folder.

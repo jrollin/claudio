@@ -1022,7 +1022,7 @@ Owner-gated: needs the merged pull request, a release tag, the transport and its
 - **Files**: `plugins/claudio-routines/runtime/providers/_http.py` (modify), `plugins/claudio-routines/runtime/providers/test_http.py` (modify), `plugins/claudio-routines/runtime/collect.py` (modify), `plugins/claudio-routines/runtime/test_collect.py` (modify), `plugins/claudio-routines/skills/routines/templates/prod-watch.md` (modify), `plugins/claudio-routines/skills/routines/templates/tribe-digest.md` (modify), `plugins/claudio-routines/skills/routines/templates/chat-recap.md` (modify), `plugins/claudio-routines/skills/routines/scripts/test_routines.py` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify), `plugins/claudio-routines/README.md` (modify)
 - **Verify**: `for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
 - **Rules**: BR-70, BR-71
-- **Status**: Not Started
+- **Status**: Complete
 
 ### T-95: Keep local run folders under the place's runs folder
 - `places.<place>.runs_dir` is optional and absolute; render fills `{{runs.dir}}` with it, or `/tmp` without it. The place check refuses a relative path, naming the key path, so render and lint fail on it.

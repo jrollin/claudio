@@ -507,6 +507,141 @@ class RequestTest(unittest.TestCase):
         self.assertIsNone(client.response_headers)
 
 
+LINK = "<" + BASE + PATH + "?page=2>; rel=next"
+
+
+def recording_client(*outcomes, **options):
+    records = []
+    client = make_client(FakeOpener(*outcomes), **options)
+    client.recorder = records.append
+    return client, records
+
+
+def success(response, **fields):
+    return {"status": 200, "link": None, "response": response, "error": None, **fields}
+
+
+class RecorderTest(unittest.TestCase):
+    def test_is_off_by_default(self):
+        self.assertIsNone(make_client(FakeOpener()).recorder)
+
+    def test_a_get_records_its_request_and_its_response(self):
+        client, records = recording_client(FakeResponse(b'{"items": [1]}', headers={"Link": LINK}))
+        client.get(PATH, {"from": 1, "q": "a b"})
+        expected = {"method": "GET", "path": PATH, "query": "from=1&q=a+b", "body": None, **success({"items": [1]}, link=LINK)}
+        self.assertEqual(records, [expected])
+
+    def test_a_get_without_params_records_an_empty_query(self):
+        client, records = recording_client(FakeResponse())
+        client.get(PATH)
+        self.assertEqual(records[0]["query"], "")
+
+    def test_a_post_records_its_body(self):
+        client, records = recording_client(FakeResponse(b'{"ok": true}'))
+        client.post(PATH, {"q": ["x"]})
+        expected = {"method": "POST", "path": PATH, "query": "", "body": {"q": ["x"]}, **success({"ok": True})}
+        self.assertEqual(records, [expected])
+
+    def test_a_get_url_records_the_path_and_the_query_of_the_url(self):
+        client, records = recording_client(FakeResponse())
+        client.get_url(BASE + PATH + "?page=2&per_page=50")
+        self.assertEqual((records[0]["method"], records[0]["path"], records[0]["query"]), ("GET", PATH, "page=2&per_page=50"))
+
+    def test_a_get_records_the_url_path_with_the_base_url_path(self):
+        client, records = recording_client(FakeResponse(), base_url=BASE + "/api")
+        client.get(PATH)
+        self.assertEqual(records[0]["path"], "/api" + PATH)
+
+    def test_an_interrupted_call_writes_no_record(self):
+        client, records = recording_client(KeyboardInterrupt())
+        with self.assertRaises(KeyboardInterrupt):
+            client.get(PATH)
+        self.assertEqual(records, [])
+
+    def test_records_one_entry_per_call_in_call_order(self):
+        client, records = recording_client(FakeResponse(b"1"), FakeResponse(b"2"), FakeResponse(b"3"))
+        client.get(PATH)
+        client.post(PATH, {})
+        client.get_url(BASE + PATH)
+        self.assertEqual([(record["method"], record["response"]) for record in records], [("GET", 1), ("POST", 2), ("GET", 3)])
+
+    def test_a_record_holds_no_request_header_and_no_credential(self):
+        client, records = recording_client(FakeResponse(), auth=lambda values: {"X-Example-Key": values["token"]})
+        client.post(PATH, {"q": "x"})
+        self.assertEqual((SECRET in json.dumps(records), "X-Example-Key" in json.dumps(records), "Content-Type" in json.dumps(records)), (False, False, False))
+
+    def test_a_failed_http_call_is_recorded_with_its_status_and_error(self):
+        client, records = recording_client(http_error(404))
+        with self.assertRaises(_http.SourceUnreadable):
+            client.get(PATH)
+        error = {"class": "SourceUnreadable", "message": "HTTP 404 GET " + PATH, "status": 404}
+        self.assertEqual(records, [{"method": "GET", "path": PATH, "query": "", "body": None, "status": 404, "link": None, "response": None, "error": error}])
+
+    def test_a_failed_call_raises_as_without_a_recorder(self):
+        client, _ = recording_client(http_error(403))
+        with self.assertRaises(_http.SourceUnreadable) as ctx:
+            client.get(PATH)
+        self.assertEqual((str(ctx.exception), ctx.exception.status), ("HTTP 403 GET " + PATH, 403))
+
+    def test_a_call_without_an_answer_records_no_status(self):
+        client, records = recording_client(TimeoutError())
+        with self.assertRaises(_http.SourceUnreadable):
+            client.get(PATH)
+        error = {"class": "SourceUnreadable", "message": "GET " + PATH + ": TimeoutError", "status": None}
+        self.assertEqual((records[0]["status"], records[0]["error"]), (None, error))
+
+    def test_a_refused_redirect_records_its_status_and_an_error_without_one(self):
+        client, records = recording_client(http_error(302))
+        with self.assertRaises(_http.SourceUnreadable):
+            client.get(PATH)
+        error = {"class": "SourceUnreadable", "message": "redirect refused GET " + PATH, "status": None}
+        self.assertEqual((records[0]["status"], records[0]["error"]), (302, error))
+
+    def test_an_invalid_body_records_the_answer_status_and_no_response(self):
+        client, records = recording_client(FakeResponse(b"<html>"))
+        with self.assertRaises(_http.SourceUnreadable):
+            client.get(PATH)
+        error = {"class": "SourceUnreadable", "message": "GET " + PATH + ": invalid JSON", "status": None}
+        self.assertEqual((records[0]["status"], records[0]["response"], records[0]["error"]), (200, None, error))
+
+    def test_an_oversized_body_records_a_partial_read(self):
+        client, records = recording_client(FakeResponse(b"{}" + b" " * _http.BODY_CAP))
+        with self.assertRaises(_http.PartialRead):
+            client.get(PATH)
+        self.assertEqual(records[0]["error"], {"class": "PartialRead", "message": "partial: response over 10 MB", "status": None})
+
+    def test_missing_credentials_are_recorded_without_a_status(self):
+        client, records = recording_client(environ={})
+        with self.assertRaises(_http.CredentialsMissing):
+            client.get(PATH)
+        error = {"class": "CredentialsMissing", "message": "credentials missing: " + VAR, "status": None}
+        self.assertEqual((records[0]["status"], records[0]["error"]), (None, error))
+
+    def test_a_refused_link_is_recorded_as_a_failed_call(self):
+        client, records = recording_client()
+        with self.assertRaises(_http.SourceUnreadable):
+            client.get_url("https://other.test" + PATH + "?page=2")
+        error = {"class": "SourceUnreadable", "message": "link refused GET " + PATH + ": not on the base_url host", "status": None}
+        self.assertEqual(records, [{"method": "GET", "path": PATH, "query": "page=2", "body": None, "status": None, "link": None, "response": None, "error": error}])
+
+    def test_a_retried_call_records_only_its_final_outcome(self):
+        client, records = recording_client(http_error(503), FakeResponse(b'{"ok": true}'))
+        client.get(PATH)
+        self.assertEqual(records, [{"method": "GET", "path": PATH, "query": "", "body": None, **success({"ok": True})}])
+
+    def test_a_call_that_fails_after_a_retry_records_the_last_status(self):
+        client, records = recording_client(http_error(500), http_error(502))
+        with self.assertRaises(_http.SourceUnreadable):
+            client.get(PATH)
+        self.assertEqual((len(records), records[0]["status"], records[0]["error"]["status"]), (1, 502, 502))
+
+    def test_a_path_that_is_not_absolute_is_not_a_call(self):
+        client, records = recording_client()
+        with self.assertRaises(ValueError):
+            client.get("v1/things")
+        self.assertEqual(records, [])
+
+
 class LoadTest(unittest.TestCase):
     def test_returns_the_adapter_module(self):
         adapter = types.ModuleType("providers.fakevendor")

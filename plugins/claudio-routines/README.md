@@ -226,7 +226,7 @@ Templates use `{{dotted.key}}` placeholders; `\{{` renders a literal `{{`. Rende
 ## Collectors
 
 Each source has one transport per place, from its own `transport` or its provider's default:
-- `api`: `collect.py fetch` calls the provider's HTTPS API from the place that runs the routine.
+- `api`: `collect.py fetch` calls the provider's HTTPS API from the place that runs the routine, and `--responses` records each HTTP call.
 - `mcp`: a relay loop.
   - `collect.py plan` writes the next connector calls.
   - The model makes each call and saves each result unchanged.
@@ -234,6 +234,11 @@ Each source has one transport per place, from its own `transport` or its provide
 
 Reads:
 - Each source writes one collection, `<run>/collections/<source>.json`, in the record schema of its role.
+- Each source keeps its raw results in `<run>/raw/<role>/<source>/`, with `<role>` the role `collect.py sources` prints:
+  - `mcp`: `calls.json` and one `<call id>.txt` per saved connector result.
+  - `api`: one `<source>-<n>.json` per HTTP call, in call order, with the method, path, query, request body, status, `Link` header, decoded response and error. It holds no request header and no credential.
+  - The folder holds source content and is never pushed to `claude/state`.
+  - [The providers README](runtime/providers/README.md) gives the record format.
 - A source that cannot be read is marked not read, with a reason, and the other sources are still collected.
 - A failed read never switches to the other transport.
 - A relay loop ends after 20 pages of one query, a repeated cursor or 50 calls for one source; the source is then not read, with a reason starting `partial:`. The 100-page cap applies to the `api` alert events read of a monitors source only; the relay reads those events through one `aggregate_events` call, capped at 1,000 monitors (`partial: group cap`).
@@ -255,7 +260,7 @@ Credentials:
 ```text
 python3 runtime/collect.py sources   --config C --routine R --place P
 python3 runtime/collect.py check-env --config C --routine R --place P
-python3 runtime/collect.py fetch     --config C --routine R --source NAME --place P --window W --state S --out COLLECTION
+python3 runtime/collect.py fetch     --config C --routine R --source NAME --place P --window W --state S [--responses DIR] --out COLLECTION
 python3 runtime/collect.py plan      --config C --routine R --source NAME --place P --window W --state S --responses DIR --out PLAN
 python3 runtime/collect.py parse     --config C --routine R --source NAME --place P --window W --state S --responses DIR --out COLLECTION
 python3 runtime/evaluate.py features --config C --routine R --state S --window W --collections DIR --place P --runtime SHA --out FEATURES --base-out BASE --rules-out RULES
