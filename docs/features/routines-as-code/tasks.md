@@ -899,7 +899,7 @@ Runs in a local session with the chat, issue tracker, document store and observa
 - **Files**: `plugins/claudio-routines/runtime/recap_judgment.py` (new), `plugins/claudio-routines/runtime/test_recap_judgment.py` (new), `plugins/claudio-routines/runtime/recap.py` (modify)
 - **Blocked by**: T-80
 - **Rules**: BR-69
-- **Status**: Not Started
+- **Status**: Complete
 
 ### T-82: Recap lifecycle
 - `recap.py apply` maps kinds to statuses, counts `runs_waiting`, sets `late`, resolves a stored waiting or promise unit once, drops a unit past `drop_after_days`, stores no `noise` unit, keeps each unit's `channel_name` and `person` (TD-62), and writes the next state, the summary and the run record (TD-62).
