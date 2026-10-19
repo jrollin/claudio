@@ -132,6 +132,7 @@ Routine files and routines inline under `routines` in `config.json` are both acc
 | `places.<place>` | `cloud` or `local` |
 | `places.<place>.runtime_dir` | Where the setup script installs the runtime in that place: absolute, at least two levels below the root, no `.` or `..` component, last component starting with `claudio-runtime` (for example `/opt/claudio-runtime`) |
 | `places.<place>.state_dir` | Absolute path of the private repository checkout in that place |
+| `places.<place>.runs_dir` | Optional. Absolute folder where a run of that place creates its run folder, `<runs_dir>/<slug>/<UTC start time>-<random>`; `/tmp` without it. Raw results hold source content, so keep it in a folder git ignores (for example `/srv/claudio-runs`) |
 | `providers.<name>` | One provider; sources point at it by `<name>` |
 | `providers.<name>.adapter` | Module name of its adapter under `runtime/providers/` |
 | `providers.<name>.api.base_url` | HTTPS base URL of the provider API, with no user info, query or fragment: the only host the adapter calls |
@@ -211,7 +212,8 @@ Entries match this schema exactly: `severity`, `urgency` and `threshold` are rej
 
 Config checks:
 - `places.cloud` and `places.local` are both required.
-- `places.<place>.runtime_dir` and `places.<place>.state_dir` match `^(/[A-Za-z0-9._-]+)+/?$`, with no `.` or `..` component, since the template uses them unquoted in shell commands.
+- `places.<place>.runtime_dir`, `places.<place>.state_dir` and, when present, `places.<place>.runs_dir` match `^(/[A-Za-z0-9._-]+)+/?$`, with no `.` or `..` component, since the template uses them unquoted in shell commands.
+- `places.<place>.runs_dir` is a string: a relative path or another type fails the config check, naming `places.<place>.runs_dir`.
 - `timezone` matches `^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+)*$`, since the template uses it unquoted in shell commands.
 - `runtime.dir`, a shared `values.state.dir` and a routine `values.state.dir` are refused; their values belong in `places.<place>.runtime_dir` and `places.<place>.state_dir`.
 - A template name matches `^[a-z0-9-]+$`.
@@ -220,6 +222,7 @@ Config checks:
 
 Templates use `{{dotted.key}}` placeholders; `\{{` renders a literal `{{`. Render adds `runtime.*`, `timezone`, and for the rendered place:
 - `runtime.dir` and `state.dir`, from `places.<place>`.
+- `runs.dir`, from `places.<place>.runs_dir`, or `/tmp` without it.
 - `place`: `cloud` or `local`.
 - `run.post`: `yes` for the cloud place, `yes` for the local place only with `--post`, `no` otherwise.
 
@@ -415,6 +418,8 @@ Settings:
 `/claudio-routines:routines run <slug> [--since T] [--post]` renders the routine for the `local` place and follows the prompt in the current session.
 
 - The run uses the pinned runtime at `places.local.runtime_dir`; a missing or stale runtime stops it before it renders.
+- The run creates its folder at `<runs_dir>/<slug>/<UTC start time>-<random>`, with `runs_dir` from `places.local.runs_dir`, or `/tmp` without it.
+- The run folder keeps the raw results of every source and stays after the run.
 - Before collecting, it names every missing credential variable and every missing connector.
 - It starts from the remote `claude/state` branch and saves through a work tree under its run directory, so the checked-out branch and the working tree of the private repository never change.
 - Without `--post`, the run reports only:

@@ -46,7 +46,8 @@ Git is the source of truth for routine prompts. The real templates and values li
 
 Run `R render <slug> [--place cloud|local] [--post]`.
 
-- `--place` picks the place whose `runtime_dir` and `state_dir` fill the prompt, `cloud` by default.
+- `--place` picks the place whose `runtime_dir`, `state_dir` and `runs_dir` fill the prompt, `cloud` by default.
+- `runs_dir` is optional; without it the prompt creates its run folder under `/tmp`.
 - The rendered prompt posts its digest for the cloud place, and for the local place only with `--post`.
 - Exit 2 names the unresolved placeholder and its template.
 - Warnings name values the routine's template does not use.
@@ -114,6 +115,7 @@ Runs one routine in this session for the local place, with the same template, st
    - Each `connector <source> <connector>` line: check that this session lists a tool from that connector, and name the missing ones.
    - Exit 2 or 3: show the error and stop.
 5. Follow the rendered prompt in this session, step by step. With `--since T`, give it `T` as the run's start time, in UTC (`YYYY-MM-DDTHH:MM:SSZ`).
+   - The prompt creates the run folder under `places.local.runs_dir` (`/tmp` without it) and keeps it, raw results included.
 
 Never post to the chat channel without `--post`: the rendered prompt then prints the digest in this session.
 

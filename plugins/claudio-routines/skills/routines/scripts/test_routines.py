@@ -863,6 +863,30 @@ class PlaceRenderTest(Case):
         self.assertEqual(self.run_private("render", "prod-watch", "--place", "moon")[0], 2)
 
 
+class RunsDirRenderTest(Case):
+    def setUp(self):
+        super().setUp()
+        self.write_template("prod-watch", "{{runs.dir}}\n")
+
+    def render(self, **place):
+        self.write_config(make_config(places=make_places(cloud=place)))
+        return self.run_private("render", "prod-watch")
+
+    def test_render_fills_the_runs_dir_of_the_place(self):
+        self.assertEqual(self.render(runs_dir="/srv/claudio-runs")[:2], (0, "/srv/claudio-runs\n"))
+
+    def test_render_falls_back_to_tmp_without_a_runs_dir(self):
+        self.assertEqual(self.render()[:2], (0, "/tmp\n"))
+
+    def test_relative_runs_dir_exits_2_naming_the_key(self):
+        code, _, stderr = self.render(runs_dir="claudio-runs")
+        self.assertEqual((code, "places.cloud.runs_dir" in stderr), (2, True))
+
+    def test_non_string_runs_dir_exits_2_naming_the_key(self):
+        code, _, stderr = self.render(runs_dir=7)
+        self.assertEqual((code, "places.cloud.runs_dir" in stderr), (2, True))
+
+
 class SetupScriptCommandTest(Case):
     patch_templates = False
 
@@ -2935,7 +2959,7 @@ class ShippedFilesTest(Case):
 
     def test_prod_watch_uses_only_runtime_place_and_digest_channel_values(self):
         placeholders = set(re.findall(r"\{\{([a-z._]+)\}\}", self.prod_watch()))
-        expected = {"runtime.dir", "runtime.sha", "state.dir", "place", "run.post", "timezone", "chat.digest_channel_id"}
+        expected = {"runtime.dir", "runtime.sha", "state.dir", "runs.dir", "place", "run.post", "timezone", "chat.digest_channel_id"}
         self.assertEqual(placeholders, expected)
 
     def test_prod_watch_runtime_check_reads_the_runtime_commit(self):
@@ -3320,6 +3344,18 @@ class ShippedFilesTest(Case):
 
     def test_prod_watch_fetches_the_state_branch_with_an_explicit_refspec(self):
         self.assertIn("fetch --no-prune origin +claude/state:refs/remotes/origin/claude/state", self.prod_watch_step("Load the state"))
+
+    def test_every_runnable_template_creates_its_run_folder_under_the_runs_dir(self):
+        slugs = {"prod-watch": "prod-watch", "tribe-digest": "{{digest.slug}}", "chat-recap": "{{digest.slug}}"}
+        for name, slug in slugs.items():
+            command = f"mkdir -p {{{{runs.dir}}}}/{slug} && mktemp -d {{{{runs.dir}}}}/{slug}/$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX"
+            bullet = (
+                f"- Shell variables do not survive between Bash calls. Run `{command}` once, at the start, "
+                "and write the path it prints literally wherever this prompt says `<run>`."
+            )
+            with self.subTest(template=name):
+                lines = [line for line in read(os.path.join(SHIPPED_TEMPLATES, f"{name}.md")).splitlines() if "mktemp" in line]
+                self.assertEqual(lines, [bullet])
 
     def test_every_runnable_template_fetches_the_state_branch_without_pruning(self):
         for name in ("prod-watch", "tribe-digest", "chat-recap"):
