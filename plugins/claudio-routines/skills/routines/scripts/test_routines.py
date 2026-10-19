@@ -1390,7 +1390,7 @@ class PublicLintTest(Case):
         self.assertNotIn(number, self.lint(f"id {number}\n")[1])
 
     def test_unknown_collect_command_fails(self):
-        code, stdout, path = self.lint("python3 runtime/collect.py replay --config c\n")
+        code, stdout, path = self.lint("python3 runtime/collect.py scrape --config c\n")
         self.assertEqual((code, stdout), (1, f"{path}:1:collect-command\n"))
 
     def test_unknown_collect_flag_fails(self):

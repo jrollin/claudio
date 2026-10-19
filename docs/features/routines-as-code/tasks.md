@@ -1050,7 +1050,7 @@ Owner-gated: needs the merged pull request, a release tag, the transport and its
 - **Verify**: `for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
 - **Blocked by**: T-94
 - **Rules**: BR-71
-- **Status**: Not Started
+- **Status**: Complete
 
 ## Phase 20: Transport preference
 
