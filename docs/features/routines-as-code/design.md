@@ -1603,7 +1603,7 @@ A degraded run's message is one line that starts with `degraded:` and names the 
 
 **Choice**:
 - `templates/weekly-status.md` becomes runnable, with the chat recap's steps: runtime check, load state, window, environment check, collect, features, judge, apply, save, message, report (AC-55.1).
-- `config/routines/<slug>.json` with `engine: weekly` holds `owner` (the chat user id), `workspace` (the chat host for links), `recap` (the chat recap routine's slug), `exclude.channels`, `digest` (`name`, `slug`) and the sources, each with its owner identity: `jql`, `searches` with the code host login, `edited_by`, and an optional chat source with `searches` (AC-55.2).
+- `config/routines/<slug>.json` with `engine: weekly` holds `owner` (the chat user id), `workspace` (the chat host for links), `recap` (the chat recap routine's slug), `exclude.channels`, `values.digest` (`name`, `slug`, render values as in the other routines) and the sources, each with its owner identity: `jql`, `searches` with the code host login, `edited_by`, and an optional chat source with `searches` (AC-55.2).
 - The save step commits the state and the run record like the other templates; a report-only run commits the record only (AC-55.3).
 
 **Rationale**: the fourth engine follows the template and routine file conventions of the other three, so the lint, render, sync and private copies work unchanged.

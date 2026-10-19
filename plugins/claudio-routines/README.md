@@ -26,6 +26,7 @@ Manage claude.ai routines (scheduled cloud agents) as code:
 | Roles | `runtime/roles.py` | Config and query pack checks, and the record schema of each of the five roles: observability tool, document store, chat channel, code host and issue tracker |
 | Tribe engine | `runtime/tribe.py` and its `tribe_*.py` modules | The engine of a routine whose `engine` is `tribe`: window, seed, features, judgment check, lifecycle, page render and structure check, page write plan and chat message |
 | Recap engine | `runtime/recap.py` and its `recap_*.py` modules | The engine of a routine whose `engine` is `recap`: window, seed, features, judgment check, lifecycle and chat message |
+| Weekly engine | `runtime/weekly.py` and its `weekly_*.py` modules | The engine of a routine whose `engine` is `weekly`: state, window and features; the judgment check, lifecycle and message follow |
 | Provider adapters | `runtime/providers/` | One module per vendor, each with an `api` and an `mcp` transport; see [the providers README](runtime/providers/README.md) |
 
 The real templates and every value that names a company resource live in a private repository, never here.
@@ -93,13 +94,14 @@ A private `<name>-runtime.md` template is a byte copy of the public runnable tem
 
 Each flow is described step by step in [SKILL.md](skills/routines/SKILL.md).
 
-Exit codes of `routines.py`, `state.py`, `collect.py`, `evaluate.py`, `digest.py`, `tribe.py` and `recap.py`:
+Exit codes of `routines.py`, `state.py`, `collect.py`, `evaluate.py`, `digest.py`, `tribe.py`, `recap.py` and `weekly.py`:
 - 0: ok or in sync.
 - 1: findings or drift; for `collect.py check-env`, a missing credential variable.
 - 2: usage or input error, including an unreadable or invalid features, base, facts, preview, summary, record or state file; `digest.py` exits 2 for every refused input, naming the file.
 - 3 (runtime scripts only): rejected state, facts, time or query pack; for `evaluate.py judge` and `annotate`, a rejected judgment or analysis, including a file that is not valid JSON.
   - `tribe.py`: a rejected judgment, state, window or cursor (`judge`, `apply`), a page that fails its structure check (`render`, `publish-plan`), and a Run state field outside its allowed values (`seed`).
   - `recap.py`: a rejected judgment, state, window or stored unit (`judge`, `apply`, `window`, `seed`), naming its key path.
+  - `weekly.py`: a rejected state, window, collection or recap file (`window`, `features`), naming the file and key path.
 
 ## Config reference
 
@@ -363,7 +365,7 @@ Routine keys of the engine, validated at config load. A routine with `engine: tr
 
 | Key | Content |
 |---|---|
-| `engine` | `watch` (the default), `tribe` or `recap` |
+| `engine` | `watch` (the default), `tribe`, `recap` or `weekly` |
 | `page` | `how_built` and `key_callout` (lists of lines), `state_path`, `link` (a URL template holding `{{id}}`) and `title` (a template holding `{{date}}` only, the title of the page and of the chat message), every key required |
 | `publish` | `provider` (a key of `providers`), `parent` (page id), optional `week_start_format` (a `strftime` format, default `%Y-%m-%d`), `create`, `poll` and `heading` as `{tool, arguments}`, and `results`: the dotted paths `task`, `status`, `page` and `heading`, and the non-empty status lists `done` and `failed` |
 
@@ -420,6 +422,35 @@ Seed:
 Settings:
 - The private repository holds `.claude/settings.json` with `permissions.deny` listing `PushNotification`, `Bash(sleep *)` and `Monitor`. A cloud routine reads it because the private repository is its only source.
 - `routines.py lint --private` fails with `settings-missing`, `settings-invalid` or `deny-missing:<entry>` when the file or an entry is absent.
+
+## Weekly engine
+
+A routine with `engine: weekly` summarises the owner's week from issue tracker, code host, chat and document store sources. The state is `state/<slug>.json`, schema `weekly-1`: `digest`, and `last_run` (`run_at`, `week_start`) or null. It holds no message, comment or page text.
+
+```
+python3 runtime/weekly.py init     --digest SLUG --out STATE
+python3 runtime/weekly.py window   --state S --now T --tz Z [--report-only] --out W
+python3 runtime/weekly.py features --config C --routine R --window W --collections DIR [--recap RECAP_DIR] --out FEATURES
+```
+
+- `window` starts at Monday 00:00 of the week of `--now` in `--tz`, across a clock change, and ends at `--now`, which must be a UTC time ending in `Z`. It writes `from_ts`, `to_ts`, `week_start` and `report_only`; the window keeps no cursor, so `--report-only` only marks it.
+- `features` reads the collection of each source in `DIR/<source>.json` and writes one item per issue, pull request, chat thread or direct message and page with activity in the window. An item holds `source`, `role`, `kind`, `title`, `status`, `link`, `when`, `people` and `excerpts` (`by`, `at`, `text`).
+  - Keys: `issue:<key>`, `pr:<repo>#<number>`, `chat:<recap unit key>`, `page:<id>`.
+  - Excerpts: pull request activity up to 10 and chat messages up to 15, each text cut to 500 characters, newest first; a page gives its first 1000 characters as one excerpt.
+  - `--recap` is the folder of the recap routine's `state.json` and `runs/` records. A recap unit first seen or last written in the week makes a chat item with its title, status and link; the week's records give `recap_counts` (`new`, `resolved`, `handled`). A direct chat source adds its messages to the item of the same key, or makes its own.
+  - Chat units in `exclude.channels` are dropped from the items and the counts.
+  - `sources` lists each source with `read` and `reason`; a source with no collection file is not read, with the reason `no collection`.
+- Exit codes: 2 for an unreadable input or a `--now` that is not UTC, 3 for a state, window or collection that fails its checks, naming the file and key path.
+
+Routine keys of the engine, validated at config load and by `routines.py lint --private`:
+
+| Key | Content |
+|---|---|
+| `owner` | The chat user id of the owner, non-blank; a chat source sets the same `owner` |
+| `workspace` | The chat host name that builds the chat links |
+| `recap` | Optional: the slug of the chat recap routine whose state feeds the chat items |
+| `exclude` | Optional `channels`: the chat channels dropped, such as the routine's own digest channel |
+| `sources` | Issue tracker, code host, chat and document store sources only; a chat source sets `searches` |
 
 ## Local runs
 

@@ -16,6 +16,8 @@ import recap_window
 import roles
 import state
 import tribe_state
+import weekly_state
+import weekly_window
 from config import adapter_role, config_directory, load_zone, read_routine
 from providers._common import ended
 from providers._http import BODY_CAP
@@ -49,6 +51,7 @@ STATE_CHECKERS = {
     roles.DEFAULT_ENGINE: state.check_state,
     roles.TRIBE_ENGINE: tribe_state.check_state,
     roles.RECAP_ENGINE: recap_state.check_state,
+    roles.WEEKLY_ENGINE: weekly_state.check_state,
 }
 
 STEP_SPEC = {
@@ -129,6 +132,7 @@ WINDOW_CHECKERS = {
     roles.DEFAULT_ENGINE: check_fetch_window,
     roles.TRIBE_ENGINE: check_fetch_window,
     roles.RECAP_ENGINE: recap_window.check_window,
+    roles.WEEKLY_ENGINE: weekly_window.check_window,
 }
 
 
