@@ -3,7 +3,7 @@
 ---
 feature: routines-as-code
 spec_version: 1
-total_tasks: 97
+total_tasks: 98
 phases:
   - name: "Leak guard"
     tasks: [T-1, T-2, T-3]
@@ -44,7 +44,7 @@ phases:
   - name: "Raw data and replay"
     tasks: [T-94, T-95, T-96]
   - name: "Transport preference"
-    tasks: [T-97]
+    tasks: [T-97, T-98]
 depends_on: []
 ---
 
@@ -1066,6 +1066,16 @@ Owner-gated: needs the merged pull request, a release tag, the transport and its
 - **Blocked by**: T-94
 - **Rules**: BR-24, BR-25, BR-72
 - **Status**: Not Started
+
+### T-98: Read the observability tool with an access token
+- The observability adapter takes `api.credentials.token`, a personal or service access token sent as `Authorization: Bearer`, with no key. It still takes the `api_key` and `app_key` pair. A config naming the token with either key is refused, naming `api.credentials`.
+- `example/config.json` shows the token.
+- Tests: a token sends the bearer header and no key header; a config naming the token and the keys is refused.
+- **Refs**: US-13, US-14, TD-20
+- **Files**: `plugins/claudio-routines/runtime/providers/datadog.py` (modify), `plugins/claudio-routines/runtime/providers/datadog_support.py` (modify), `plugins/claudio-routines/runtime/providers/test_datadog.py` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify), `plugins/claudio-routines/example/config.json` (modify), `plugins/claudio-routines/skills/routines/scripts/test_routines.py` (modify)
+- **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 scripts/leak_check.py --tree`
+- **Rules**: BR-25
+- **Status**: Complete
 
 ## Related Features
 

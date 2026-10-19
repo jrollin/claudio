@@ -56,10 +56,13 @@ One module per vendor reads one role through `_http.py`. This file lists, per ve
 
 ### Credentials
 
+The adapter takes either an access token or a key pair, never both: a config naming `token` with `api_key` or `app_key` is refused.
+
 | Credential | Header | Holds |
 | --- | --- | --- |
-| `api_key` | `DD-API-KEY` | an API key of the organization |
-| `app_key` | `DD-APPLICATION-KEY` | an application key limited to the read-only scopes below |
+| `token` | `Authorization: Bearer` | a personal or service access token limited to the read-only scopes below; no key is sent with it |
+| `api_key` | `DD-API-KEY` | an API key of the organization, with `app_key` |
+| `app_key` | `DD-APPLICATION-KEY` | an application key limited to the read-only scopes below, with `api_key` |
 
 `providers.<name>.api.credentials` in `config.json` maps each credential to an environment variable. The variable names are a config choice:
 
@@ -70,7 +73,7 @@ One module per vendor reads one role through `_http.py`. This file lists, per ve
       "adapter": "datadog",
       "api": {
         "base_url": "https://api.datadoghq.com",
-        "credentials": {"api_key": "OBS_API_KEY", "app_key": "OBS_APP_KEY"}
+        "credentials": {"token": "OBS_ACCESS_TOKEN"}
       }
     }
   }
