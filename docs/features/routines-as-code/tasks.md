@@ -3,7 +3,7 @@
 ---
 feature: routines-as-code
 spec_version: 1
-total_tasks: 90
+total_tasks: 91
 phases:
   - name: "Leak guard"
     tasks: [T-1, T-2, T-3]
@@ -38,7 +38,7 @@ phases:
   - name: "Monitor priority and seed fixes"
     tasks: [T-72, T-73, T-74]
   - name: "Cloud run fixes"
-    tasks: [T-75, T-76, T-77, T-87, T-88, T-89, T-90]
+    tasks: [T-75, T-76, T-77, T-87, T-88, T-89, T-90, T-91]
   - name: "Chat recap engine"
     tasks: [T-78, T-79, T-80, T-81, T-82, T-83, T-84, T-85, T-86]
 depends_on: []
@@ -892,6 +892,14 @@ Runs in a local session with the chat, issue tracker, document store and observa
 - **Refs**: US-47, US-49, TD-61, TD-63
 - **Files**: `docs/features/routines-as-code/tasks.md` (modify), `plugins/claudio-routines/runtime/recap_message.py` (modify), `plugins/claudio-routines/runtime/test_recap_message.py` (modify), `plugins/claudio-routines/skills/routines/templates/chat-recap.md` (modify), `plugins/claudio-routines/skills/routines/scripts/test_routines.py` (modify)
 - **Verify**: `for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
+- **Status**: Complete
+
+### T-91: Read nested Notion blocks over the api transport
+- The document store adapter's `api` read keeps only top-level blocks, while the tribe pages hold most of their text under toggle headings, toggles, callouts, synced blocks, columns and list items with children. It reads the children of every block that has them, depth first, up to 4 levels, in page order: a text block keeps its own text and is followed by its children; a toggle and a callout read as paragraphs; a synced block reads its original's children (a reference block reads the block it is synced from); a column list and its columns add only their children; child pages, child databases and page links stay `other`. Every children read counts against the source's call cap. The connector transport's parse keeps top-level blocks only, so on a nested page the api read holds more text.
+- Tests: a toggle heading with paragraphs under it; a toggle; a callout; an original and a reference synced block; a column list with two columns; a list item with nested items; the depth cap; a child page and a child database left as `other`; the children reads paged by `next_cursor`; the call cap shared by nested reads.
+- **Refs**: US-29, TD-22
+- **Files**: `docs/features/routines-as-code/tasks.md` (modify), `plugins/claudio-routines/runtime/providers/notion.py` (modify), `plugins/claudio-routines/runtime/providers/test_notion.py` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify)
+- **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime && python3 scripts/leak_check.py --tree`
 - **Status**: Complete
 
 ## Phase 18: Chat recap engine
