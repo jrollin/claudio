@@ -907,6 +907,31 @@ class RunsDirRenderTest(Case):
         self.assertEqual((code, "places.cloud.runs_dir" in stderr), (2, True))
 
 
+class StoreDirConfigTest(Case):
+    def setUp(self):
+        super().setUp()
+        self.write_template("prod-watch", "{{place}}\n")
+
+    def render(self, **place):
+        self.write_config(make_config(places=make_places(cloud=place)))
+        return self.run_private("render", "prod-watch")
+
+    def test_an_absolute_store_dir_is_accepted(self):
+        self.assertEqual(self.render(store_dir="/srv/claudio-store")[:2], (0, "cloud\n"))
+
+    def test_a_relative_store_dir_exits_2_naming_the_key(self):
+        code, _, stderr = self.render(store_dir="claudio-store")
+        self.assertEqual((code, "places.cloud.store_dir" in stderr), (2, True))
+
+    def test_a_store_dir_with_a_parent_part_exits_2_naming_the_key(self):
+        code, _, stderr = self.render(store_dir="/srv/../claudio-store")
+        self.assertEqual((code, "places.cloud.store_dir" in stderr), (2, True))
+
+    def test_a_non_string_store_dir_exits_2_naming_the_key(self):
+        code, _, stderr = self.render(store_dir=7)
+        self.assertEqual((code, "places.cloud.store_dir" in stderr), (2, True))
+
+
 class InjectedHostsConfigTest(Case):
     def setUp(self):
         super().setUp()

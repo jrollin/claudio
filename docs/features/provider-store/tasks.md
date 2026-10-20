@@ -162,7 +162,8 @@ Paths are under `plugins/claudio-routines/` unless they start with `docs/` or `s
 - **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime -p 'test_roles.py' && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/skills/routines/scripts`
 - **Blocked by**: T-10
 - **Rules**: BR-6, BR-11
-- **Status**: Not Started
+- **Status**: Complete
+- **Result**: `store_dir` place key in roles.py and routines.py, chat `max_age` (minutes or per-kind object), `.` and `..` search names refused, optional collection `reads`: 30 new tests, roles (591), routines (786) and runtime (5660) suites passing
 
 ### T-12: Share reads through `store_dir`
 - **Scope**:

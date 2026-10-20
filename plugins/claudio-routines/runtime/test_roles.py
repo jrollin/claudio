@@ -3132,6 +3132,111 @@ class ChatSearchOptionsTest(ConfigCase):
         self.assertEqual(str(caught.exception).partition(": ")[0], "records.units[0].messages[0].group_mentions")
 
 
+CHAT_PATH = "routines.prod-watch.sources.chat"
+
+
+def store_config(store_dir):
+    config = make_config()
+    config["places"]["local"]["store_dir"] = store_dir
+    return config
+
+
+def aging_config(max_age):
+    config = make_config()
+    routine_sources(config)["chat"]["max_age"] = max_age
+    return config
+
+
+class StoreDirConfigTest(ConfigCase):
+    def test_accepts_an_absolute_store_dir(self):
+        self.assertIsNone(roles.validate_config(store_config("/srv/claudio-store"), ROUTINE, "local", role_of))
+
+    def test_rejects_a_relative_store_dir(self):
+        self.assert_config_error(store_config("claudio-store"), "places.local.store_dir")
+
+    def test_rejects_a_store_dir_with_a_parent_part(self):
+        self.assert_config_error(store_config("/srv/../claudio-store"), "places.local.store_dir")
+
+    def test_rejects_a_store_dir_with_a_current_part(self):
+        self.assert_config_error(store_config("/srv/./claudio-store"), "places.local.store_dir")
+
+    def test_rejects_a_store_dir_that_is_not_a_string(self):
+        self.assert_config_error(store_config(7), "places.local.store_dir")
+
+    def test_a_store_dir_error_never_shows_the_value(self):
+        self.assertNotIn("private-store-name", self.config_error(store_config("private-store-name")))
+
+
+class MaxAgeConfigTest(ConfigCase):
+    def test_accepts_minutes_for_every_kind(self):
+        self.assertIsNone(roles.validate_config(aging_config(60), ROUTINE, "local", role_of))
+
+    def test_accepts_zero_minutes(self):
+        self.assertIsNone(roles.validate_config(aging_config(0), ROUTINE, "local", role_of))
+
+    def test_accepts_minutes_per_kind(self):
+        max_age = {"default": 0, "history": 60, "thread": 30, "reactions": 15, "people": 1440}
+        self.assertIsNone(roles.validate_config(aging_config(max_age), ROUTINE, "local", role_of))
+
+    def test_accepts_an_object_without_a_default(self):
+        self.assertIsNone(roles.validate_config(aging_config({"history": 60}), ROUTINE, "local", role_of))
+
+    def test_rejects_negative_minutes(self):
+        self.assert_config_error(aging_config(-5), CHAT_PATH + ".max_age")
+
+    def test_rejects_fractional_minutes(self):
+        self.assert_config_error(aging_config(1.5), CHAT_PATH + ".max_age")
+
+    def test_rejects_minutes_as_text(self):
+        self.assert_config_error(aging_config("60"), CHAT_PATH + ".max_age")
+
+    def test_rejects_a_boolean(self):
+        self.assert_config_error(aging_config(True), CHAT_PATH + ".max_age")
+
+    def test_rejects_negative_minutes_for_a_kind(self):
+        self.assert_config_error(aging_config({"thread": -1}), CHAT_PATH + ".max_age.thread")
+
+    def test_rejects_fractional_minutes_for_a_kind(self):
+        self.assert_config_error(aging_config({"history": 0.5}), CHAT_PATH + ".max_age.history")
+
+    def test_rejects_an_unknown_kind(self):
+        self.assert_config_error(aging_config({"channels": 60}), CHAT_PATH + ".max_age.channels")
+
+    def test_a_max_age_error_never_shows_the_value(self):
+        self.assertNotIn("-4242", self.config_error(aging_config(-4242)))
+
+
+class SearchNameConfigTest(ConfigCase):
+    def test_rejects_a_search_named_dot(self):
+        self.assert_config_error(searching_config(chat_search(name=".")), SEARCH_PATH + "[0].name")
+
+    def test_rejects_a_search_named_dot_dot(self):
+        self.assert_config_error(searching_config(chat_search(name="..")), SEARCH_PATH + "[0].name")
+
+    def test_accepts_a_search_name_with_dots_inside(self):
+        self.assertIsNone(roles.validate_config(searching_config(chat_search(name="a.b")), ROUTINE, "local", role_of))
+
+
+class CollectionReadsTest(CollectionCase):
+    def reading(self, reads):
+        return make_collection("chat", messages_records(), {"ts": {}}, reads=reads)
+
+    def test_accepts_read_counts(self):
+        self.assertIsNone(roles.validate_collection(self.reading({"fetched": 3, "reused": 2})))
+
+    def test_accepts_a_collection_without_read_counts(self):
+        self.assertIsNone(roles.validate_collection(make_collection("chat", messages_records(), {"ts": {}})))
+
+    def test_rejects_read_counts_without_reused(self):
+        self.assert_collection_error(self.reading({"fetched": 3}), "reads.reused")
+
+    def test_rejects_a_negative_fetched_count(self):
+        self.assert_collection_error(self.reading({"fetched": -1, "reused": 0}), "reads.fetched")
+
+    def test_rejects_an_unknown_read_count(self):
+        self.assert_collection_error(self.reading({"fetched": 1, "reused": 0, "linked": 1}), "reads.linked")
+
+
 class DumpTest(unittest.TestCase):
     def test_writes_sorted_indented_utf8_json_with_a_trailing_newline(self):
         expected = '{\n  "a": [\n    1\n  ],\n  "b": "café"\n}\n'.encode("utf-8")

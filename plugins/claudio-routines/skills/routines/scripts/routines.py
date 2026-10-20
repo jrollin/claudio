@@ -334,8 +334,9 @@ def check_places(config):
         settings = require(places, place, dict, "places.")
         check_runtime_dir(require(settings, "runtime_dir", str, f"places.{place}."), f"places.{place}.runtime_dir")
         check_plain_dir(require(settings, "state_dir", str, f"places.{place}."), f"places.{place}.state_dir")
-        if "runs_dir" in settings:
-            check_plain_dir(require(settings, "runs_dir", str, f"places.{place}."), f"places.{place}.runs_dir")
+        for key in ("runs_dir", "store_dir"):
+            if key in settings:
+                check_plain_dir(require(settings, key, str, f"places.{place}."), f"places.{place}.{key}")
         if "injected_hosts" in settings:
             check_injected_hosts(settings["injected_hosts"], f"places.{place}.injected_hosts")
 
