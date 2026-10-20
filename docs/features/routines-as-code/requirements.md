@@ -868,6 +868,7 @@ THE `PostToolUse` hook saves the result byte-exact, and the next `plan` saves it
 - [ ] A call with no matching capture is printed again, and a response the model saved by hand still counts; the templates have the model make each call once and save a result by hand only for a call the plan prints again *(AC-60.5)*
 - [ ] A capture is deleted when taken and after 24 hours; the newest of several matching captures is the one saved; an unreadable or malformed capture is skipped *(AC-60.6)*
 - [ ] The README gives the hook settings of the private repository and the folder variable *(AC-60.7)*
+- [ ] When a call the plan prints again has no matching capture but a capture of the same tool name, taken at or after the first print, has other arguments, `collect.py plan` and `tribe.py publish-plan` print one line on stderr, `relay capture mismatch <id>: <path> <detail>; ...`, naming where the closest capture differs: `missing`, `extra` or `changed`, with the first differing character and both lengths of a changed string and the type names of a changed type, at most 5 paths then `+N more`; the line is printed once per plan command, leaves the capture in place and changes neither the plan nor the exit code, and the templates tell the model it is a diagnostic only *(AC-60.8)*
 
 ## Business Rules
 
@@ -952,6 +953,7 @@ THE `PostToolUse` hook saves the result byte-exact, and the next `plan` saves it
 - The capture hook never blocks or fails a tool: it exits 0 with no output, and it reads a saved result only from a regular file in a `tool-results` folder inside the session folder *(BR-79)*
 - Captures stay in a private folder that the user owns (folder 0700, files 0600), are deleted when taken or after 24 hours, and never enter git or the state branch *(BR-80)*
 - When no capture matches a printed call, the model saves that call's result by hand, as BR-66 requires *(BR-81)*
+- A relay capture mismatch line holds paths, kinds, indexes, lengths and type names only, never an argument value or a result text: the arguments carry source content and the run log outlives the run *(BR-82)*
 
 ## Out of Scope
 
@@ -963,7 +965,7 @@ THE `PostToolUse` hook saves the result byte-exact, and the next `plan` saves it
 - Document store pages the owner edited but did not create, in the weekly status: neither the search API nor the connector on this plan filters by editor; US-58 lists the pages the owner created
 - Reading chat channels in full for the recap: the announcement scan searches the configured channels only
 - Changing the 4 mirrored live prompts: the mirrors reproduce them as they are
-- Capturing the results of tools that are not connector tools, and matching a capture to a call whose arguments differ from the printed ones: the hook saves `mcp__` tools only, and a call with changed arguments falls back to the hand copy
+- Capturing the results of tools that are not connector tools, and matching a capture to a call whose arguments differ from the printed ones: the hook saves `mcp__` tools only, and a call with changed arguments falls back to the hand copy, with the difference reported by the mismatch line (AC-60.8)
 - After the tribe judgment:
   - pull requests cited by issues
   - dashboards' widget queries

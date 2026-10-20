@@ -3,7 +3,7 @@
 ---
 feature: routines-as-code
 spec_version: 1
-total_tasks: 112
+total_tasks: 114
 phases:
   - name: "Leak guard"
     tasks: [T-1, T-2, T-3]
@@ -50,7 +50,7 @@ phases:
   - name: "Backlog after the cloud rollout"
     tasks: [T-106, T-107, T-108, T-109, T-110]
   - name: "Relay capture"
-    tasks: [T-111, T-112]
+    tasks: [T-111, T-112, T-113, T-114]
 depends_on: []
 ---
 
@@ -1223,6 +1223,28 @@ Owner-gated: needs the release tag, the setup script paste at the cloud environm
 - **Verify**: `python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --private "$CLAUDIO_PRIVATE_DIR"`
 - **Blocked by**: T-111
 - **Rules**: BR-77, BR-80, BR-81
+- **Status**: Complete (released as 0.5.7 on 2026-10-20 and synced to all 5 routines, the chat recap seeded from the stored state and back on its runtime template; three cloud runs saved every chat relay result from a capture, 108 of them in the chat recap, and the tribe publish create fell back to a hand copy, which T-113 diagnoses; the cloud `errors.log` is gone after a run and was not read)
+
+### T-113: Relay capture mismatch diagnostic
+- `relay_capture.mismatch` returns the value-free differences of the closest near capture, and `collect.relay_loop` prints one `relay capture mismatch <id>: ...` stderr line per call the plan prints again that has one, for `collect.py plan` and `tribe.py publish-plan`; the templates tell the model it is a diagnostic only (TD-74).
+- Tests: a changed string reports the first differing character and both lengths (a prefix gives the shorter length), a missing key, an extra key, a list length difference and a changed type report by path; the closest of two captures wins and a tie goes to the newest; an exact match, another tool name and a capture older than the planned time give `None`; `mismatch` deletes nothing; no argument value or result text appears in the output; a printed-again call with a near capture prints exactly one line even when the loop picks up other calls, a first print or a tool with no capture prints none, and at most 5 paths show before `+N more`; the publish create names `pages[0].content`.
+- **Refs**: US-60, TD-74
+- **Files**: `plugins/claudio-routines/runtime/relay_capture.py` (modify), `plugins/claudio-routines/runtime/collect.py` (modify), `plugins/claudio-routines/runtime/test_relay_capture.py` (modify), `plugins/claudio-routines/runtime/test_collect.py` (modify), `plugins/claudio-routines/runtime/test_tribe_publish.py` (modify), `plugins/claudio-routines/skills/routines/templates/*.md` (modify), `plugins/claudio-routines/skills/routines/scripts/test_routines.py` (modify), `plugins/claudio-routines/README.md` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify), `README.md` (modify), `docs/features/routines-as-code/requirements.md` (modify), `docs/features/routines-as-code/design.md` (modify), `docs/features/routines-as-code/tasks.md` (modify)
+- **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
+- **Blocked by**: T-111
+- **Rules**: BR-78, BR-80, BR-82
+- **Status**: Complete
+
+### T-114: Relay capture mismatch rollout
+Owner-gated: needs the release tag, the setup script paste at the cloud environment and an approved sync.
+1. Release 0.5.8 holding T-113, set `runtime.tag` and `runtime.sha` in the private config, and paste `setup-script` into the cloud environment's setup script.
+2. Copy the public templates to the private `<name>-runtime.md` copies, and run `/routines sync` for each of the 5 routines.
+3. Read the `relay capture mismatch` line of the next tribe digest run, the one for the publish create, and fix the cause it names.
+- **Refs**: US-60, TD-74
+- **Files**: none in this repository; the private repository's config and template copies change
+- **Verify**: `python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --private "$CLAUDIO_PRIVATE_DIR"`
+- **Blocked by**: T-113
+- **Rules**: BR-82
 - **Status**: Not Started
 
 ## Related Features

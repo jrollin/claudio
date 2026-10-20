@@ -2504,6 +2504,23 @@ class RelayCaptureTest(RelayTestCase):
         self.at(offset)
         self.assertEqual(self.plan(source, place)[0], 0)
 
+    def plan_err_at(self, offset, source="sources-page", place="cloud"):
+        self.at(offset)
+        code, out, err = self.plan(source, place)
+        self.assertEqual((code, out), (0, ""))
+        return err
+
+    def write_planned(self, *call_ids):
+        os.makedirs(self.path(RESPONSES), exist_ok=True)
+        with open(os.path.join(self.path(RESPONSES), "planned.json"), "wb") as handle:
+            handle.write(state.dump({"planned": {call_id: RELAY_START_NS for call_id in call_ids}}))
+
+    def list_calls(self, *calls):
+        self.doc.plan_result = {"done": False, "partial": None, "calls": list(calls)}
+
+    def with_arguments(self, page, arguments):
+        return {**planned_call("sources-page", page), "arguments": arguments}
+
     def saved(self, call_id):
         with open(self.response_path(call_id), "rb") as handle:
             return handle.read()
@@ -2704,6 +2721,107 @@ class RelayCaptureTest(RelayTestCase):
             handle.write('{"planned": {"sources-page-1": "soon"}}')
         code, _, err = self.plan()
         self.assertEqual((code, "planned" in err), (3, True))
+
+    def test_a_relisted_call_with_a_near_capture_prints_one_mismatch_line(self):
+        self.plan_at(0)
+        self.capture(1, "other page", 1, arguments={"page": 2})
+        self.assertEqual(self.plan_err_at(2), "relay capture mismatch sources-page-1: page changed\n")
+
+    def test_the_mismatch_line_names_the_path_and_the_lengths_but_no_value(self):
+        self.list_calls(self.with_arguments(1, {"query": "alpha beta"}))
+        self.write_planned("sources-page-1")
+        self.capture(1, "result", 1, arguments={"query": "alpha gamma"})
+        err = self.plan_err_at(2)
+        self.assertEqual((err, "alpha" in err), ("relay capture mismatch sources-page-1: query changed at char 6 (planned 10, called 11)\n", False))
+
+    def test_the_plan_still_lists_the_call_again_after_a_mismatch(self):
+        self.plan_at(0)
+        self.capture(1, "other page", 1, arguments={"page": 2})
+        self.plan_at(2)
+        self.assertEqual((self.plan_doc()["done"], self.call_ids()), (False, ["sources-page-1"]))
+
+    def test_keeps_the_near_capture_it_reported(self):
+        self.plan_at(0)
+        self.capture(1, "other page", 1, arguments={"page": 2})
+        self.plan_at(2)
+        self.assertEqual(len(self.kept_captures()), 1)
+
+    def test_prints_the_line_again_on_the_next_plan_command(self):
+        self.plan_at(0)
+        self.capture(1, "other page", 1, arguments={"page": 2})
+        self.assertEqual([self.plan_err_at(2), self.plan_err_at(3)], ["relay capture mismatch sources-page-1: page changed\n"] * 2)
+
+    def test_prints_one_line_even_when_the_loop_picks_up_other_calls(self):
+        self.write_planned("sources-page-1", "sources-page-2")
+        self.list_calls(planned_call("sources-page", 1), planned_call("sources-page", 2))
+        self.capture(1, "page one", 1)
+        self.capture(2, "other page", 1, arguments={"page": 22})
+        err = self.plan_err_at(2)
+        self.assertEqual((err, self.saved("sources-page-1"), len(self.doc.plans)), ("relay capture mismatch sources-page-2: page changed\n", b"page one", 2))
+
+    def test_prints_one_line_for_each_relisted_call_in_call_order(self):
+        self.write_planned("sources-page-1", "sources-page-2")
+        self.list_calls(planned_call("sources-page", 1), planned_call("sources-page", 2))
+        self.capture(2, "second", 1, arguments={"page": 22})
+        self.capture(1, "first", 1, arguments={"page": 11})
+        expected = "relay capture mismatch sources-page-1: page changed\nrelay capture mismatch sources-page-2: page changed\n"
+        self.assertEqual(self.plan_err_at(2), expected)
+
+    def test_prints_no_line_for_a_call_printed_for_the_first_time(self):
+        self.capture(1, "early", 3, arguments={"page": 9})
+        self.assertEqual(self.plan_err_at(0), "")
+
+    def test_prints_no_line_when_no_capture_of_the_tool_exists(self):
+        self.plan_at(0)
+        self.capture(1, "elsewhere", 1, tool="mcp__other__read-page", arguments={"page": 2})
+        self.capture(1, "another tool", 2, tool="mcp__docs-cloud__list-pages", arguments={"page": 2})
+        self.assertEqual(self.plan_err_at(3), "")
+
+    def test_prints_no_line_when_there_is_no_capture_folder(self):
+        self.plan_at(0)
+        shutil.rmtree(self.relay_dir)
+        self.assertEqual(self.plan_err_at(2), "")
+
+    def test_prints_no_line_for_a_capture_taken_before_the_call_was_planned(self):
+        self.capture(1, "stale", -1, arguments={"page": 2})
+        self.plan_at(0)
+        self.assertEqual(self.plan_err_at(2), "")
+
+    def test_prints_no_line_for_a_call_whose_capture_matched(self):
+        self.plan_at(0)
+        self.capture(1, "page one", 1)
+        self.assertEqual(self.plan_err_at(2), "")
+
+    def test_prints_no_line_for_a_relisted_call_without_any_capture(self):
+        self.plan_at(0)
+        self.assertEqual(self.plan_err_at(2), "")
+
+    def test_names_at_most_five_paths_and_counts_the_rest(self):
+        keys = "abcdefg"
+        self.list_calls(self.with_arguments(1, {key: 1 for key in keys}))
+        self.write_planned("sources-page-1")
+        self.capture(1, "result", 1, arguments={key: 2 for key in keys})
+        expected = "relay capture mismatch sources-page-1: a changed; b changed; c changed; d changed; e changed; +2 more\n"
+        self.assertEqual(self.plan_err_at(2), expected)
+
+    def test_names_exactly_five_paths_without_a_count(self):
+        keys = "abcde"
+        self.list_calls(self.with_arguments(1, {key: 1 for key in keys}))
+        self.write_planned("sources-page-1")
+        self.capture(1, "result", 1, arguments={key: 2 for key in keys})
+        self.assertEqual(self.plan_err_at(2), "relay capture mismatch sources-page-1: a changed; b changed; c changed; d changed; e changed\n")
+
+    def test_counts_a_single_path_over_the_cap(self):
+        keys = "abcdef"
+        self.list_calls(self.with_arguments(1, {key: 1 for key in keys}))
+        self.write_planned("sources-page-1")
+        self.capture(1, "result", 1, arguments={key: 2 for key in keys})
+        self.assertTrue(self.plan_err_at(2).endswith("e changed; +1 more\n"))
+
+    def test_keeps_the_line_on_one_line_when_a_key_holds_a_line_break(self):
+        self.plan_at(0)
+        self.capture(1, "result", 1, arguments={"page": 1, "pa\nge": 2})
+        self.assertEqual(self.plan_err_at(2), "relay capture mismatch sources-page-1: pa ge extra\n")
 
 
 class CallCapTest(RelayTestCase):

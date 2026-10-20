@@ -4,6 +4,7 @@ import re
 import stat
 import sys
 import time
+from collections import namedtuple
 from time import time_ns
 
 ENV_DIR = "CLAUDIO_RELAY_DIR"
@@ -17,6 +18,8 @@ TOOL_USE_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 CAPTURE_NAME = re.compile(r"([0-9]+)-" + TOOL_USE_ID.pattern + r"\.json")
 SAVED_POINTER = re.compile(r"Error: result \([^)\n]*\) exceeds maximum allowed tokens\. Output has been saved to (/[^\n]+)\.(?:\n|\Z)")
 CAPTURE_KEYS = {"tool_name", "arguments", "text", "captured_at_ns"}
+
+Difference = namedtuple("Difference", "path kind detail")
 
 
 class Skipped(Exception):
@@ -197,24 +200,93 @@ def read_capture(directory, name, taken_ns):
     return document
 
 
-def take(directory, tool_name, arguments, not_before_ns, now_ns=None):
+def captures_of(directory, tool_name, not_before_ns, now_ns):
     now_ns = time_ns() if now_ns is None else now_ns
     try:
         checked_directory(directory, create=False)
         kept = sweep(directory, now_ns)
     except (OSError, Refused):
-        return None
-    wanted = canonical(arguments)
-    matched = []
+        return []
+    found = []
     for taken_ns, name in kept:
-        if taken_ns < not_before_ns:
-            continue
-        found = read_capture(directory, name, taken_ns)
-        if found is not None and found["tool_name"] == tool_name and canonical(found["arguments"]) == wanted:
-            matched.append((taken_ns, name, found["text"]))
+        document = read_capture(directory, name, taken_ns) if taken_ns >= not_before_ns else None
+        if document is not None and document["tool_name"] == tool_name:
+            found.append((taken_ns, name, document))
+    return found
+
+
+def take(directory, tool_name, arguments, not_before_ns, now_ns=None):
+    wanted = canonical(arguments)
+    matched = [
+        (taken_ns, name, document["text"])
+        for taken_ns, name, document in captures_of(directory, tool_name, not_before_ns, now_ns)
+        if canonical(document["arguments"]) == wanted
+    ]
     for _, name, _ in matched:
         discard(directory, name)
     return max(matched)[2] if matched else None
+
+
+def first_difference(planned, called):
+    shared = min(len(planned), len(called))
+    return next((index for index in range(shared) if planned[index] != called[index]), shared)
+
+
+def changed_detail(planned, called):
+    if type(planned) is not type(called):
+        return f"(planned {type(planned).__name__}, called {type(called).__name__})"
+    if isinstance(planned, str):
+        return f"at char {first_difference(planned, called)} (planned {len(planned)}, called {len(called)})"
+    return ""
+
+
+def keyed_differences(planned, called, path):
+    found = []
+    for key in sorted(planned.keys() | called.keys()):
+        where = f"{path}.{key}" if path else key
+        if key not in called:
+            found.append(Difference(where, "missing", ""))
+        elif key not in planned:
+            found.append(Difference(where, "extra", ""))
+        else:
+            found.extend(differences(planned[key], called[key], where))
+    return found
+
+
+def indexed_differences(planned, called, path):
+    found = []
+    for index in range(max(len(planned), len(called))):
+        where = f"{path}[{index}]"
+        if index >= len(called):
+            found.append(Difference(where, "missing", ""))
+        elif index >= len(planned):
+            found.append(Difference(where, "extra", ""))
+        else:
+            found.extend(differences(planned[index], called[index], where))
+    return found
+
+
+def differences(planned, called, path=""):
+    if isinstance(planned, dict) and isinstance(called, dict):
+        return keyed_differences(planned, called, path)
+    if isinstance(planned, list) and isinstance(called, list):
+        return indexed_differences(planned, called, path)
+    if canonical(planned) == canonical(called):
+        return []
+    return [Difference(path, "changed", changed_detail(planned, called))]
+
+
+def difference_text(difference):
+    return " ".join(part for part in difference if part)
+
+
+def mismatch(directory, tool_name, arguments, not_before_ns, now_ns=None):
+    closest = None
+    for _, _, document in reversed(captures_of(directory, tool_name, not_before_ns, now_ns)):
+        found = differences(arguments, document["arguments"])
+        if found and (closest is None or len(found) < len(closest)):
+            closest = found
+    return closest
 
 
 if __name__ == "__main__":

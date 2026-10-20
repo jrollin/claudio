@@ -1660,13 +1660,20 @@ A degraded run's message is one line that starts with `degraded:` and names the 
   - before returning a step it takes, for each call of the step already in `planned.json`, the capture of `mcp__<connector>__<tool>` with the printed arguments, writes `<id>.txt`, computes the step again and repeats until nothing is picked up;
   - calls printed for the first time are added to `planned.json` with the current time.
 - A call with no capture is printed again, and a response saved by hand is read as before; the templates have the model save a result by hand only for a call the plan prints again (AC-60.5, BR-81).
+- `mismatch(directory, tool_name, arguments, not_before_ns)` reads the captures of that tool name taken at or after `not_before_ns` under the same folder checks as `take`, deletes none of them, and returns `None` or the differences of the closest capture whose arguments differ (AC-60.8, BR-82):
+  - the closest has the fewest differing paths, the newest on a tie;
+  - a difference is a path (object keys joined with `.`, list indexes as `[i]`, keys sorted), a kind (`missing`: in the printed arguments, not in the call; `extra`: in the call, not printed; `changed`) and a value-free detail: for a changed string the first differing character (the shorter length when one string is a prefix of the other) and both lengths, for a changed type the type names, for lists of different lengths the extra or missing indexes.
+- After its pick-up loop, `collect.relay_loop` calls `mismatch` for each call of the final step already in `planned.json` and prints one stderr line per such call, `relay capture mismatch <id>: <path> <detail>; <path> <detail>`, with at most 5 paths then `+N more`, once per plan command and never per loop iteration. The tool name is built as in the pick-up, and control characters of a path are blanked so the line stays one line.
+- The diagnostic goes to stderr because the run log, which shows a command's stdout and stderr, is the only artifact that outlives a cloud run: the capture folder is gone after it. It holds no value because the arguments carry source content, a page of 28 KB in the tribe publish create, and the log is kept.
+- When several sources relay in parallel, a capture of another source can share the tool name of a printed call; the line then names identity paths such as `channel_id` or `message_ts`, a known false positive that the README states.
 
 **Alternatives considered**:
 - The model re-types each result into the file: rejected, the copies were not byte-exact and a safety classifier stopped the model in the middle of a 30 to 60 KB result in 2 cloud runs.
 - Parsing the session transcript for the results: rejected, its format is internal and unstable.
 - Smaller connector pages only: rejected, a copy by the model is still not exact.
+- Printing the differing values: rejected, they are source content and the run log is kept.
 
-**Rationale**: the harness hands the exact result to a hook, so no model turn carries the bytes. The folder, the ownership check and the session-folder check keep the hook from reading or writing outside its own data, and the hand copy stays as the fallback for any miss.
+**Rationale**: the harness hands the exact result to a hook, so no model turn carries the bytes. The folder, the ownership check and the session-folder check keep the hook from reading or writing outside its own data, and the hand copy stays as the fallback for any miss. The mismatch line says why a call was missed without printing a value.
 
 ## Implementation Considerations
 
@@ -2267,12 +2274,12 @@ sequenceDiagram
 | `plugins/claudio-routines/runtime/weekly_features.py`, `templates/weekly-status.md` | modify | `waiting_on` on weekly items |
 | `plugins/claudio-routines/runtime/providers/notion.py` | modify | Pages created by the owner over the connector |
 | `plugins/claudio-routines/runtime/recap_state.py`, `recap_features.py`, `recap_lifecycle.py`, `providers/_slack_search.py` | modify | Partial recap thread reads |
-| `plugins/claudio-routines/runtime/relay_capture.py` | new | Relay capture: the `PostToolUse` hook command and the `take` function (TD-74) |
-| `plugins/claudio-routines/runtime/test_relay_capture.py` | new | Relay capture: hook shapes, folder checks, failures, `take` matching, freshness and cleanup |
-| `plugins/claudio-routines/runtime/collect.py`, `tribe_publish.py` | modify | Relay capture: `planned.json`, `relay_loop` and the pick-up of captures in `plan` and `publish-plan` |
-| `plugins/claudio-routines/runtime/support.py`, `tribe_support.py`, `test_collect.py`, `test_tribe_publish.py` | modify | Relay capture: a temporary capture folder and a fixed clock in every test that plans, and the pick-up tests |
-| `plugins/claudio-routines/skills/routines/templates/*.md`, `skills/routines/scripts/test_routines.py` | modify | Relay capture: each call made once, the hand copy only for a call the plan prints again |
-| `plugins/claudio-routines/README.md`, `runtime/providers/README.md`, `README.md` | modify | Relay capture: the hook, the folder variable, the hook settings and the fallback |
+| `plugins/claudio-routines/runtime/relay_capture.py` | new | Relay capture: the `PostToolUse` hook command, the `take` function and the `mismatch` function (TD-74) |
+| `plugins/claudio-routines/runtime/test_relay_capture.py` | new | Relay capture: hook shapes, folder checks, failures, `take` matching, freshness and cleanup, and `mismatch` differences, selection and value-free output |
+| `plugins/claudio-routines/runtime/collect.py`, `tribe_publish.py` | modify | Relay capture: `planned.json`, `relay_loop`, the pick-up of captures in `plan` and `publish-plan` and the mismatch line |
+| `plugins/claudio-routines/runtime/support.py`, `tribe_support.py`, `test_collect.py`, `test_tribe_publish.py` | modify | Relay capture: a temporary capture folder and a fixed clock in every test that plans, and the pick-up and mismatch line tests |
+| `plugins/claudio-routines/skills/routines/templates/*.md`, `skills/routines/scripts/test_routines.py` | modify | Relay capture: each call made once, the hand copy only for a call the plan prints again, and the mismatch line as a diagnostic |
+| `plugins/claudio-routines/README.md`, `runtime/providers/README.md`, `README.md` | modify | Relay capture: the hook, the folder variable, the hook settings, the fallback and the mismatch line |
 
 Tasks create the private repository files (`config.json`, `config/routines/*.json`, `templates/prod-watch.md`, `templates/prod-watch-runtime.md`, `templates/tribe-digest.md`, `templates/chat-recap.md`, `templates/weekly-status.md`, `routines/*`, `reference/` compare script and reasons) outside this repository; this inventory never lists their content.
 

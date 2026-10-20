@@ -16,6 +16,7 @@ RUNNING = json.dumps({"task": {"id": TASK, "status": "running"}})
 FINISHED = json.dumps({"task": {"id": TASK, "status": "completed", "page": {"id": NEW_PAGE}}})
 FAILED = json.dumps({"task": {"id": TASK, "status": "failed"}})
 APPENDED = json.dumps({"block": {"id": "b-1"}})
+PAGES_ARGUMENTS = {"parent": "{{parent}}", "pages": [{"properties": {"title": "{{title}}"}, "content": "{{content}}"}]}
 
 
 class RenderTests(PublishCase):
@@ -304,6 +305,12 @@ class RelayCaptureTests(PublishCase):
         self.relay_clock.now_ns = RELAY_START_NS + offset
         return self.planned()
 
+    def plan_with_err_at(self, offset):
+        self.relay_clock.now_ns = RELAY_START_NS + offset
+        code, err = self.plan()
+        self.assertEqual(code, 0)
+        return self.read("plan.json"), err
+
     def capture(self, call, text, offset, tool=None, arguments=None):
         at = RELAY_START_NS + offset
         document = {
@@ -395,7 +402,7 @@ class RelayCaptureTests(PublishCase):
     def test_ignores_a_capture_with_other_arguments(self):
         (create,) = self.plan_at(0)["calls"]
         self.capture(create, CREATED, 1, arguments={**create["arguments"], "title": "another"})
-        self.assertEqual(self.plan_at(2)["calls"][0]["id"], "publish-1")
+        self.assertEqual(self.plan_with_err_at(2)[0]["calls"][0]["id"], "publish-1")
 
     def test_ignores_a_capture_of_another_connector(self):
         (create,) = self.plan_at(0)["calls"]
@@ -411,7 +418,34 @@ class RelayCaptureTests(PublishCase):
         self.save(1, CREATED)
         (poll,) = self.plan_at(0)["calls"]
         self.capture(poll, RUNNING, 1, arguments={"task": "task-8"})
-        self.assertEqual(self.plan_at(2)["calls"][0]["id"], "publish-2")
+        self.assertEqual(self.plan_with_err_at(2)[0]["calls"][0]["id"], "publish-2")
+
+    def test_a_relisted_create_with_a_near_capture_names_the_content_path(self):
+        self.use_config(lambda routine: routine["publish"]["create"].update({"arguments": PAGES_ARGUMENTS}))
+        (create,) = self.plan_at(0)["calls"]
+        page = create["arguments"]["pages"][0]
+        content = page["content"]
+        self.capture(create, CREATED, 1, arguments={**create["arguments"], "pages": [{**page, "content": content[:100] + "~" + content[101:]}]})
+        _, err = self.plan_with_err_at(2)
+        expected = f"relay capture mismatch publish-1: pages[0].content changed at char 100 (planned {len(content)}, called {len(content)})\n"
+        self.assertEqual((err, content[:50] in err), (expected, False))
+
+    def test_a_relisted_poll_with_a_near_capture_names_the_task_path(self):
+        self.save(1, CREATED)
+        (poll,) = self.plan_at(0)["calls"]
+        self.capture(poll, RUNNING, 1, arguments={"task": "task-8"})
+        self.assertEqual(self.plan_with_err_at(2)[1], "relay capture mismatch publish-2: task changed at char 5 (planned 6, called 6)\n")
+
+    def test_a_create_printed_for_the_first_time_prints_no_mismatch_line(self):
+        self.use_config(lambda routine: routine["publish"]["create"].update({"arguments": PAGES_ARGUMENTS}))
+        call = {"id": "publish-1", "connector": CONNECTOR, "tool": "page_create", "arguments": {"pages": []}}
+        self.capture(call, CREATED, 1)
+        self.assertEqual(self.plan_with_err_at(0)[1], "")
+
+    def test_a_relisted_create_with_no_capture_of_its_tool_prints_no_mismatch_line(self):
+        (create,) = self.plan_at(0)["calls"]
+        self.capture(create, CREATED, 1, tool=f"mcp__{CONNECTOR}__task_poll", arguments={"task": TASK})
+        self.assertEqual(self.plan_with_err_at(2)[1], "")
 
     def test_a_report_only_run_writes_no_planned_file(self):
         self.use_summary(report_only=True)
