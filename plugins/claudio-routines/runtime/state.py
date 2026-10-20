@@ -117,6 +117,7 @@ def leaf(test, expected):
 PRESENT = leaf(lambda value: True, "a value")
 NUMBER_OR_NULL = leaf(lambda value: value is None or is_number(value), "a finite number or null")
 INTEGER = leaf(is_integer, "an integer")
+COUNT = leaf(lambda value: is_integer(value) and value >= 0, "a non-negative integer")
 BOOLEAN = leaf(lambda value: isinstance(value, bool), "a boolean")
 TEXT = leaf(lambda value: isinstance(value, str), "a string")
 SCHEMA = leaf(lambda value: is_integer(value) and value == SCHEMA_VERSION, f"schema {SCHEMA_VERSION}")
@@ -198,7 +199,14 @@ RUN_CONTEXT_SPEC = {
     "config": Nullable(TEXT),
     "config_dirty": Nullable(BOOLEAN),
     "collected": {
-        "*": {"role": TEXT, "transport": TRANSPORT, "skipped": Omittable(SKIPPED_SPEC), "read": BOOLEAN, "reason": Nullable(TEXT)}
+        "*": {
+            "role": TEXT,
+            "transport": TRANSPORT,
+            "skipped": Omittable(SKIPPED_SPEC),
+            "read": BOOLEAN,
+            "reason": Nullable(TEXT),
+            "reads": Omittable({"fetched": COUNT, "reused": COUNT}),
+        }
     },
 }
 RUN_CONTEXT_FIELDS = tuple(RUN_CONTEXT_SPEC)

@@ -618,6 +618,15 @@ class RunContextTest(EvaluateCase):
         self.assertEqual(base["run_context"]["collected"], expected)
 
 
+    def test_collected_keeps_the_read_counts_of_a_source(self):
+        docs = collections()
+        docs["notes"] = {**docs["notes"], "reads": {"fetched": 2, "reused": 3}}
+
+        self.assertEqual(self.base(docs=docs)["run_context"]["collected"]["notes"]["reads"], {"fetched": 2, "reused": 3})
+
+    def test_collected_has_no_read_counts_for_a_source_without_them(self):
+        self.assertNotIn("reads", self.base(docs=collections())["run_context"]["collected"]["notes"])
+
 class PreferredTransportTest(EvaluateCase):
     SKIPPED = [{"transport": "api", "missing": ["EXAMPLE_TOKEN"]}]
 

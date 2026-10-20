@@ -213,7 +213,8 @@ Paths are under `plugins/claudio-routines/` unless they start with `docs/` or `s
 - **Files**: `runtime/evaluate.py` (modify), `runtime/state.py` (modify), `runtime/test_evaluate.py` (modify), `runtime/test_state.py` (modify)
 - **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime -p 'test_evaluate.py' && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime -p 'test_state.py' && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime -p 'test_*pipeline.py'`
 - **Blocked by**: T-14
-- **Status**: Not Started
+- **Status**: Complete
+- **Result**: `run_context.collected.<source>.reads` copied from the collection when present, optional in `RUN_CONTEXT_SPEC`, never in the next state: 6 new tests, evaluate, state, pipeline and runtime suites passing
 
 ### T-16: Carry the reuse counts into the weekly record
 - **Scope**:
