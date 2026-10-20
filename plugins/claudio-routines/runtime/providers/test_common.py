@@ -1,7 +1,10 @@
 import decimal
 import unittest
 
+import providers
 from providers import _common
+from providers._errors import SourceUnreadable
+from providers.test_http import FakeOpener, FakeResponse
 
 FIRST_READ_FROM_TS = 1_760_000_000
 WINDOW = {"from_ts": 1_760_003_600, "to_ts": 1_760_007_200, "first_read_from_ts": FIRST_READ_FROM_TS}
@@ -30,6 +33,44 @@ class ReadStartTest(unittest.TestCase):
     def test_ignores_the_run_window_start(self):
         window = {**WINDOW, "from_ts": FIRST_READ_FROM_TS + 9000}
         self.assertEqual(_common.read_start(window, FIRST_READ_FROM_TS + 100), FIRST_READ_FROM_TS + 100)
+
+
+PROVIDER = {"api": {"base_url": "https://api.example.test", "credentials": {}}}
+JSON_ACCEPT = {"accept": "application/json"}
+GITHUB_STATIC = {"accept": "application/vnd.github+json", "x-github-api-version": "2022-11-28"}
+
+
+def sent_headers(name, provider=PROVIDER):
+    opener = FakeOpener(FakeResponse())
+    _common.injected_client(provider, providers.load(name).STATIC_HEADERS, opener=opener).get("/v1/things")
+    return {header.lower(): value for header, value in opener.requests[0].header_items()}
+
+
+class InjectedClientTest(unittest.TestCase):
+    def test_the_document_store_sends_its_api_version_and_no_credential_header(self):
+        self.assertEqual(sent_headers("notion"), {**JSON_ACCEPT, "notion-version": "2026-03-11"})
+
+    def test_the_code_host_sends_its_media_type_and_api_version_and_no_credential_header(self):
+        self.assertEqual(sent_headers("github"), GITHUB_STATIC)
+
+    def test_the_observability_adapter_sends_no_credential_header(self):
+        self.assertEqual(sent_headers("datadog"), JSON_ACCEPT)
+
+    def test_the_issue_tracker_sends_no_credential_header(self):
+        self.assertEqual(sent_headers("jira"), JSON_ACCEPT)
+
+    def test_the_chat_adapter_sends_no_credential_header(self):
+        self.assertEqual(sent_headers("slack"), JSON_ACCEPT)
+
+    def test_reads_no_variable_even_when_the_provider_names_one(self):
+        opener = FakeOpener(FakeResponse(b'{"ok": true}'))
+        provider = {"api": {"base_url": "https://api.example.test", "credentials": {"token": "EXAMPLE_TOKEN"}}}
+        self.assertEqual(_common.injected_client(provider, {}, opener=opener).get("/v1/things"), {"ok": True})
+
+    def test_refuses_a_base_url_that_is_not_https(self):
+        with self.assertRaises(SourceUnreadable) as caught:
+            _common.injected_client({"api": {"base_url": "http://api.example.test", "credentials": {}}}, {})
+        self.assertEqual(str(caught.exception), _common.BASE_URL_INVALID)
 
 
 if __name__ == "__main__":

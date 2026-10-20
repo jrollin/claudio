@@ -12,6 +12,7 @@ ROLE = "document_store"
 CREDENTIAL = "token"
 LINKS_BASE = "https://www.notion.so"
 API_VERSION = "2026-03-11"
+STATIC_HEADERS = {"Notion-Version": API_VERSION}
 PAGES_PATH = "/v1/pages/"
 BLOCKS_PATH = "/v1/blocks/"
 SEARCH_PATH = "/v1/search"
@@ -117,7 +118,7 @@ def api_client(provider, opener=None, environ=None, sleep=None):
 
 
 def _auth(values):
-    return {"Authorization": "Bearer " + values[CREDENTIAL], "Notion-Version": API_VERSION}
+    return {"Authorization": "Bearer " + values[CREDENTIAL], **STATIC_HEADERS}
 
 
 class _Budget:

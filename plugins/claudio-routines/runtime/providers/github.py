@@ -13,6 +13,7 @@ ROLE = "code_host"
 CREDENTIAL = "token"
 MEDIA_TYPE = "application/vnd.github+json"
 API_VERSION = "2022-11-28"
+STATIC_HEADERS = {"Accept": MEDIA_TYPE, "X-GitHub-Api-Version": API_VERSION}
 PER_PAGE = 100
 ISSUES_DISABLED = 410
 PULLS_TOOL = "list_pull_requests"
@@ -32,7 +33,7 @@ def api_client(provider, opener=None, environ=None, sleep=None):
 
 
 def _auth(values):
-    return {"Authorization": "Bearer " + values[CREDENTIAL], "Accept": MEDIA_TYPE, "X-GitHub-Api-Version": API_VERSION}
+    return {"Authorization": "Bearer " + values[CREDENTIAL], **STATIC_HEADERS}
 
 
 def fetch(source, window, cursor, entries, http):

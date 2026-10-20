@@ -907,6 +907,42 @@ class RunsDirRenderTest(Case):
         self.assertEqual((code, "places.cloud.runs_dir" in stderr), (2, True))
 
 
+class InjectedHostsConfigTest(Case):
+    def setUp(self):
+        super().setUp()
+        self.write_template("prod-watch", "{{place}}\n")
+
+    def render(self, **place):
+        self.write_config(make_config(places=make_places(cloud=place)))
+        return self.run_private("render", "prod-watch")
+
+    def test_a_list_of_plain_host_names_is_accepted(self):
+        self.assertEqual(self.render(injected_hosts=["api.example.test", "docs.example.test"])[:2], (0, "cloud\n"))
+
+    def test_a_place_without_injected_hosts_is_accepted(self):
+        self.assertEqual(self.render()[:2], (0, "cloud\n"))
+
+    def test_a_string_exits_2_naming_the_key(self):
+        code, _, stderr = self.render(injected_hosts="api.example.test")
+        self.assertEqual((code, "places.cloud.injected_hosts" in stderr), (2, True))
+
+    def test_a_non_string_item_exits_2_naming_the_key(self):
+        code, _, stderr = self.render(injected_hosts=["api.example.test", 7])
+        self.assertEqual((code, "places.cloud.injected_hosts" in stderr), (2, True))
+
+    def test_a_url_exits_2_naming_the_key(self):
+        code, _, stderr = self.render(injected_hosts=["https://api.example.test"])
+        self.assertEqual((code, "places.cloud.injected_hosts" in stderr), (2, True))
+
+    def test_a_host_with_a_port_exits_2_naming_the_key(self):
+        code, _, stderr = self.render(injected_hosts=["api.example.test:443"])
+        self.assertEqual((code, "places.cloud.injected_hosts" in stderr), (2, True))
+
+    def test_an_empty_host_exits_2_naming_the_key(self):
+        code, _, stderr = self.render(injected_hosts=[""])
+        self.assertEqual((code, "places.cloud.injected_hosts" in stderr), (2, True))
+
+
 class SetupScriptCommandTest(Case):
     patch_templates = False
 
@@ -3453,6 +3489,19 @@ class ShippedFilesTest(Case):
                 text = read(os.path.join(SHIPPED_TEMPLATES, f"{name}.md"))
                 line = next(line for line in text.splitlines() if line.startswith("- Each `fallback <source> <from> <to> <variable>` line"))
                 self.assertIn(expected, line)
+
+    def test_every_runnable_template_reports_nothing_for_an_injected_line(self):
+        expected = "says the place's proxy adds that source's credential. Report nothing for it and continue."
+        for name in ("prod-watch", "tribe-digest", "chat-recap", "weekly-status"):
+            with self.subTest(template=name):
+                text = read(os.path.join(SHIPPED_TEMPLATES, f"{name}.md"))
+                line = next(line for line in text.splitlines() if line.startswith("- Each `injected <source> <host>` line"))
+                self.assertIn(expected, line)
+
+    def test_the_skill_local_check_reports_nothing_for_an_injected_line(self):
+        text = read(SKILL)
+        line = next(line for line in text.splitlines() if line.strip().startswith("- Each `injected <source> <host>` line"))
+        self.assertIn("report nothing for it", line)
 
     def test_every_runnable_template_never_reads_a_source_through_the_other_transport(self):
         for name in ("prod-watch", "tribe-digest", "chat-recap", "weekly-status"):

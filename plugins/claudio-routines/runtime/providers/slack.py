@@ -12,6 +12,7 @@ from ._slack_search import _ApiReader, _RelayReader, _search_units
 
 ROLE = "chat"
 CREDENTIAL = "token"
+STATIC_HEADERS = {}
 NOT_LISTED = "channel not listed"
 INVALID_ROOT = "invalid root ts"
 LINKS_BASE = "https://slack.com"

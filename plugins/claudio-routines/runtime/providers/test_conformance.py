@@ -38,6 +38,9 @@ class ConformanceTest(unittest.TestCase):
 
         self.assertEqual(missing, [])
 
+    def test_every_adapter_declares_its_static_headers(self):
+        self.assertEqual([name for name, module in adapters().items() if not isinstance(getattr(module, "STATIC_HEADERS", None), dict)], [])
+
     def test_every_adapter_names_its_credentials(self):
         self.assertEqual([name for name, module in adapters().items() if not credential_names(module)], [])
 

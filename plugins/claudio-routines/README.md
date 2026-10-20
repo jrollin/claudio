@@ -135,6 +135,7 @@ Routine files and routines inline under `routines` in `config.json` are both acc
 | `places.<place>.runtime_dir` | Where the setup script installs the runtime in that place: absolute, at least two levels below the root, no `.` or `..` component, last component starting with `claudio-runtime` (for example `/opt/claudio-runtime`) |
 | `places.<place>.state_dir` | Absolute path of the private repository checkout in that place |
 | `places.<place>.runs_dir` | Optional. Absolute folder where a run of that place creates its run folder, `<runs_dir>/<slug>/<UTC start time>-<random>`; `/tmp` without it. Raw results hold source content, so keep it in a folder git ignores (for example `/srv/claudio-runs`) |
+| `places.<place>.injected_hosts` | Optional. List of plain host names (such as `api.example.test`) whose credentials the place's proxy adds, for example the cloud environment's network secrets. An `api` provider whose `api.base_url` host is listed is usable there without its credential variables, and the client sends no credential header. The code host's host is refused |
 | `providers.<name>` | One provider; sources point at it by `<name>` |
 | `providers.<name>.adapter` | Module name of its adapter under `runtime/providers/` |
 | `providers.<name>.api.base_url` | HTTPS base URL of the provider API, with no user info, query or fragment: the only host the adapter calls |
@@ -220,6 +221,7 @@ Config checks:
 - `places.cloud` and `places.local` are both required.
 - `places.<place>.runtime_dir`, `places.<place>.state_dir` and, when present, `places.<place>.runs_dir` match `^(/[A-Za-z0-9._-]+)+/?$`, with no `.` or `..` component, since the template uses them unquoted in shell commands.
 - `places.<place>.runs_dir` is a string: a relative path or another type fails the config check, naming `places.<place>.runs_dir`.
+- `places.<place>.injected_hosts` is a list of plain host names matching `^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*$`: another type, a URL or a host with a port fails the config check, naming `places.<place>.injected_hosts`. A code host provider read over `api` at that place whose host is listed fails it too.
 - `timezone` matches `^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+)*$`, since the template uses it unquoted in shell commands.
 - `runtime.dir`, a shared `values.state.dir` and a routine `values.state.dir` are refused; their values belong in `places.<place>.runtime_dir` and `places.<place>.state_dir`.
 - A template name matches `^[a-z0-9-]+$`.
@@ -247,6 +249,7 @@ Transport choice:
 - `collect.py sources --out <run>/sources.json` writes, per source, its `role`, `provider`, the chosen `transport` (`null` when none is usable) and `skipped`, the transports passed over with their missing variables.
 - `fetch`, `plan`, `parse` and `replay` take `--sources <run>/sources.json` and read through the chosen transport. A command that does not match it exits 2. Without the flag they choose from the environment.
 - `check-env` prints a `fallback <source> <from> <to> <variable>` line per skipped transport and exits 0. It prints `missing <source> <variable>` lines only for a source with no usable transport, and `connector <source> <connector>` lines for a source read through `mcp`.
+- `check-env` prints an `injected <source> <host>` line, instead of any `missing` line, for a source read through `api` whose provider host is in the place's `injected_hosts`. Its requests carry the adapter's static headers (an API version, a media type) and no credential header, and the run reads no variable for it.
 - The collection and the run record keep the chosen transport and `skipped`.
 
 Reads:
@@ -614,6 +617,7 @@ Record text written by other people (messages, titles) reaches a model that hold
 | A run says `degraded`, or `/routines run` stops before rendering | The runtime at `places.<place>.runtime_dir` is missing, at another commit, or holds changed or extra files | Run the setup script of that place again and check `runtime.sha` |
 | `check-env` prints `missing <source> <variable>`, or a source is not read with `credentials missing: <variable>` | The place lacks a credential variable, or it is blank, and no `mcp` transport is listed for the source | Set it in the shell (`local`) or in the cloud environment's variables (`cloud`), or list `mcp` after `api` |
 | `check-env` prints `fallback <source> <from> <to> <variable>` | `<variable>` is missing or blank, so the source is read through `<to>` | Set the variable to read the source through `<from>` |
+| `check-env` prints `injected <source> <host>` | The provider's host is in the place's `injected_hosts`: the proxy adds the credential | Nothing; remove the host from `injected_hosts` to send the variables from the session instead |
 | An `api` source reads locally but not in the cloud | The cloud environment blocks the provider's host | Allow the hosts the providers README lists for that vendor |
 | The digest names a missing connector | The session lists no tool from the connector `check-env` named | Connect it in the session (`local`) or attach it to the routine (`cloud`), under the name `mcp.connectors.<place>` sets |
 | A run reports `degraded: judgment rejected` | The model's judgment or analysis failed the checker twice | Read the key path in the message, then fix the rule text that led the model astray and run again |
