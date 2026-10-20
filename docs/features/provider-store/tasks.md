@@ -134,7 +134,8 @@ Paths are under `plugins/claudio-routines/` unless they start with `docs/` or `s
 - **Files**: `skills/routines/templates/prod-watch.md` (modify), `skills/routines/templates/tribe-digest.md` (modify), `skills/routines/templates/chat-recap.md` (modify), `skills/routines/templates/weekly-status.md` (modify)
 - **Verify**: `! grep -rnE 'collect\.py (fetch|plan|parse|replay).*--responses' plugins/claudio-routines/skills/routines/templates && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/skills/routines/scripts && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public`
 - **Blocked by**: T-6
-- **Status**: Not Started
+- **Status**: Complete
+- **Result**: the 4 templates pass `--run <run>` to `fetch`, `plan` and `parse`, the hook and the hand-save fallback save at the call's `path` (creating its folder first, Write tool rule kept), and the `<role>` substitution is gone; `tribe.py publish-*` keep `--responses`; the template text tests of `test_routines.py` follow; 782 routines tests and `lint --public` green
 
 ### T-10: Document the entity layout
 - **Scope**:
