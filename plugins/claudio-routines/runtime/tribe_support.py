@@ -13,7 +13,7 @@ import state
 import tribe
 import tribe_features
 import tribe_state
-from support import ts
+from support import isolate_relay, ts
 
 SLUG = "tribe-digest"
 LONG = "x" * (state.LABEL_CAP + 1)
@@ -222,6 +222,7 @@ class FileCase(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.dir)
+        self.relay_dir, self.relay_clock = isolate_relay(self)
 
     def path(self, name):
         return os.path.join(self.dir, name)

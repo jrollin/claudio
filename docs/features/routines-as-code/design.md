@@ -22,6 +22,7 @@ Five parts, one new plugin, one private repository.
   - `collect.py` reads one source of a routine for a window and writes a collection file in the schema of the source's role.
   - The `api` transport calls the provider's HTTPS API with credentials from environment variables.
   - The `mcp` transport writes a plan that the model relays through a claude.ai connector, then parses the saved responses.
+  - A `PostToolUse` hook, `relay_capture.py`, saves each connector result byte-exact, and `plan` picks it up as the response of its call (TD-74).
   - The private config picks the transport per source and per place (`cloud`, `local`).
   - `providers/` holds one adapter module per vendor.
   - `evaluate.py` computes Prod watch's features from the collections, the query pack and the state, checks the model's judgment and analysis against them, and writes the facts `state.py` takes.
@@ -75,7 +76,7 @@ flowchart TD
     F -->|Invalid config or query pack| Y[Post the error, stop, write no state]
     F --> G{Transport}
     G -->|api| H[collect.py fetch: HTTPS, env credentials]
-    G -->|mcp| I[collect.py plan, model relays the calls, saves the responses]
+    G -->|mcp| I[collect.py plan saves the captured results, model makes the calls once]
     I --> J{Plan done?}
     J -->|No| I
     J -->|Yes| K[collect.py parse]
@@ -521,7 +522,7 @@ The digest post stays a model call to the chat channel's connector in both place
 
 **Choice**: three steps, each a file:
 1. `collect.py plan --responses DIR --out PLAN` writes the next calls, given the responses saved so far: `{"done": false, "partial": null, "calls": [{"id", "connector", "tool", "arguments"}]}`, or `done` true with no calls.
-2. The model calls each tool on the named connector with the arguments as given, and saves each result unchanged as `DIR/<id>.txt`: it copies the file when the harness saved the result to one, and otherwise writes the result text as is with the file-write tool, never inside a shell command (AC-15.3, BR-66).
+2. The model calls each tool on the named connector with the arguments as given, once. The capture hook saves each result and the next `plan` writes it as `DIR/<id>.txt` (TD-74, AC-15.3). For a call the plan prints again, the model saves the result unchanged itself: it copies the file when the harness saved the result to one, and otherwise writes the result text as is with the file-write tool, never inside a shell command (BR-66).
 3. `collect.py parse --responses DIR --out COLLECTION` reads the saved responses and writes the collection.
 
 Loop termination (AC-15.6):
@@ -545,7 +546,7 @@ Two kinds of calls:
 - The model writes the collection: rejected, that transcription is what the scripts replace.
 - One static plan with every page: rejected, a cursor is known only after its page.
 
-**Rationale**: the model only moves bytes between a connector and a file; the checksum and the digest catch a result or parameters changed in transcription, and parsing stays in tested code. They do not stop a hostile relay, which could compute both.
+**Rationale**: the model only makes the calls and, for a call the capture missed, moves bytes between a connector and a file; the checksum and the digest catch a result or parameters changed in transcription, and parsing stays in tested code. They do not stop a hostile relay, which could compute both.
 
 ### TD-22: Provider adapters
 
@@ -1276,7 +1277,7 @@ Stored checks absent from the judgment are kept unchanged. The correction loop i
   - first, when the state's `weekly_heading_week` differs from the run's ISO week in the config timezone, the weekly heading append to the main page, so the first page of a week lands under its heading;
   - then one page create under the main page, in background mode, with the title and the rendered content, even when the heading failed;
   - then one task poll per plan step until the task ends, at most 20 polls.
-- The model relays each call unchanged and saves each result.
+- The model makes each call once; the hook saves each result and `publish-plan` picks it up (TD-74).
 - Tool names and argument shapes come from the routine's `publish` key, never from code; every template is filled before the first call, so a bad template stops the run before a page exists.
 - `page` and `publish` are required for a routine with `engine: tribe` and checked at config load, with every `page` key required and `publish.provider` naming a configured provider. The connector of that provider for the run's place is checked when `publish-plan` and `publish-parse` run.
 - Placeholders of a call template:
@@ -1641,6 +1642,31 @@ A degraded run's message is one line that starts with `degraded:` and names the 
 - With `since`, `facts_of` takes a thread unit's stored value with the messages read: `answered` is the later of the two, `owner_took_part` holds when the stored value is not null or the owner wrote in the read (AC-59.3). With `full`, the facts use the messages read only, so the default stays as it was.
 
 **Rationale**: long threads the recap already knows stop going through the relay in full, without losing whether the owner answered.
+
+### TD-74: Relay capture by a PostToolUse hook
+
+**Choice**: a Claude Code `PostToolUse` hook saves each connector result, and `plan` turns the captures into responses.
+- `runtime/relay_capture.py` is standard library only. It runs as the hook command (`python3 -I .../relay_capture.py`, the hook JSON on stdin) and as a module that `collect.py` imports (AC-60.1).
+- The private repository's `.claude/settings.json` declares the hook: event `PostToolUse`, matcher `mcp__.*`, command `python3 -I "${CLAUDIO_RUNTIME_DIR:-<cloud runtime dir>}/plugins/claudio-routines/runtime/relay_capture.py" || true`, so a wrong runtime path never reaches the model as a hook error. A cloud session reads it because the private repository is its only repository; a local run sets `CLAUDIO_RUNTIME_DIR` in the private repository's `.claude/settings.local.json` `env`.
+- The hook input carries `tool_name` (`mcp__<connector>__<tool>`, the connector being the config value `mcp.connectors.<place>`), `tool_input` (the arguments as the model sent them), `tool_use_id`, `transcript_path` and `tool_response`:
+  - a list of `{"type": "text", "text": ...}` blocks is saved as the concatenation of the texts;
+  - a string that says the result exceeds the token limit and was saved to a file names that file, under the folder of the transcript; the hook reads it only when its real path is inside the real path of the transcript's folder, its parent folder is `tool-results` and it is a regular file;
+  - any other shape, a text over 10 MB or a name that does not start with `mcp__` saves nothing.
+- A capture is `<time ns>-<tool use id>.json` with `tool_name`, `arguments`, `text` and `captured_at_ns`, written atomically (a temporary file created with `O_CREAT|O_EXCL|O_NOFOLLOW` and mode 0600, then renamed) in the capture folder: `CLAUDIO_RELAY_DIR` when set and not blank, else `/tmp/claudio-relay`. The folder is created with mode 0700; the hook and `take` refuse one that is a link, is not a folder or belongs to another user (AC-60.2, BR-80).
+- The hook exits 0 and prints nothing; an error adds one line (time, error class, message, no result text) to `errors.log` in the folder when the folder is usable (AC-60.3, BR-79).
+- `take(directory, tool_name, arguments, not_before_ns)` returns the text of the newest capture with that exact tool name and the same arguments (`json.dumps` with sorted keys) taken at or after `not_before_ns`, deletes every capture it matched and the captures older than 24 hours, and skips unreadable or malformed ones (AC-60.6, BR-78).
+- `collect.relay_loop` serves `collect.py plan` and `tribe.py publish-plan` (AC-60.4):
+  - `planned.json` in the responses folder maps each printed call id to the time it was first printed;
+  - before returning a step it takes, for each call of the step already in `planned.json`, the capture of `mcp__<connector>__<tool>` with the printed arguments, writes `<id>.txt`, computes the step again and repeats until nothing is picked up;
+  - calls printed for the first time are added to `planned.json` with the current time.
+- A call with no capture is printed again, and a response saved by hand is read as before; the templates have the model save a result by hand only for a call the plan prints again (AC-60.5, BR-81).
+
+**Alternatives considered**:
+- The model re-types each result into the file: rejected, the copies were not byte-exact and a safety classifier stopped the model in the middle of a 30 to 60 KB result in 2 cloud runs.
+- Parsing the session transcript for the results: rejected, its format is internal and unstable.
+- Smaller connector pages only: rejected, a copy by the model is still not exact.
+
+**Rationale**: the harness hands the exact result to a hook, so no model turn carries the bytes. The folder, the ownership check and the session-folder check keep the hook from reading or writing outside its own data, and the hand copy stays as the fallback for any miss.
 
 ## Implementation Considerations
 
@@ -2094,7 +2120,7 @@ sequenceDiagram
         M->>C: fetch the chat source
         C->>A: searches, conversation, thread and reactions reads
     else mcp transport
-        M->>C: plan, relay with the Write tool, parse
+        M->>C: plan, make the calls (the hook captures the results), parse
     end
     M->>R: features
     R-->>M: features.json with facts and allowed kinds, rules
@@ -2241,6 +2267,12 @@ sequenceDiagram
 | `plugins/claudio-routines/runtime/weekly_features.py`, `templates/weekly-status.md` | modify | `waiting_on` on weekly items |
 | `plugins/claudio-routines/runtime/providers/notion.py` | modify | Pages created by the owner over the connector |
 | `plugins/claudio-routines/runtime/recap_state.py`, `recap_features.py`, `recap_lifecycle.py`, `providers/_slack_search.py` | modify | Partial recap thread reads |
+| `plugins/claudio-routines/runtime/relay_capture.py` | new | Relay capture: the `PostToolUse` hook command and the `take` function (TD-74) |
+| `plugins/claudio-routines/runtime/test_relay_capture.py` | new | Relay capture: hook shapes, folder checks, failures, `take` matching, freshness and cleanup |
+| `plugins/claudio-routines/runtime/collect.py`, `tribe_publish.py` | modify | Relay capture: `planned.json`, `relay_loop` and the pick-up of captures in `plan` and `publish-plan` |
+| `plugins/claudio-routines/runtime/support.py`, `tribe_support.py`, `test_collect.py`, `test_tribe_publish.py` | modify | Relay capture: a temporary capture folder and a fixed clock in every test that plans, and the pick-up tests |
+| `plugins/claudio-routines/skills/routines/templates/*.md`, `skills/routines/scripts/test_routines.py` | modify | Relay capture: each call made once, the hand copy only for a call the plan prints again |
+| `plugins/claudio-routines/README.md`, `runtime/providers/README.md`, `README.md` | modify | Relay capture: the hook, the folder variable, the hook settings and the fallback |
 
 Tasks create the private repository files (`config.json`, `config/routines/*.json`, `templates/prod-watch.md`, `templates/prod-watch-runtime.md`, `templates/tribe-digest.md`, `templates/chat-recap.md`, `templates/weekly-status.md`, `routines/*`, `reference/` compare script and reasons) outside this repository; this inventory never lists their content.
 

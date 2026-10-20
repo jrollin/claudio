@@ -65,6 +65,7 @@ This repository hosts several plugins, each shipped independently from the `clau
 | `routines` | Export live routines, render prompts from private templates, show drift, lint, push after approval, print the environment setup script, seed a tribe routine's state from its previous digest pages or a recap routine's state from its stored state (`seed`), and run a routine locally. `lint --private` also fails a private repository whose `.claude/settings.json` is missing (`settings-missing`), invalid (`settings-invalid`) or lacks a denied tool (`deny-missing:<entry>`) |
 | `runtime/state.py` | State engine for routine runs: window, item lifecycle, blind spots, mutes |
 | `runtime/collect.py` | Collectors: read a source over its provider API or through a claude.ai connector, chosen per source and place |
+| `runtime/relay_capture.py` | `PostToolUse` hook command that saves each connector result byte-exact, so a relay run never copies a result by hand; `collect.py plan` and `tribe.py publish-plan` pick the captures up |
 | `runtime/evaluate.py` | Compute the judgment features from collections and a query pack, check the model's judgment and analysis, and merge them into the facts the state engine takes |
 | `runtime/digest.py` | Digest: renders the posted message from the change summary, the next state and the base file, so the model posts it unchanged and writes none of it |
 | `runtime/features.py` | Features, base and rules files: the named numbers the model judges and cites |

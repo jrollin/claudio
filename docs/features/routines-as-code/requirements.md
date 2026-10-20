@@ -251,7 +251,7 @@ THE collector writes a request plan, the model executes the plan through the con
 **Acceptance Criteria:**
 - [ ] For a provider whose connector runs code, each plan step is one script for that tool, which reads up to the page cap inside the connector and returns a compact result *(AC-15.1)*
 - [ ] For a provider without code execution, the plan lists the connector tool calls and their arguments *(AC-15.2)*
-- [ ] The model saves each response unchanged, with no edit, summary or filter before the parser reads it; a script result proves it per AC-15.4 *(AC-15.3)*
+- [ ] Each response is saved unchanged, with no edit, summary or filter before the parser reads it: by the capture hook (US-60), or by the model for a call the plan lists again; a script result proves it per AC-15.4 *(AC-15.3)*
 - [ ] A script result carries a checksum of its payload and a digest of the plan it ran, both computed inside the connector; a saved result whose checksum or plan digest does not match is rejected, with the source marked not read *(AC-15.4)*
 - [ ] A response the parser cannot read marks the source not read, naming the tool *(AC-15.5)*
 - [ ] The plan loop ends within the page cap: reaching the cap, or a cursor that repeats, ends it and marks the source partial *(AC-15.6)*
@@ -855,6 +855,20 @@ THE run reads that thread from just before its last stored message, and the fact
 - [ ] The facts take the later of the stored `owner_last_ts` and the owner's messages read, for `answered`, and count the owner as taking part when either holds *(AC-59.3)*
 - [ ] Without `thread_reads`, or with `full`, every read is unchanged *(AC-59.4)*
 
+### Capture connector results with a hook {#US-60}
+
+WHEN a relay source calls a connector tool
+THE `PostToolUse` hook saves the result byte-exact, and the next `plan` saves it as the response of that call, so the model never copies a result into a file
+
+**Acceptance Criteria:**
+- [ ] `relay_capture.py`, run as the hook command, saves the text of the result of a tool named `mcp__<connector>__<tool>`: the concatenated text blocks of a list result, or the content of the file the harness names for a result it saved to a file, when that file is a regular file in a `tool-results` folder inside the session folder; any other result shape, a text over 10 MB or a tool that is not a connector tool saves nothing *(AC-60.1)*
+- [ ] A capture holds the tool name, the arguments as the model sent them, the text and the capture time, in the capture folder (`CLAUDIO_RELAY_DIR`, else `/tmp/claudio-relay`) created with mode 0700; a folder that is a link, is not a folder or belongs to another user receives and gives nothing *(AC-60.2)*
+- [ ] The hook exits 0 and prints nothing whatever happens; an error adds one line with the time, the error class and a message, never result text, to `errors.log` in the folder when it can *(AC-60.3)*
+- [ ] `collect.py plan` and `tribe.py publish-plan` record when each printed call id was first printed; before they print a step they save as the call's response the capture with the same tool name (`mcp__<connector>__<tool>`) and the same arguments taken at or after that time, then compute the step again, until nothing is picked up *(AC-60.4)*
+- [ ] A call with no matching capture is printed again, and a response the model saved by hand still counts; the templates have the model make each call once and save a result by hand only for a call the plan prints again *(AC-60.5)*
+- [ ] A capture is deleted when taken and after 24 hours; the newest of several matching captures is the one saved; an unreadable or malformed capture is skipped *(AC-60.6)*
+- [ ] The README gives the hook settings of the private repository and the folder variable *(AC-60.7)*
+
 ## Business Rules
 
 - No private name, identifier, URL host or secret is committed to this public repository *(BR-1)*
@@ -933,6 +947,11 @@ THE run reads that thread from just before its last stored message, and the fact
 - The weekly state and its run records hold the window, counts and item keys, never a message, comment or page text *(BR-75)*
 - A credential the proxy injects never reaches the session: no variable holds it and no request the collector builds carries it *(BR-76)*
 - A raw record never holds a credential: request headers are never recorded, and credentials only travel in request headers *(BR-71)*
+- A captured result is the exact text of the connector result: nothing decodes, trims or reformats it between the connector and `<id>.txt` *(BR-77)*
+- A capture serves a call only when the tool name and the arguments match exactly and the capture was taken at or after the first time the call was printed *(BR-78)*
+- The capture hook never blocks or fails a tool: it exits 0 with no output, and it reads a saved result only from a regular file in a `tool-results` folder inside the session folder *(BR-79)*
+- Captures stay in a private folder that the user owns (folder 0700, files 0600), are deleted when taken or after 24 hours, and never enter git or the state branch *(BR-80)*
+- When no capture matches a printed call, the model saves that call's result by hand, as BR-66 requires *(BR-81)*
 
 ## Out of Scope
 
@@ -944,6 +963,7 @@ THE run reads that thread from just before its last stored message, and the fact
 - Document store pages the owner edited but did not create, in the weekly status: neither the search API nor the connector on this plan filters by editor; US-58 lists the pages the owner created
 - Reading chat channels in full for the recap: the announcement scan searches the configured channels only
 - Changing the 4 mirrored live prompts: the mirrors reproduce them as they are
+- Capturing the results of tools that are not connector tools, and matching a capture to a call whose arguments differ from the printed ones: the hook saves `mcp__` tools only, and a call with changed arguments falls back to the hand copy
 - After the tribe judgment:
   - pull requests cited by issues
   - dashboards' widget queries

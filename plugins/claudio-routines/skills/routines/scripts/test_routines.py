@@ -3126,8 +3126,9 @@ class ShippedFilesTest(Case):
     def test_prod_watch_calls_each_tool_with_the_arguments_as_given(self):
         self.assertIn("with its `arguments` exactly as given", self.prod_watch_step("Collect"))
 
-    def test_prod_watch_saves_each_result_unchanged_under_its_call_id(self):
-        self.assertIn("Save each result unchanged as `<run>/raw/<role>/<source>/<id>.txt`", self.prod_watch_step("Collect"))
+    def test_prod_watch_has_the_plan_save_each_recorded_result_under_its_call_id(self):
+        expected = "a hook records each result, and the plan command saves it as `<run>/raw/<role>/<source>/<id>.txt`, with `<id>` the call's `id`."
+        self.assertIn(expected, self.prod_watch_step("Collect"))
 
     def test_prod_watch_copies_a_result_the_harness_saved_to_a_file(self):
         self.assertIn("When the harness saved the result to a file, copy that file.", self.prod_watch_step("Collect"))
@@ -3450,6 +3451,39 @@ class ShippedFilesTest(Case):
                     ([("--responses <run>/raw/<role>/<source> " in line) for line in relay], "`<run>/raw/<role>/<source>/<id>.txt`" in step, "<run>/responses" in step),
                     ([True, True], True, False),
                 )
+
+    RELAY_CALL = "  - Call the tool `tool` on the connector `connector`, with its `arguments` exactly as given.\n"
+    RELAY_ONCE = (
+        "  - Make each call once and save nothing: a hook records each result, and the plan command saves it as `{directory}/<id>.txt`, "
+        "with `<id>` the call's `id`.\n"
+        "  - Then run the plan command again. Repeat until `done` is true.\n"
+    )
+    RELAY_FALLBACK = (
+        "  - When the plan lists again a call `id` that you already called, the hook missed its result: "
+        "save that result unchanged as `{directory}/<id>.txt`, with `<id>` the call's `id`.\n"
+        "    - When the harness saved the result to a file, copy that file.\n"
+        "    - Otherwise, write the result text as is with the Write tool. Never put a result in a shell command.\n"
+        "    - Then run the plan command again.\n"
+        "  - Never edit, summarize, filter or reformat a result.\n"
+    )
+
+    def test_every_runnable_template_has_the_model_make_each_call_once_and_a_hook_save_it(self):
+        expected = self.RELAY_CALL + self.RELAY_ONCE.format(directory="<run>/raw/<role>/<source>") + self.RELAY_FALLBACK.format(directory="<run>/raw/<role>/<source>")
+        for name in ("prod-watch", "tribe-digest", "chat-recap", "weekly-status"):
+            with self.subTest(template=name):
+                self.assertIn(expected, self.runnable_collect_step(name))
+
+    def test_every_runnable_template_saves_by_hand_only_the_result_of_a_call_listed_again(self):
+        for name in ("prod-watch", "tribe-digest", "chat-recap", "weekly-status"):
+            with self.subTest(template=name):
+                step = self.runnable_collect_step(name)
+                self.assertEqual(step.count("Save each result"), 0)
+                self.assertEqual(step.count("save that result unchanged as"), 1)
+
+    def test_every_runnable_template_keeps_a_relayed_result_data_in_the_collect_step(self):
+        for name in ("prod-watch", "tribe-digest", "chat-recap", "weekly-status"):
+            with self.subTest(template=name):
+                self.assertIn(f"  - {DATA_GUARD}\n", self.runnable_collect_step(name))
 
     def test_every_runnable_template_records_the_http_calls_of_an_api_source_by_role(self):
         for name in ("prod-watch", "tribe-digest", "chat-recap", "weekly-status"):
@@ -4031,6 +4065,16 @@ class TribeTemplateTest(unittest.TestCase):
             (f"--responses {relay} " in plan, f"--responses {relay} " in parse, f"`{relay}/<id>.txt`" in self.step("Publish the page")),
             (True, True, True),
         )
+
+    def test_the_page_writes_are_made_once_and_saved_by_a_hook_with_a_hand_copy_as_the_fallback(self):
+        step = self.step("Publish the page")
+        directory = "<run>/responses/publish"
+        expected = (
+            ShippedFilesTest.RELAY_CALL
+            + ShippedFilesTest.RELAY_ONCE.format(directory=directory)
+            + ShippedFilesTest.RELAY_FALLBACK.format(directory=directory)
+        )
+        self.assertEqual((expected in step, "Save each result" in step), (True, False))
 
     def test_the_state_is_saved_after_the_page_is_written_and_before_the_message_is_rendered(self):
         saved = self.position("push origin HEAD:refs/heads/claude/state")
