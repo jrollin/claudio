@@ -14,6 +14,7 @@ from ._errors import GROUP_CAP_PARTIAL, PAGE_CAP_PARTIAL, PartialRead, SourceUnr
 
 ROLE = "observability"
 CREDENTIALS = ("api_key", "app_key")
+STATIC_HEADERS = {}
 ACCESS_TOKEN = "token"
 MONITOR_PATH = "/api/v1/monitor/"
 SEARCH_PATH = MONITOR_PATH + "search"

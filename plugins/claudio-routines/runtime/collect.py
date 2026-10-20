@@ -19,6 +19,7 @@ import tribe_state
 import weekly_state
 import weekly_window
 from config import adapter_role, config_directory, load_zone, read_routine
+from providers import _common
 from providers._common import ended
 from providers._http import BODY_CAP, has_value
 from providers._replay import OFFLINE, ReplayClient, ReplayMismatch
@@ -82,10 +83,14 @@ def missing_variables(provider):
     return sorted({var for var in provider["api"]["credentials"].values() if not has_value(os.environ.get(var))})
 
 
-def choose_transport(transports, provider):
+def is_injected(provider, hosts):
+    return urlsplit(provider["api"]["base_url"]).hostname in hosts
+
+
+def choose_transport(transports, provider, injected=frozenset()):
     skipped = []
     for transport in transports:
-        missing = missing_variables(provider) if transport == "api" else []
+        missing = missing_variables(provider) if transport == "api" and not is_injected(provider, injected) else []
         if not missing:
             return {"transport": transport, "skipped": skipped}
         skipped.append({"transport": transport, "missing": missing})
@@ -93,12 +98,13 @@ def choose_transport(transports, provider):
 
 
 def choose_sources(config, routine, role_by_source, place):
+    injected = roles.injected_hosts(config, place)
     return [
         {
             "source": name,
             "role": role_by_source[name],
             "provider": source["provider"],
-            **choose_transport(source["transport"][place], config["providers"][source["provider"]]),
+            **choose_transport(source["transport"][place], config["providers"][source["provider"]], injected),
         }
         for name, source in sorted(routine["sources"].items())
     ]
@@ -113,10 +119,12 @@ def run_sources(args):
     return 0
 
 
-def env_lines(choice, provider, place):
+def env_lines(choice, provider, place, injected):
     name, chosen = choice["source"], choice["transport"]
     if chosen is None:
         return [f"missing {name} {var}" for skip in choice["skipped"] for var in skip["missing"]]
+    if chosen == "api" and is_injected(provider, injected):
+        return [f"injected {name} {urlsplit(provider['api']['base_url']).hostname}"]
     fallbacks = [f"fallback {name} {skip['transport']} {chosen} {var}" for skip in choice["skipped"] for var in skip["missing"]]
     connector = [f"connector {name} {provider['mcp']['connectors'][place]}"] if chosen == "mcp" else []
     return connector + fallbacks
@@ -124,11 +132,12 @@ def env_lines(choice, provider, place):
 
 def run_check_env(args):
     config, routine, role_by_source = load_routine(args)
+    injected = roles.injected_hosts(config, args.place)
     lines = sorted(
         {
             line
             for choice in choose_sources(config, routine, role_by_source, args.place)
-            for line in env_lines(choice, config["providers"][choice["provider"]], args.place)
+            for line in env_lines(choice, config["providers"][choice["provider"]], args.place, injected)
         }
     )
     for line in lines:
@@ -152,7 +161,7 @@ def source_choice(config, source, name, args):
         return read_choice(args.sources, name, listed)
     if getattr(args, "replaying", False):
         return {"transport": listed[0], "skipped": []}
-    return choose_transport(listed, config["providers"][source["provider"]])
+    return choose_transport(listed, config["providers"][source["provider"]], roles.injected_hosts(config, args.place))
 
 
 def read_through(choice, source, place):
@@ -385,7 +394,8 @@ def prepare(args, transport):
     provider = config["providers"][source["provider"]]
     options = state_options(run_state, engine, role, source, args.source)
     configured = {key: value for key, value in source.items() if key not in ("threads", "rereads")}
-    return provider, {**configured, "name": args.source, "provider_config": provider, **options}, window, draft
+    injected = transport == "api" and is_injected(provider, roles.injected_hosts(config, args.place))
+    return provider, {**configured, "name": args.source, "provider_config": provider, **options}, window, draft, injected
 
 
 def clean_reason(reason):
@@ -436,8 +446,14 @@ def record_writer(directory, name):
     return write
 
 
-def recording_client(adapter, provider, args):
-    client = adapter.api_client(provider)
+def api_client_for(adapter, provider, injected, opener=None, environ=None):
+    if injected:
+        return _common.injected_client(provider, adapter.STATIC_HEADERS, opener=opener)
+    return adapter.api_client(provider, opener=opener, environ=environ)
+
+
+def recording_client(adapter, provider, args, injected):
+    client = api_client_for(adapter, provider, injected)
     if args.responses is not None:
         client.recorder = record_writer(args.responses, args.source)
     return client
@@ -452,10 +468,10 @@ def fetch_collection(provider, source, window, draft, client_of):
 
 
 def run_fetch(args):
-    provider, source, window, draft = prepare(args, "api")
+    provider, source, window, draft, injected = prepare(args, "api")
     if args.responses is not None:
         open_records(args.responses)
-    write_collection(args, fetch_collection(provider, source, window, draft, lambda adapter: recording_client(adapter, provider, args)))
+    write_collection(args, fetch_collection(provider, source, window, draft, lambda adapter: recording_client(adapter, provider, args, injected)))
     return 0
 
 
@@ -571,7 +587,7 @@ def plan_step(adapter, source, window, draft, directory, connector):
 
 
 def run_plan(args):
-    provider, source, window, draft = prepare(args, "mcp")
+    provider, source, window, draft, _ = prepare(args, "mcp")
     connector = provider["mcp"]["connectors"][args.place]
     calls_path = os.path.join(args.responses, CALLS_FILE)
     try:
@@ -625,7 +641,7 @@ def parse_collection(args, provider, source, window, draft):
 
 
 def run_parse(args):
-    provider, source, window, draft = prepare(args, "mcp")
+    provider, source, window, draft, _ = prepare(args, "mcp")
     write_collection(args, parse_collection(args, provider, source, window, draft))
     return 0
 
@@ -644,15 +660,15 @@ def read_records(directory, name):
         records.append(state.load(path, f"record {file}", check_record))
 
 
-def replaying_client(adapter, provider, name, records):
-    adapter.api_client(provider, opener=OFFLINE, environ={})
+def replaying_client(adapter, provider, name, records, injected):
+    api_client_for(adapter, provider, injected, opener=OFFLINE, environ={})
     return ReplayClient(provider, name, records)
 
 
 def run_replay_fetch(args):
-    provider, source, window, draft = prepare(args, "api")
+    provider, source, window, draft, injected = prepare(args, "api")
     records = read_records(args.responses, args.source)
-    write_collection(args, fetch_collection(provider, source, window, draft, lambda adapter: replaying_client(adapter, provider, args.source, records)))
+    write_collection(args, fetch_collection(provider, source, window, draft, lambda adapter: replaying_client(adapter, provider, args.source, records, injected)))
     return 0
 
 

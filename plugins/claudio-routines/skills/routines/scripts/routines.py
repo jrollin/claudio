@@ -40,6 +40,7 @@ RUNTIME_DIR = re.compile(r"(/[A-Za-z0-9._-]+){2,}/?")
 RUNTIME_DIR_PREFIX = "claudio-runtime"
 TIMEZONE_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+)*")
 PLAIN_DIR = re.compile(r"(/[A-Za-z0-9._-]+)+/?")
+PLAIN_HOST = re.compile(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*")
 REPO_URL = re.compile(r"https://[A-Za-z0-9.-]+(?::[0-9]+)?/[^\s@?#]+")
 PLACEHOLDER = re.compile(r"\\\{\{|\{\{([^{}]*)\}\}|\{\{")
 KEY_PATTERN = re.compile(r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*")
@@ -314,6 +315,11 @@ def check_plain_dir(value, key):
         raise UsageError(f"config.json: {key} must match ^(/[A-Za-z0-9._-]+)+/?$ without . or .. parts")
 
 
+def check_injected_hosts(value, key):
+    if not isinstance(value, list) or not all(isinstance(host, str) and PLAIN_HOST.fullmatch(host) for host in value):
+        raise UsageError(f"config.json: {key} must be a list of plain host names such as api.example.test")
+
+
 def removed_key(where, replacement):
     return UsageError(f"{where} is removed: set places.cloud.{replacement} and places.local.{replacement}")
 
@@ -330,6 +336,8 @@ def check_places(config):
         check_plain_dir(require(settings, "state_dir", str, f"places.{place}."), f"places.{place}.state_dir")
         if "runs_dir" in settings:
             check_plain_dir(require(settings, "runs_dir", str, f"places.{place}."), f"places.{place}.runs_dir")
+        if "injected_hosts" in settings:
+            check_injected_hosts(settings["injected_hosts"], f"places.{place}.injected_hosts")
 
 
 def read_config_tree(private):

@@ -114,6 +114,7 @@ Runs one routine in this session for the local place, with the same template, st
    - Each `missing <source> <variable>` line: tell the owner which variable is missing and which source it leaves not read.
    - Each `connector <source> <connector>` line: check that this session lists a tool from that connector, and name the missing ones.
    - Each `fallback <source> <from> <to> <variable>` line: the source is read through `<to>`; report nothing for it.
+   - Each `injected <source> <host>` line: the place's proxy adds that source's credential; report nothing for it.
    - Exit 2 or 3: show the error and stop.
 5. Follow the rendered prompt in this session, step by step. With `--since T`, give it `T` as the run's start time, in UTC (`YYYY-MM-DDTHH:MM:SSZ`).
    - The prompt creates the run folder under `places.local.runs_dir` (`/tmp` without it) and keeps it, raw results included.

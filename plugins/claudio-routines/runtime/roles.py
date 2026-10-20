@@ -141,7 +141,8 @@ CHANNEL_TYPES_TEXT = Rule(
     "must be a comma list of " + ", ".join(CHANNEL_TYPES),
 )
 
-PLACE = {"runtime_dir": ABSOLUTE, "state_dir": ABSOLUTE}
+HOST = Rule(_matches(PLAIN_HOST), "must be a plain host name such as api.example.test")
+PLACE = {"runtime_dir": ABSOLUTE, "state_dir": ABSOLUTE, "injected_hosts": Omittable(ListOf(HOST))}
 TRANSPORT_PREFERENCE = Rule(_is_transport_preference, "must be api, mcp or a non-empty list of them without repeats")
 SOURCE = {"provider": TEXT, "transport": {"cloud": TRANSPORT_PREFERENCE, "local": TRANSPORT_PREFERENCE}}
 PINNED_URL = Rule(_is_pinned_url, "must be an https URL with a host, a valid port and no user info, query or fragment")
@@ -531,6 +532,10 @@ def _config_field(mapping, path, key, spec):
     return mapping[key]
 
 
+def injected_hosts(config, place):
+    return {host.lower() for host in config["places"][place].get("injected_hosts", [])}
+
+
 def validate_config(config, routine, place, role_of=None):
     if not isinstance(config, dict):
         raise ConfigError("config: must be a mapping")
@@ -538,6 +543,7 @@ def validate_config(config, routine, place, role_of=None):
     if place not in PLACES:
         raise ConfigError(f"places.{place}: the place must be one of " + ", ".join(PLACES))
     _config_field(places, "places", place, PLACE)
+    injected = injected_hosts(config, place)
     providers = _config_field(config, "", "providers", {})
     routines = _config_field(config, "", "routines", {})
     routine_path = f"routines.{routine}"
@@ -553,12 +559,12 @@ def validate_config(config, routine, place, role_of=None):
         if SOURCE_NAME.fullmatch(name) is None:
             raise ConfigError(f"{routine_path}.sources.{name}: the source name must match ^[a-z][a-z0-9-]*$")
     for name in sorted(sources):
-        _validate_source(sources[name], f"{routine_path}.sources.{name}", providers, place, role_of, engine, chosen.get("owner"))
+        _validate_source(sources[name], f"{routine_path}.sources.{name}", providers, place, role_of, engine, chosen.get("owner"), injected)
     if chosen.get("engine") == TRIBE_ENGINE:
         _validate_publication(chosen, routine_path, providers)
 
 
-def _validate_source(source, path, providers, place, role_of, engine, owner=None):
+def _validate_source(source, path, providers, place, role_of, engine, owner=None, injected=()):
     _conform(source, SOURCE, path, ConfigError, exact=False)
     name = source["provider"]
     if name not in providers:
@@ -593,6 +599,14 @@ def _validate_source(source, path, providers, place, role_of, engine, owner=None
         _validate_issue_options(source, path)
     if role == "code_host":
         _validate_code_host_options(source, path)
+        if "api" in transports:
+            _refuse_injected_code_host(provider, place, injected)
+
+
+def _refuse_injected_code_host(provider, place, injected):
+    host = urlsplit(provider["api"]["base_url"]).hostname
+    if host in injected:
+        raise ConfigError(f"places.{place}.injected_hosts: {host} is the host of a code host provider, which the proxy never injects")
 
 
 def _validate_code_host_options(source, path):

@@ -610,6 +610,45 @@ class ValidateConfigTest(ConfigCase):
         self.assertIsNone(roles.validate_config(config, ROUTINE, "local"))
 
 
+class InjectedHostsTest(ConfigCase):
+    def injected_config(self, hosts, place="local"):
+        config = make_config()
+        config["places"][place]["injected_hosts"] = hosts
+        return config
+
+    def test_accepts_the_hosts_of_non_code_host_providers(self):
+        config = self.injected_config(["api.obs.example.test", "api.docs.example.test"])
+        self.assertIsNone(roles.validate_config(config, ROUTINE, "local", role_of))
+
+    def test_accepts_an_empty_list(self):
+        self.assertIsNone(roles.validate_config(self.injected_config([]), ROUTINE, "local", role_of))
+
+    def test_rejects_hosts_that_are_not_a_list(self):
+        self.assert_config_error(self.injected_config("api.obs.example.test"), "places.local.injected_hosts")
+
+    def test_rejects_a_url_naming_its_index(self):
+        self.assert_config_error(self.injected_config(["https://api.obs.example.test"]), "places.local.injected_hosts[0]")
+
+    def test_rejects_a_host_with_a_port(self):
+        self.assert_config_error(self.injected_config(["api.obs.example.test:443"]), "places.local.injected_hosts[0]")
+
+    def test_rejects_the_host_of_a_code_host_provider(self):
+        self.assert_config_error(self.injected_config(["api.code.example.test"]), "places.local.injected_hosts")
+
+    def test_rejects_the_code_host_regardless_of_case(self):
+        self.assert_config_error(self.injected_config(["API.Code.Example.test"]), "places.local.injected_hosts")
+
+    def test_accepts_the_code_host_listed_for_another_place(self):
+        config = self.injected_config(["api.code.example.test"], place="cloud")
+        self.assertIsNone(roles.validate_config(config, ROUTINE, "local", role_of))
+
+    def test_accepts_the_code_host_when_its_source_reads_over_mcp_at_the_place(self):
+        config = self.injected_config(["api.code.example.test"])
+        config["providers"]["code"]["mcp"] = {"connectors": {"cloud": "code-cloud", "local": "code-local"}}
+        routine_sources(config)["code"]["transport"] = {"cloud": "api", "local": "mcp"}
+        self.assertIsNone(roles.validate_config(config, ROUTINE, "local", role_of))
+
+
 class LinksBaseTest(ConfigCase):
     def with_links_base(self, value):
         config = make_config()

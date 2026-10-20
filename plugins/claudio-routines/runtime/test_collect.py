@@ -15,6 +15,7 @@ import roles
 import state
 from support import publication_values
 from providers._http import PAGE_CAP, PartialRead, SourceUnreadable
+from providers import _common
 from providers._errors import CredentialsMissing
 from providers.test_http import PATH as HTTP_PATH
 from providers.test_http import SECRET as HTTP_SECRET
@@ -227,6 +228,7 @@ def fake_adapter(name, role):
     module.result = None
     module.plan_result = None
     module.pages = 2
+    module.STATIC_HEADERS = {}
 
     def api_client(provider, opener=None, environ=None, sleep=None):
         module.clients.append(provider)
@@ -645,6 +647,63 @@ class CheckEnvPreferenceTest(PreferenceCase):
 
     def test_prints_nothing_for_a_source_whose_api_is_usable(self):
         self.assertNotIn("monitors", self.check_env(CREDENTIALS)[1])
+
+
+class InjectedHostsTest(PreferenceCase):
+    def setUp(self):
+        super().setUp()
+        self.config["places"]["cloud"]["injected_hosts"] = [OBS_HOST]
+
+    def check_env(self, environ, place="cloud"):
+        config = self.write("config.json", self.config)
+        with mock.patch.dict(os.environ, environ, clear=True):
+            return self.run_main("check-env", "--config", config, "--routine", ROUTINE, "--place", place)
+
+    def test_a_listed_host_makes_api_usable_without_its_variables(self):
+        chosen = self.chosen({})
+        self.assertEqual((chosen["transport"], chosen["skipped"]), ("api", []))
+
+    def test_an_unlisted_host_still_needs_its_variables(self):
+        self.config["places"]["cloud"]["injected_hosts"] = [DOC_HOST]
+        self.assertEqual(self.chosen({})["transport"], "mcp")
+
+    def test_a_host_listed_for_another_place_still_needs_its_variables(self):
+        self.assertEqual(self.chosen({OBS_KEY_VAR: "set"}, place="local")["transport"], None)
+
+    def test_the_host_match_ignores_case(self):
+        self.config["places"]["cloud"]["injected_hosts"] = [OBS_HOST.upper()]
+        self.assertEqual(self.chosen({})["transport"], "api")
+
+    def test_check_env_prints_an_injected_line_and_no_missing_line_and_exits_0(self):
+        expected = f"connector metrics obs-cloud\nconnector sources-page docs-cloud\ninjected monitors {OBS_HOST}\n"
+        self.assertEqual(self.check_env({DOC_TOKEN_VAR: "set"}), (0, expected, ""))
+
+    def test_check_env_prints_injected_for_a_listed_host_whose_variables_are_set(self):
+        self.assertIn(f"injected monitors {OBS_HOST}\n", self.check_env(CREDENTIALS)[1])
+
+    def test_check_env_prints_no_injected_line_for_a_source_read_through_its_connector(self):
+        self.assertNotIn("injected metrics", self.check_env(CREDENTIALS)[1])
+
+    def test_check_env_still_prints_missing_for_an_unlisted_host(self):
+        self.config["places"]["cloud"]["injected_hosts"] = [DOC_HOST]
+        self.assertIn(f"fallback monitors api mcp {OBS_KEY_VAR}\n", self.check_env({})[1])
+
+    def test_fetch_builds_the_client_in_injected_mode_without_its_variables(self):
+        self.obs.STATIC_HEADERS = {"X-Api-Version": "1"}
+        with mock.patch.object(_common, "injected_client", return_value=CLIENT) as injected:
+            code = self.command("fetch", environ={})[0]
+        self.assertEqual((code, self.obs.clients, self.obs.calls[0]["http"]), (0, [], CLIENT))
+        self.assertEqual(injected.call_args.args, (self.config["providers"]["obs"], {"X-Api-Version": "1"}))
+
+    def test_fetch_builds_the_client_from_the_provider_when_the_host_is_unlisted(self):
+        self.config["places"]["cloud"]["injected_hosts"] = [DOC_HOST]
+        self.command("fetch")
+        self.assertEqual(self.obs.clients, [self.config["providers"]["obs"]])
+
+    def test_replay_accepts_a_provider_without_credentials_in_injected_mode(self):
+        provider = {"adapter": "jira", "api": {"base_url": "https://api.example.test", "credentials": {}}}
+        client = collect.replaying_client(collect.providers.load("jira"), provider, "monitors", [], True)
+        self.assertEqual(client.records, [])
 
 
 class RelayPreferenceTest(PreferenceCase):

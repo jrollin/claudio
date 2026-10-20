@@ -48,6 +48,15 @@ One module per vendor reads one role through `_http.py`. This file lists, per ve
 - A credential variable that is unset, empty or whitespace-only counts as missing: `check-env`, the transport choice and `HttpClient` all refuse it, and the source is not read with `credentials missing: <variable>`.
 - A provider listed as `["api", "mcp"]` in a place with a missing or blank variable is read through its connector instead (see the collectors section of the plugin README).
 
+## Injected credentials
+
+- `places.<place>.injected_hosts` lists the hosts whose credentials the place's proxy adds. A provider whose `api.base_url` host is listed there counts as usable over `api` without its variables, and `check-env` prints `injected <source> <host>`.
+- For such a provider `collect.py` builds the client with `_common.injected_client`: no credential variable is read, no adapter auth function runs, and the request carries `Accept: application/json` plus the adapter's `STATIC_HEADERS`.
+- `STATIC_HEADERS` is a dict every adapter declares: the non-secret headers its auth function sends next to the credential (`{}` when none). The document store sends its `Notion-Version`; the code host its `Accept` media type and `X-GitHub-Api-Version`.
+- The adapter's `_auth` builds its headers from the same `STATIC_HEADERS`, so a local read and an injected read send the same non-credential headers.
+- The code host is never injected: a config that lists the host of a code host provider fails the load, naming `places.<place>.injected_hosts`.
+- `providers.<name>.api.credentials` may be `{}` for a provider every place injects.
+
 ## datadog
 
 - Role: observability.

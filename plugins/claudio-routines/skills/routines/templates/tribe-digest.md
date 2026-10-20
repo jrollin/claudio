@@ -67,6 +67,7 @@ python3 -B {{runtime.dir}}/plugins/claudio-routines/runtime/collect.py check-env
 - Exit 0, or exit 1 with at least one `missing` line: continue with Step 5.
 - Each `missing <source> <variable>` line is a credential variable this place lacks. Name each missing variable and its source in the message of Step 13. That source ends not read.
 - Each `fallback <source> <from> <to> <variable>` line says that source is read through `<to>`, because `<variable>` is missing for `<from>`. Report nothing for it and continue.
+- Each `injected <source> <host>` line says the place's proxy adds that source's credential. Report nothing for it and continue.
 - Each `connector <source> <connector>` line is the connector of an `mcp` source. Check that this session lists a tool from that connector. Name each missing connector and its source in the message of Step 13. That source ends not read.
 - Exit 2 or 3 means the config or the query pack is invalid. Report the error and the key path it names, and stop. Write no state.
 - Exit 1 with no `missing` line is a failure. Report it and stop. Write no state. Report any other failure the same way.

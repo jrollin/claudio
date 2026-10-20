@@ -10,6 +10,7 @@ from ._errors import PAGE_CAP_PARTIAL, PartialRead, SourceUnreadable
 
 ROLE = "issue_tracker"
 CREDENTIALS = ("email", "token")
+STATIC_HEADERS = {}
 SEARCH_PATH = "/rest/api/3/search/jql"
 SEARCH_TOOL = "searchJiraIssuesUsingJql"
 FIELDS = ("summary", "issuetype", "status", "priority", "created", "updated")

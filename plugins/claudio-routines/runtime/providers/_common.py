@@ -16,8 +16,16 @@ def api_client(provider, required, auth, opener=None, environ=None, sleep=None):
     missing = [name for name in required if name not in api["credentials"]]
     if missing:
         raise SourceUnreadable(_must_name(required, missing))
+    return _client(api["base_url"], api["credentials"], auth, opener, environ, sleep)
+
+
+def injected_client(provider, static_headers, opener=None):
+    return _client(provider["api"]["base_url"], {}, lambda values: static_headers, opener, None, None)
+
+
+def _client(base_url, credentials, auth, opener, environ, sleep):
     try:
-        return HttpClient(api["base_url"], api["credentials"], auth, opener=opener, environ=environ, sleep=sleep)
+        return HttpClient(base_url, credentials, auth, opener=opener, environ=environ, sleep=sleep)
     except ValueError:
         raise SourceUnreadable(BASE_URL_INVALID) from None
 
