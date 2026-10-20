@@ -224,7 +224,8 @@ Paths are under `plugins/claudio-routines/` unless they start with `docs/` or `s
 - **Files**: `runtime/weekly_features.py` (modify), `runtime/weekly.py` (modify), `runtime/test_weekly.py` (modify)
 - **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime -p 'test_weekly*.py'`
 - **Blocked by**: T-14
-- **Status**: Not Started
+- **Status**: Complete
+- **Result**: weekly source rows copy a collection's `reads` (optional in `SOURCE_SPEC`) and the weekly record keeps it per source: 5 new tests, weekly (157) and runtime suites passing
 
 ### T-17: Add the prune command
 - **Scope**:
