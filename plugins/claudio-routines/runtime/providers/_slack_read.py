@@ -11,7 +11,8 @@ from ._http import PAGE_CAP
 HISTORY_PATH = "/api/conversations.history"
 REPLIES_PATH = "/api/conversations.replies"
 API_PAGE_SIZE = 200
-RELAY_PAGE_SIZE = 100
+RELAY_PAGE_SIZE = 30
+RELAY_THREAD_PAGE_SIZE = 20
 SKIPPED_SUBTYPES = frozenset(("channel_join", "channel_leave"))
 FAILED_CHANNEL_CODES = ("channel_not_found", "is_archived", "not_in_channel")
 THREAD_NOT_FOUND = "thread_not_found"
@@ -192,13 +193,13 @@ def _relay_read(relay, channel, window, stored, roots):
 
 
 def _relay_replies(relay, channel, root, window, oldest):
-    arguments = {"channel_id": channel, "message_ts": root, "oldest": str(oldest), "response_format": "detailed"}
+    arguments = {"channel_id": channel, "message_ts": root, "oldest": str(oldest), "limit": RELAY_THREAD_PAGE_SIZE, "response_format": "detailed"}
     seen_ts = set()
     return _relay_pages(relay, THREAD_TOOL, arguments, lambda call_id, text: _thread_page(channel, call_id, text, root, window, seen_ts))
 
 
 def _relay_new_replies(relay, channel, root, window):
-    arguments = {"channel_id": channel, "message_ts": root, "oldest": str(window["from_ts"]), "response_format": "detailed"}
+    arguments = {"channel_id": channel, "message_ts": root, "oldest": str(window["from_ts"]), "limit": RELAY_THREAD_PAGE_SIZE, "response_format": "detailed"}
     start, seen_ts = max(decimal.Decimal(root), decimal.Decimal(window["from_ts"])), set()
     items = _relay_pages(relay, THREAD_TOOL, arguments, lambda call_id, text: _newer_page(channel, call_id, text, root, window, seen_ts, start))
     return [item for item in items if decimal.Decimal(item.ts) > start]

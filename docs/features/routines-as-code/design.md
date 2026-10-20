@@ -539,6 +539,7 @@ Two kinds of calls:
   - The payload carries the raw per-call data; `parse` normalizes it with the functions of the `api` transport, so both transports give the same records (AC-13.2). A monitors source relays its alert events through a separate `aggregate_events` call, a plain tool call that returns per-monitor aggregates and runs before the script (TD-29), so no relayed result grows with the event count.
   - Test vectors include an emoji and an escaped lone surrogate.
 - A connector without code execution gets plain tool calls (AC-15.2). `parse` reads the response format that fixture tests pin.
+  - Chat relay pages hold at most 30 channel messages and 20 thread replies, so no copied result grows past a few KB.
 
 **Alternatives considered**:
 - The model writes the collection: rejected, that transcription is what the scripts replace.

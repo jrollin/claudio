@@ -47,6 +47,8 @@ BOT = "U000009"
 THREAD_ROOT = "1792398000.000050"
 DMS = {"name": "dms", "filters": "is:dm", "since": "window"}
 SEARCH_CURSOR = "Q1VSUkVOVF9QQUdFOjI="
+THREAD_CURSOR = "bmV4dF90czoxNzkyMzk4MjAwLjAwMDEwMA=="
+THREAD_MORE = "There are more messages in this thread. To view the next page, use cursor: `{}`"
 
 
 def search_source(*searches, **options):
@@ -282,6 +284,41 @@ class SearchThreadWithoutRepliesTest(unittest.TestCase):
         unit = search_parse(search_source(), responses)["records"]["units"][0]
 
         self.assertEqual(unit["messages"], [unit_message("U1", "Ada Example", THREAD_ROOT, "Release notes", root=THREAD_ROOT)])
+
+
+class SearchRelayPageSizeTest(unittest.TestCase):
+    NEWEST, OLDEST = "1792398500.000100", "1792398200.000100"
+
+    def pages(self, root=THREAD_ROOT):
+        newest = thread_page(thread_reply(PEER, self.NEWEST, "latest", index=1, total=2), root=root, total=2, pagination=THREAD_MORE.format(THREAD_CURSOR))
+        oldest = thread_page(thread_reply(PEER, self.OLDEST, "first", index=2, total=2), root=root, total=2)
+        return lambda call: (oldest if "cursor" in call["arguments"] else newest) if call["tool"] == THREAD_TOOL else empty_response(call)
+
+    def read(self, source, *hits, root=THREAD_ROOT):
+        return drive(source, {"team-chat-1": search_text(*hits)}, self.pages(root))
+
+    def test_reads_a_conversation_thirty_messages_at_a_time(self):
+        seen, _, _ = drive(search_source(), {"team-chat-1": search_text(hit("D1", "DM", PEER, "1792395000.000100"))})
+
+        self.assertEqual([arguments["limit"] for tool, arguments in seen if tool == TOOL], [30])
+
+    def test_reads_a_thread_twenty_replies_at_a_time_and_follows_its_cursor_to_the_last_page(self):
+        seen, _, _ = self.read(search_source(), hit("C3", "#ops", PEER, THREAD_ROOT, reply=2))
+
+        self.assertEqual([(arguments["limit"], arguments.get("cursor")) for tool, arguments in seen if tool == THREAD_TOOL], [(20, None), (20, THREAD_CURSOR)])
+
+    def test_keeps_the_replies_of_every_page_of_a_thread(self):
+        source = search_source()
+        _, _, responses = self.read(source, hit("C3", "#ops", PEER, THREAD_ROOT, reply=2))
+
+        messages = search_parse(source, responses)["records"]["units"][0]["messages"]
+
+        self.assertEqual([message["ts"] for message in messages], [THREAD_ROOT, self.OLDEST, self.NEWEST])
+
+    def test_reads_a_stored_thread_twenty_replies_at_a_time(self):
+        seen, _, _ = self.read(search_source(rereads=[THREAD_REREAD]), root=STORED_ROOT)
+
+        self.assertEqual([(arguments["limit"], arguments.get("cursor")) for tool, arguments in seen if tool == THREAD_TOOL], [(20, None), (20, THREAD_CURSOR)])
 
 
 class SearchRelayRecordsTest(unittest.TestCase):
