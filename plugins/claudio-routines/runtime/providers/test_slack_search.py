@@ -11,6 +11,8 @@ import store
 from providers import _http, slack
 from providers.slack_support import (
     RUN,
+    live,
+    ordered,
     relay_through,
     store_session,
     BASE,
@@ -104,7 +106,7 @@ def empty_response(call):
 def drive(source, responses, answer=empty_response):
     responses, seen = dict(responses), []
     for _ in range(40):
-        step = slack.plan(source, SEARCH_WINDOW, {}, [], responses, CONNECTOR)
+        step = slack.plan(source, SEARCH_WINDOW, {}, [], ordered(responses), CONNECTOR)
         if step["done"]:
             return seen, step, responses
         call = step["calls"][0]
@@ -117,7 +119,7 @@ def drive(source, responses, answer=empty_response):
 
 
 def search_parse(source, responses):
-    return slack.parse(source, SEARCH_WINDOW, {}, [], responses, {})
+    return slack.parse(source, SEARCH_WINDOW, {}, [], ordered(responses), {})
 
 
 def unit_message(user, name, ts, text, root=None, bot=False, **extra):
@@ -135,7 +137,7 @@ def full_responses():
 
 class SearchRelayPlanTest(unittest.TestCase):
     def first_call(self, search=DMS, **options):
-        return slack.plan(search_source(search, **options), SEARCH_WINDOW, {}, [], {}, CONNECTOR)["calls"][0]
+        return slack.plan(search_source(search, **options), SEARCH_WINDOW, {}, [], ordered({}), CONNECTOR)["calls"][0]
 
     def test_plans_one_search_call_with_the_search_arguments(self):
         search = {**DMS, "channel_types": "im,mpim", "keywords": ["deploy"]}
@@ -172,7 +174,7 @@ class SearchRelayPlanTest(unittest.TestCase):
         self.assertEqual(call["arguments"]["after"], str(1792400000 - 2 * 86400))
 
     def test_plans_the_next_page_from_the_response_cursor(self):
-        step = slack.plan(search_source(), SEARCH_WINDOW, {}, [], {"team-chat-1": saved("search_page_1.json")}, CONNECTOR)
+        step = slack.plan(search_source(), SEARCH_WINDOW, {}, [], ordered({"team-chat-1": saved("search_page_1.json")}), CONNECTOR)
 
         self.assertEqual((step["calls"][0]["id"], step["calls"][0]["arguments"]["cursor"]), ("team-chat-2", SEARCH_CURSOR))
 
@@ -548,7 +550,7 @@ class RoutedOpener(FakeOpener):
 def api_units(routes, users=None, window=WINDOW, source=None, **options):
     known = {user: user_doc(name) for user, name in USERS.items()} if users is None else users
     opener = RoutedOpener(routes, known)
-    return opener, slack.fetch(source or search_source(**options), window, {}, [], client(opener))
+    return opener, slack.fetch(source or search_source(**options), window, {}, [], live(client(opener)))
 
 
 def path_counts(opener):

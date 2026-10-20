@@ -189,9 +189,11 @@ def page_text(call_id, data):
         text = data if isinstance(data, str) else data.decode("utf-8")
     except UnicodeDecodeError:
         raise SourceUnreadable(f"response {call_id} is not UTF-8") from None
+    if not text.lstrip().startswith("["):
+        return text
     try:
         blocks = json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):
         return text
     if isinstance(blocks, list) and blocks and all(_is_text_block(block) for block in blocks):
         return "".join(block["text"] for block in blocks)
@@ -464,50 +466,3 @@ class ApiReads:
         finally:
             self.http.recorder = previous
         return state.dump(store.replaced(records[-1]))
-
-
-class _OrderedHandle:
-    def __init__(self, session):
-        self.session = session
-        self.last_id = None
-
-    def page(self, request, fetch=None):
-        self.last_id = self.session.next_id()
-        if self.last_id in self.session.responses:
-            return self.session.responses[self.last_id]
-        raise store.PagePending(self.last_id, None, request)
-
-    def finish(self, status, reason=None, records=None):
-        return None
-
-
-class CallOrderSession:
-    def __init__(self, name, responses):
-        self.name = name
-        self.responses = responses
-        self.number = 0
-
-    def next_id(self):
-        self.number += 1
-        return f"{self.name}-{self.number}"
-
-    def open(self, kind, entity, span=None):
-        return _OrderedHandle(self)
-
-
-class _LiveHandle:
-    last_id = None
-
-    def page(self, request, fetch=None):
-        return fetch()
-
-    def finish(self, status, reason=None, records=None):
-        return None
-
-
-class LiveSession:
-    def __init__(self, http):
-        self.http = http
-
-    def open(self, kind, entity, span=None):
-        return _LiveHandle()

@@ -149,6 +149,52 @@ class PageTest(StoreCase):
         )
 
 
+class PagePathTest(StoreCase):
+    def test_maps_a_call_id_to_its_page_file(self):
+        session = self.session()
+        handle = session.open("history", HISTORY, SPAN)
+
+        self.assertEqual(session.page_path(handle.relative + "/page-002"), os.path.join(handle.folder, "page-002.txt"))
+
+    def test_refuses_a_call_id_that_leaves_the_store(self):
+        for call_id in ("../escape/page-001", "kind=history/../../page-001", "kind=history//page-001", ""):
+            with self.subTest(call_id=call_id), self.assertRaises(state.Rejected):
+                self.session().page_path(call_id)
+
+    def test_counts_the_pages_this_source_saved_in_the_run(self):
+        session = self.session()
+        handle = session.open("history", HISTORY, SPAN)
+        handle.page(REQUEST, fetch=lambda: b"one")
+        handle.page(NEXT_REQUEST, fetch=lambda: b"two")
+        self.session("chat").open("history", HISTORY, SPAN).page(REQUEST, fetch=lambda: b"other source")
+
+        self.assertEqual(session.saved_pages(), 2)
+
+
+class PageGuardTest(StoreCase):
+    def test_refuses_a_page_that_is_a_link(self):
+        handle = self.session().open("history", HISTORY, SPAN)
+        store.make_folders(handle.folder)
+        target = os.path.join(self.tmp.name, "elsewhere.txt")
+        with open(target, "wb") as stream:
+            stream.write(b"secret")
+        os.symlink(target, os.path.join(handle.folder, "page-001.txt"))
+
+        with self.assertRaises(store.SourceUnreadable) as caught:
+            handle.page(REQUEST)
+
+        self.assertIn("is not a regular file", str(caught.exception))
+
+    def test_cuts_a_read_at_a_page_over_the_size_cap(self):
+        handle = self.session().open("history", HISTORY, SPAN)
+        store.make_folders(handle.folder)
+        with open(os.path.join(handle.folder, "page-001.txt"), "wb") as stream:
+            stream.truncate(store.BODY_CAP + 1)
+
+        with self.assertRaises(store.PartialRead):
+            handle.page(REQUEST)
+
+
 class FinishTest(StoreCase):
     def test_writes_one_canonical_line_per_record(self):
         handle = self.finished(self.session())

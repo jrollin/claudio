@@ -1,11 +1,15 @@
 import collections
 import decimal
+import errno
 import json
 import os
 import re
+import stat
 from datetime import datetime, timezone
 
 import state
+from providers._errors import PartialRead, SourceUnreadable
+from providers._http import BODY_CAP
 
 SCHEMA = 1
 READ_FILE = "read.json"
@@ -126,6 +130,27 @@ def saved_bytes(path):
         raise state.InputError(f"store: cannot read {path}: {error.strerror}") from error
 
 
+def page_bytes(path, call_id):
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        if error.errno == errno.ELOOP:
+            raise SourceUnreadable(f"response {call_id} is not a regular file") from None
+        raise state.InputError(f"store: cannot read {path}: {error.strerror}") from error
+    try:
+        with os.fdopen(descriptor, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                raise SourceUnreadable(f"response {call_id} is not a regular file")
+            if info.st_size > BODY_CAP:
+                raise PartialRead(f"response over 10 MB {call_id}")
+            return stream.read()
+    except OSError as error:
+        raise state.InputError(f"store: cannot read {path}: {error.strerror}") from error
+
+
 def check_read(document):
     state.check(document, READ_SPEC, "")
 
@@ -214,6 +239,20 @@ class ReadSession:
     def used(self):
         return list(self._used)
 
+    def page_path(self, call_id):
+        parts = call_id.split("/") if isinstance(call_id, str) else [""]
+        if any(part in ("", ".", "..") for part in parts):
+            raise state.Rejected("store: a call id must name a page inside the store")
+        return os.path.join(self.base, *parts) + self.suffix
+
+    def saved_pages(self):
+        count = 0
+        for folder, _, files in os.walk(self.base):
+            match = READ_NAME.fullmatch(os.path.basename(folder))
+            if match is not None and match["fetch"] == self.fetch_id:
+                count += sum(1 for name in files if name.startswith("page-"))
+        return count
+
     def counts(self):
         fetched = sum(1 for fetch_id in self._used.values() if fetch_id == self.fetch_id)
         return {"fetched": fetched, "reused": len(self._used) - fetched}
@@ -240,7 +279,7 @@ class ReadHandle:
         self._pages.append({"file": name, "request": request})
         self.last_id = f"{self.relative}/page-{number:03d}"
         path = os.path.join(self.folder, name)
-        saved = saved_bytes(path)
+        saved = page_bytes(path, self.last_id)
         if saved is not None:
             return saved
         if fetch is None:
@@ -291,4 +330,5 @@ def write_manifest(run_dir, source, session):
     path = os.path.join(run_dir, MANIFEST_FILE)
     document = state.load(path, "manifest", check_manifest) if os.path.exists(path) else {"schema": SCHEMA, "sources": {}}
     entry = {"reads": session.used(), **session.counts()}
+    make_folders(run_dir)
     state.write_all([(path, state.dump({"schema": SCHEMA, "sources": {**document["sources"], source: entry}}))])

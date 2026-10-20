@@ -25,8 +25,9 @@ def replay_client(*records):
 
 
 def outcome(adapter, client, source, window, cursor, entries):
+    session = slack_support.live(client) if getattr(adapter, "STORE", False) else client
     try:
-        return state.dump(adapter.fetch(source, window, cursor, entries, client))
+        return state.dump(adapter.fetch(source, window, cursor, entries, session))
     except _http.SourceUnreadable as error:
         return type(error), str(error), error.status
 

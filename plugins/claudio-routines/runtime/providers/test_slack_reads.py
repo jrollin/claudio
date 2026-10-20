@@ -191,6 +191,9 @@ class RelayParseTest(unittest.TestCase):
 
         self.assertEqual(reads.parse_read("history", read, [wrapped]), reads.parse_read("history", read, [page]))
 
+    def test_keeps_a_deeply_nested_page_as_text(self):
+        self.assertEqual(reads.page_text("page-001.txt", b"[" * 200000), "[" * 200000)
+
     def test_names_the_page_it_cannot_read(self):
         read = read_document("history", "mcp", {"channel": CHANNEL}, (str(START), str(TO)), [relay_request(HISTORY_ARGUMENTS)])
 

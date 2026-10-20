@@ -5,6 +5,7 @@ import json
 import os
 import re
 import stat
+import subprocess
 import sys
 from datetime import datetime, time, timedelta
 from urllib.parse import urlsplit
@@ -16,6 +17,7 @@ import recap_window
 import relay_capture
 import roles
 import state
+import store
 import tribe_state
 import weekly_state
 import weekly_window
@@ -33,6 +35,12 @@ PLAN_NOT_DONE = "plan not done"
 NO_RESPONSE = "no response saved (connector missing or relay not run)"
 CALLS_FILE = "calls.json"
 PLANNED_FILE = "planned.json"
+RAW_DIR = "raw"
+RELAY_DIR = "relay"
+STORE_DIR = "store"
+GIT_TIMEOUT = 10
+HERE = os.path.dirname(os.path.abspath(__file__))
+STORE_CALL_ID = re.compile(r"kind=[a-z][a-z0-9_]*(?:/[a-z][a-z0-9_]*=[^/]+)+/page-[0-9]{3}")
 MISMATCH_PATHS = 5
 DAY_SECONDS = 86400
 RESPONSE_SUFFIX = ".txt"
@@ -470,11 +478,47 @@ def api_client_for(adapter, provider, injected, opener=None, environ=None):
     return adapter.api_client(provider, opener=opener, environ=environ)
 
 
-def recording_client(adapter, provider, args, injected):
+def recording_client(adapter, provider, directory, name, injected):
     client = api_client_for(adapter, provider, injected)
-    if args.responses is not None:
-        client.recorder = record_writer(args.responses, args.source)
+    client.recorder = record_writer(directory, name)
     return client
+
+
+def with_http(session, client):
+    session.http = client
+    return session
+
+
+def is_store_backed(adapter):
+    return getattr(adapter, "STORE", False) is True
+
+
+def raw_directory(run, role, name):
+    return os.path.join(run, RAW_DIR, role, name)
+
+
+def relay_directory(run, name):
+    return os.path.join(run, RELAY_DIR, name)
+
+
+def runtime_commit():
+    try:
+        result = subprocess.run(["git", "-C", HERE, "rev-parse", "HEAD"], capture_output=True, text=True, timeout=GIT_TIMEOUT, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    commit = result.stdout.strip()
+    return commit if result.returncode == 0 and commit else None
+
+
+def read_session(args, provider, source, transport):
+    root = os.path.join(os.path.abspath(args.run), STORE_DIR)
+    run = os.path.basename(os.path.normpath(os.path.abspath(args.run)))
+    return store.ReadSession(root, source["provider"], run, args.source, provider["adapter"], transport, runtime=runtime_commit())
+
+
+def write_manifest(args, session):
+    if not getattr(args, "replaying", False):
+        store.write_manifest(args.run, args.source, session)
 
 
 def fetch_collection(provider, source, window, draft, client_of):
@@ -487,9 +531,14 @@ def fetch_collection(provider, source, window, draft, client_of):
 
 def run_fetch(args):
     provider, source, window, draft, injected = prepare(args, "api")
-    if args.responses is not None:
-        open_records(args.responses)
-    write_collection(args, fetch_collection(provider, source, window, draft, lambda adapter: recording_client(adapter, provider, args, injected)))
+    if is_store_backed(providers.load(provider["adapter"])):
+        session = read_session(args, provider, source, "api")
+        write_collection(args, fetch_collection(provider, source, window, draft, lambda adapter: with_http(session, api_client_for(adapter, provider, injected))))
+        write_manifest(args, session)
+        return 0
+    directory = raw_directory(args.run, draft.base["role"], args.source)
+    open_records(directory)
+    write_collection(args, fetch_collection(provider, source, window, draft, lambda adapter: recording_client(adapter, provider, directory, args.source, injected)))
     return 0
 
 
@@ -558,17 +607,17 @@ def check_planned(document):
     state.check(document, PLANNED_SPEC, "")
 
 
-def check_step(step, name):
+def check_step(step, name, store_backed=False):
     state.check(step, STEP_SPEC, "plan")
     if step["done"] and step["calls"]:
         raise state.Rejected("plan.calls: must be empty when done")
     if not step["done"] and step["partial"] is not None:
         raise state.Rejected("plan.partial: must be null when not done")
-    call_id = call_id_pattern(name)
+    call_id, expected = (STORE_CALL_ID, "the page path of a read") if store_backed else (call_id_pattern(name), f"{name}-<n> with n from 1")
     seen = set()
     for index, call in enumerate(step["calls"]):
         if not call_id.fullmatch(call["id"]):
-            raise state.Rejected(f"plan.calls[{index}].id: must be {name}-<n> with n from 1")
+            raise state.Rejected(f"plan.calls[{index}].id: must be {expected}")
         if call["id"] in seen:
             raise state.Rejected(f"plan.calls[{index}].id: duplicate id {call['id']}")
         seen.add(call["id"])
@@ -582,7 +631,7 @@ def adapter_step(adapter, source, window, draft, responses, connector):
     except Exception as error:
         return ended(f"adapter error: {type(error).__name__}")
     try:
-        check_step(step, source["name"])
+        check_step(step, source["name"], is_store_backed(adapter))
     except state.Rejected as error:
         return ended(f"adapter output invalid: {error}")
     return step
@@ -608,6 +657,18 @@ def plan_step(adapter, source, window, draft, directory, connector):
     return next_step(adapter_step(adapter, source, window, draft, responses, connector), responses, source.get("call_cap", CALL_CAP))
 
 
+def store_plan_step(adapter, source, window, draft, session, connector):
+    step = adapter_step(adapter, source, window, draft, session, connector)
+    if step["done"]:
+        return ended(step["partial"])
+    if session.saved_pages() >= source.get("call_cap", CALL_CAP):
+        return ended(CALL_CAP_PARTIAL)
+    fresh = [call for call in step["calls"] if not os.path.exists(session.page_path(call["id"]))]
+    if not fresh:
+        return ended(NO_NEW_CALL)
+    return {"done": False, "partial": None, "calls": fresh}
+
+
 def load_planned(directory):
     path = os.path.join(directory, PLANNED_FILE)
     return state.load(path, "planned", check_planned)["planned"] if os.path.exists(path) else {}
@@ -617,14 +678,16 @@ def relay_tool(connector, call):
     return f"{relay_capture.TOOL_PREFIX}{connector}__{call['tool']}"
 
 
-def pick_up(directory, connector, calls, planned):
+def pick_up(path_of, connector, calls, planned):
     picked, captures = 0, relay_capture.capture_dir()
     for call in calls:
         if call["id"] not in planned:
             continue
         text = relay_capture.take(captures, relay_tool(connector, call), call["arguments"], planned[call["id"]])
         if text is not None:
-            state.write_all([(os.path.join(directory, call["id"] + RESPONSE_SUFFIX), text.encode("utf-8"))])
+            path = path_of(call["id"])
+            store.make_folders(os.path.dirname(path))
+            state.write_all([(path, text.encode("utf-8"))])
             picked += 1
     return picked
 
@@ -645,10 +708,11 @@ def report_mismatches(connector, calls, planned):
                 print(mismatch_line(call["id"], found), file=sys.stderr)
 
 
-def relay_loop(directory, connector, compute):
+def relay_loop(directory, connector, compute, path_of=None):
+    path_of = path_of or (lambda call_id: os.path.join(directory, call_id + RESPONSE_SUFFIX))
     planned = load_planned(directory)
     step = compute()
-    while pick_up(directory, connector, step["calls"], planned):
+    while pick_up(path_of, connector, step["calls"], planned):
         step = compute()
     report_mismatches(connector, step["calls"], planned)
     listed_ns = relay_capture.time_ns()
@@ -658,27 +722,37 @@ def relay_loop(directory, connector, compute):
     return step
 
 
+def relay_plan(args, provider, source, window, draft, connector):
+    adapter = providers.load(provider["adapter"])
+    if is_store_backed(adapter):
+        session = read_session(args, provider, source, "mcp")
+        return relay_directory(args.run, args.source), session.page_path, lambda: store_plan_step(adapter, source, window, draft, session, connector)
+    directory = raw_directory(args.run, draft.base["role"], args.source)
+    path_of = lambda call_id: os.path.join(os.path.abspath(directory), call_id + RESPONSE_SUFFIX)
+    return directory, path_of, lambda: plan_step(adapter, source, window, draft, directory, connector)
+
+
 def run_plan(args):
     provider, source, window, draft, _ = prepare(args, "mcp")
     connector = provider["mcp"]["connectors"][args.place]
-    calls_path = os.path.join(args.responses, CALLS_FILE)
+    directory, path_of, compute = relay_plan(args, provider, source, window, draft, connector)
+    calls_path = os.path.join(directory, CALLS_FILE)
     try:
-        os.makedirs(args.responses, exist_ok=True)
+        os.makedirs(directory, exist_ok=True)
     except OSError as error:
-        raise state.InputError(f"responses: cannot create {args.responses}: {error.strerror}") from error
+        raise state.InputError(f"relay: cannot create {directory}: {error.strerror}") from error
     known = state.load(calls_path, "calls", check_calls) if os.path.exists(calls_path) else {"calls": {}}
-    if draft.skipped is not None:
-        step = ended()
-    else:
-        adapter = providers.load(provider["adapter"])
-        step = relay_loop(args.responses, connector, lambda: plan_step(adapter, source, window, draft, args.responses, connector))
+    step = ended() if draft.skipped is not None else relay_loop(directory, connector, compute, path_of)
     step = {**step, "partial": clean_reason(step["partial"])}
     recorded = {
         "calls": {**known["calls"], **{call["id"]: call["digest"] for call in step["calls"]}},
         "done": step["done"],
         "partial": step["partial"],
     }
-    calls = [{"id": call["id"], "connector": connector, "tool": call["tool"], "arguments": call["arguments"]} for call in step["calls"]]
+    calls = [
+        {"id": call["id"], "connector": connector, "tool": call["tool"], "arguments": call["arguments"], "path": path_of(call["id"])}
+        for call in step["calls"]
+    ]
     state.write_all([(calls_path, state.dump(recorded)), (args.out, state.dump({**step, "calls": calls}))])
     return 0
 
@@ -697,17 +771,17 @@ def relay_gap(known, call_ids, name, connector):
     return None
 
 
-def parse_collection(args, provider, source, window, draft):
+def parse_collection(args, provider, source, window, draft, directory):
     if draft.skipped is not None:
         return draft.not_read(draft.skipped)
     connector = provider["mcp"]["connectors"][args.place]
-    known = state.load(os.path.join(args.responses, CALLS_FILE), "calls", check_calls)
-    call_ids = response_ids(args.responses)
+    known = state.load(os.path.join(directory, CALLS_FILE), "calls", check_calls)
+    call_ids = response_ids(directory)
     gap = relay_gap(known, call_ids, source["name"], connector)
     if gap is not None:
         return draft.not_read(gap)
     try:
-        responses = read_responses(args.responses, call_ids)
+        responses = read_responses(directory, call_ids)
     except SourceUnreadable as error:
         return draft.not_read(failure_reason(error, connector))
     if known["partial"] is not None:
@@ -716,9 +790,28 @@ def parse_collection(args, provider, source, window, draft):
     return read_source(draft, connector, lambda: adapter.parse(source, window, draft.cursor, draft.selected, responses, known["calls"]))
 
 
+def store_parse_collection(args, provider, source, window, draft, session):
+    if draft.skipped is not None:
+        return draft.not_read(draft.skipped)
+    connector = provider["mcp"]["connectors"][args.place]
+    known = state.load(os.path.join(relay_directory(args.run, args.source), CALLS_FILE), "calls", check_calls)
+    if not known["done"]:
+        return draft.not_read(PLAN_NOT_DONE if session.saved_pages() else f"{connector}: {NO_RESPONSE}")
+    if known["partial"] is not None:
+        return draft.not_read(f"partial: {known['partial']}")
+    adapter = providers.load(provider["adapter"])
+    return read_source(draft, connector, lambda: adapter.parse(source, window, draft.cursor, draft.selected, session, known["calls"]))
+
+
 def run_parse(args):
     provider, source, window, draft, _ = prepare(args, "mcp")
-    write_collection(args, parse_collection(args, provider, source, window, draft))
+    if is_store_backed(providers.load(provider["adapter"])):
+        session = read_session(args, provider, source, "mcp")
+        write_collection(args, store_parse_collection(args, provider, source, window, draft, session))
+        write_manifest(args, session)
+        return 0
+    directory = getattr(args, "responses", None) or raw_directory(args.run, draft.base["role"], args.source)
+    write_collection(args, parse_collection(args, provider, source, window, draft, directory))
     return 0
 
 
@@ -759,14 +852,21 @@ def run_replay(args):
         raise state.InputError(f"out: cannot create {args.out}: {error.strerror}") from error
     for name, source in sorted(routine["sources"].items()):
         replayed = argparse.Namespace(
-            **{**vars(args), "source": name, "responses": os.path.join(args.raw, role_by_source[name], name), "out": os.path.join(args.out, name + COLLECTION_SUFFIX), "replaying": True}
+            **{
+                **vars(args),
+                "source": name,
+                "run": os.path.dirname(os.path.normpath(args.raw)),
+                "responses": os.path.join(args.raw, role_by_source[name], name),
+                "out": os.path.join(args.out, name + COLLECTION_SUFFIX),
+                "replaying": True,
+            }
         )
         REPLAYERS[read_through(source_choice(config, source, name, replayed), source, args.place)](replayed)
     return 0
 
 
 COMMANDS = {"sources": run_sources, "check-env": run_check_env, "fetch": run_fetch, "plan": run_plan, "parse": run_parse, "replay": run_replay}
-RELAY_FLAGS = ("--source", "--window", "--state", "--responses", "--out")
+RELAY_FLAGS = ("--source", "--window", "--state", "--run", "--out")
 
 
 def build_parser():
@@ -775,7 +875,7 @@ def build_parser():
     specs = (
         ("sources", "choose and list the transport of each source of the routine", ()),
         ("check-env", "list missing credential variables and connector names for the place", ()),
-        ("fetch", "read one api source and write its collection", ("--source", "--window", "--state", "--out")),
+        ("fetch", "read one api source and write its collection", RELAY_FLAGS),
         ("plan", "write the next connector calls of one mcp source", RELAY_FLAGS),
         ("parse", "parse the saved connector responses of one mcp source into its collection", RELAY_FLAGS),
         ("replay", "rebuild every collection of a run offline from its raw folder", ("--window", "--state", "--raw", "--out")),
@@ -786,7 +886,6 @@ def build_parser():
             command.add_argument(flag, required=True)
         command.add_argument("--place", required=True, choices=roles.PLACES)
     commands.choices["sources"].add_argument("--out")
-    commands.choices["fetch"].add_argument("--responses")
     for name in ("fetch", "plan", "parse", "replay"):
         commands.choices[name].add_argument("--sources")
     return parser

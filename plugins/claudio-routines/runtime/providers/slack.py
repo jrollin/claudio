@@ -8,7 +8,7 @@ from . import _common, _slack_reads
 from ._common import dig
 from ._errors import CALL_CAP, PartialRead, SourceUnreadable
 from ._slack_read import KEY_PART_CAP, LINE_BREAK, _Calls, _channel_read, _Pending, _stored_ts, _thread_key
-from ._slack_reads import ApiReads, CallOrderSession, LiveSession, RelayReads
+from ._slack_reads import ApiReads, RelayReads
 from ._slack_search import _ApiReader, _RelayReader, _search_units
 
 ROLE = "chat"
@@ -32,7 +32,6 @@ def _auth(values):
 
 
 def fetch(source, window, cursor, entries, session):
-    session = session if hasattr(session, "open") else LiveSession(session)
     stored, calls = _stored(cursor), _Calls(source.get("call_cap", CALL_CAP))
     reads = ApiReads(session, session.http, calls)
     cited, refused = _cited(source)
@@ -47,7 +46,7 @@ def _channels(source):
 
 def plan(source, window, cursor, entries, session, connector):
     try:
-        _walk(source, window, _stored(cursor), _ordered(session, source["name"]))
+        _walk(source, window, _stored(cursor), session)
     except _Pending as pending:
         call = {"id": pending.call_id, "connector": connector, "tool": pending.tool, "arguments": pending.arguments, "digest": None}
         return {"done": False, "partial": None, "calls": [call]}
@@ -61,7 +60,7 @@ def plan(source, window, cursor, entries, session, connector):
 def parse(source, window, cursor, entries, session, digests):
     stored = _stored(cursor)
     try:
-        reads, refused, found = _walk(source, window, stored, _ordered(session, source["name"]))
+        reads, refused, found = _walk(source, window, stored, session)
     except _Pending as pending:
         raise SourceUnreadable(f"{pending.tool}: no response {pending.call_id}") from None
     return _result(source, window, stored, reads, refused, found)
@@ -82,10 +81,6 @@ def _cited(source):
 
 def _refused_key(channel, root):
     return _thread_key(clean_text(channel, KEY_PART_CAP), clean_text(root, KEY_PART_CAP))
-
-
-def _ordered(session, name):
-    return session if hasattr(session, "open") else CallOrderSession(name, session)
 
 
 def _walk(source, window, stored, session):

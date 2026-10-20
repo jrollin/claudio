@@ -89,13 +89,15 @@ Paths are under `plugins/claudio-routines/` unless they start with `docs/` or `s
   - Store-backed adapters get a session on `<run>/store`; relay files move to `<run>/relay/<source>/`
   - Each planned call carries its absolute `path`; the capture pick-up writes there; the `relay capture mismatch` line stays
   - The collection's reads are added to `<run>/manifest.json`
+  - `slack.py` drops the bridge that wraps a responses dict or HTTP client; `CallOrderSession` and `LiveSession` move to `slack_support.py` (owner, 2026-10-20)
   - Tests: a missed capture saved by hand at `path`, a plan not done, a call cap reached, a non-Slack source unchanged
 - **Refs**: US-1, US-3, TD-4, TD-5
-- **Files**: `runtime/collect.py` (modify), `runtime/test_collect.py` (modify)
+- **Files**: `runtime/collect.py` (modify), `runtime/test_collect.py` (modify), `runtime/providers/slack.py` (modify), `runtime/providers/_slack_reads.py` (modify), `runtime/providers/slack_support.py` (modify)
 - **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime -p 'test_collect.py' && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime -p 'test_relay_capture.py'`
 - **Blocked by**: T-5
 - **Rules**: BR-3, BR-4
-- **Status**: Not Started
+- **Status**: Complete
+- **Result**: `fetch`, `plan` and `parse` take `--run`; store-backed adapters get a `ReadSession` on `<run>/store` with relay files in `<run>/relay/<source>/`, the others keep `<run>/raw/<role>/<source>/`; every planned call carries its absolute `path`, the pick-up writes there, the mismatch line stays, and each store-backed collection writes its reads to `manifest.json`; the store reads pages with the response guards (no link, regular file, 10 MB cap); the `slack.py` bridge is gone and the call-order and live sessions live in `slack_support.py`; 11 new collect tests and 5 new store tests, full runtime suite (5595) green
 
 ### T-7: Replay a run read by read
 - **Scope**:
