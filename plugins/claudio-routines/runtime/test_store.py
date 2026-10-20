@@ -1,11 +1,15 @@
 import contextlib
+import errno
 import io
 import json
 import os
 import pathlib
+import shutil
 import socket
 import stat
+import subprocess
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -36,9 +40,12 @@ class StoreCase(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = os.path.join(self.tmp.name, "store")
+        self.shared = os.path.join(self.tmp.name, "shared")
 
-    def session(self, source="channels", transport="mcp", run=RUN):
-        return store.ReadSession(self.root, "chat", run, source, "slack", transport, clock=lambda: FETCHED_AT, runtime="ab" * 20)
+    def session(self, source="channels", transport="mcp", run=RUN, shared=None, provider="chat", root=None):
+        return store.ReadSession(
+            root or self.root, provider, run, source, "slack", transport, clock=lambda: FETCHED_AT, runtime="ab" * 20, shared=shared
+        )
 
     def finished(self, session, entity=HISTORY, span=SPAN, records=RECORDS, kind="history"):
         handle = session.open(kind, entity, span)
@@ -643,6 +650,265 @@ class ReparseTest(StoreCase):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
             code = store.main(["reparse", "--root", root])
         return code, None, err.getvalue()
+
+
+def mode(path):
+    return stat.S_IMODE(os.lstat(path).st_mode)
+
+
+def folder_files(folder):
+    return {name: pathlib.Path(folder, name).read_bytes() for name in sorted(os.listdir(folder))}
+
+
+class SharedStoreCase(StoreCase):
+    def sharing(self, run=RUN, provider="chat", root=None):
+        return self.session(run=run, shared=self.shared, provider=provider, root=root)
+
+    def shared_folder(self, handle, provider="chat"):
+        return os.path.join(self.shared, f"provider={provider}", *handle.relative.split("/"))
+
+    def incoming(self, provider="chat"):
+        return os.path.join(self.shared, f"provider={provider}", store.INCOMING)
+
+
+class PublishTest(SharedStoreCase):
+    def test_publishes_a_finished_read_to_the_shared_store(self):
+        handle = self.finished(self.sharing())
+
+        self.assertEqual(folder_files(self.shared_folder(handle)), folder_files(handle.folder))
+
+    def test_publishes_a_failed_read_with_its_pages(self):
+        handle = self.sharing().open("history", HISTORY, SPAN)
+        handle.page(REQUEST, fetch=lambda: b"not_in_channel")
+        handle.finish("failed", "not_in_channel")
+
+        self.assertEqual(sorted(os.listdir(self.shared_folder(handle))), ["page-001.txt", store.READ_FILE])
+
+    def test_writes_nothing_outside_the_run_store_without_a_shared_root(self):
+        self.finished(self.session())
+
+        self.assertFalse(os.path.exists(self.shared))
+
+    def test_links_the_published_files_to_the_run_store_files(self):
+        handle = self.finished(self.sharing())
+
+        published = os.path.join(self.shared_folder(handle), store.RECORDS_FILE)
+        self.assertTrue(os.path.samefile(published, os.path.join(handle.folder, store.RECORDS_FILE)))
+
+    def test_creates_the_shared_folders_0700(self):
+        handle = self.finished(self.sharing())
+
+        modes = {mode(self.shared_folder(handle)), mode(os.path.join(self.shared, "provider=chat")), mode(self.incoming())}
+        self.assertEqual(modes, {0o700})
+
+    def test_leaves_no_staging_folder_behind(self):
+        self.finished(self.sharing())
+
+        self.assertEqual(os.listdir(self.incoming()), [])
+
+    def test_publishes_a_read_once_when_its_walk_finishes_it_again(self):
+        session = self.sharing()
+        handle = self.finished(session)
+        before = folder_files(self.shared_folder(handle))
+
+        session.open("history", HISTORY, SPAN).finish("complete", None, [])
+
+        self.assertEqual(folder_files(self.shared_folder(handle)), before)
+
+    def test_publishes_a_read_finished_before_the_store_was_shared(self):
+        handle = self.finished(self.session())
+
+        self.sharing().open("history", HISTORY, SPAN).finish("complete", None, RECORDS)
+
+        self.assertEqual(folder_files(self.shared_folder(handle)), folder_files(handle.folder))
+
+    def test_never_lists_a_read_while_its_files_are_linked(self):
+        session = self.sharing()
+        seen = []
+        real_link = os.link
+
+        def watched_link(source, target):
+            real_link(source, target)
+            seen.append(len(list(store.walk_reads(self.shared))))
+
+        with mock.patch.object(store.os, "link", watched_link):
+            self.finished(session)
+
+        self.assertEqual((seen, len(list(store.walk_reads(self.shared)))), ([0, 0, 0], 1))
+
+
+class PublishFallbackTest(SharedStoreCase):
+    def publish_failing_links(self, number):
+        with mock.patch.object(store.os, "link", side_effect=OSError(number, os.strerror(number))):
+            return self.finished(self.sharing())
+
+    def test_copies_the_files_across_file_systems(self):
+        handle = self.publish_failing_links(errno.EXDEV)
+
+        self.assertEqual(folder_files(self.shared_folder(handle)), folder_files(handle.folder))
+
+    def test_copies_the_files_where_links_are_not_permitted(self):
+        handle = self.publish_failing_links(errno.EPERM)
+
+        self.assertEqual(folder_files(self.shared_folder(handle)), folder_files(handle.folder))
+
+    def test_writes_copied_files_0600(self):
+        handle = self.publish_failing_links(errno.EXDEV)
+
+        folder = self.shared_folder(handle)
+        self.assertEqual({mode(os.path.join(folder, name)) for name in os.listdir(folder)}, {0o600})
+
+    def test_fails_on_another_link_error_and_cleans_its_staging_folder(self):
+        with self.assertRaises(state.InputError):
+            self.publish_failing_links(errno.EACCES)
+
+        self.assertEqual((os.listdir(self.incoming()), list(store.walk_reads(self.shared))), ([], []))
+
+
+class ConcurrentPublishTest(SharedStoreCase):
+    def test_two_sessions_publishing_at_once_both_land_complete(self):
+        barrier = threading.Barrier(2)
+        sessions = [self.sharing(run=RUN, root=os.path.join(self.tmp.name, "a")), self.sharing(run=OTHER_RUN, root=os.path.join(self.tmp.name, "b"))]
+        failures = []
+
+        def publish(session):
+            try:
+                handle = session.open("history", HISTORY, SPAN)
+                handle.page(REQUEST, fetch=lambda: b"page one")
+                barrier.wait()
+                handle.finish("complete", None, RECORDS)
+            except Exception as error:
+                failures.append(error)
+
+        threads = [threading.Thread(target=publish, args=(session,)) for session in sessions]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        listed = [(read.fetch_id, read.document["outcome"]["status"]) for read in self.sharing().shared_reads("history", HISTORY)]
+        self.assertEqual((failures, sorted(listed)), ([], [(OTHER_RUN + ".channels", "complete"), (RUN + ".channels", "complete")]))
+
+    def test_a_partial_staging_folder_is_never_listed(self):
+        handle = self.finished(self.session())
+        staging = os.path.join(self.incoming(), "read-partial")
+        shutil.copytree(handle.folder, staging)
+
+        listed = (list(store.walk_reads(self.shared)), self.sharing().shared_reads("history", HISTORY))
+        self.assertEqual(listed, ([], []))
+
+
+class LinkInTest(SharedStoreCase):
+    def published(self):
+        self.finished(self.sharing(run=OTHER_RUN, root=os.path.join(self.tmp.name, "other")))
+        return self.sharing().shared_reads("history", HISTORY)[0]
+
+    def test_links_a_shared_read_into_the_run_store(self):
+        read = self.published()
+
+        linked = self.sharing().link_in(read)
+
+        self.assertEqual((linked.folder, folder_files(linked.folder)), (os.path.join(self.root, *read.stored.split("/")), folder_files(read.folder)))
+
+    def test_counts_a_linked_read_as_reused(self):
+        session = self.sharing()
+
+        session.link_in(self.published())
+
+        self.assertEqual(session.counts(), {"fetched": 0, "reused": 1})
+
+    def test_lists_a_linked_read_among_the_reads_the_run_used(self):
+        session = self.sharing()
+        read = self.published()
+
+        session.link_in(read)
+
+        self.assertEqual(session.used(), [read.stored])
+
+    def test_a_deletion_in_the_shared_store_leaves_the_linked_read_intact(self):
+        session = self.sharing()
+        read = self.published()
+        linked = session.link_in(read)
+
+        shutil.rmtree(read.folder)
+
+        self.assertEqual(store.load_records(linked.folder), RECORDS)
+
+    def test_completes_a_link_interrupted_before_its_read_document(self):
+        read = self.published()
+        target = os.path.join(self.root, *read.stored.split("/"))
+        os.makedirs(target)
+        os.link(os.path.join(read.folder, "page-001.txt"), os.path.join(target, "page-001.txt"))
+
+        linked = self.sharing().link_in(read)
+
+        self.assertEqual(folder_files(linked.folder), folder_files(read.folder))
+
+    def test_refuses_a_page_name_that_leaves_the_read_folder(self):
+        read = self.published()
+        document = {**read.document, "pages": [{"file": "../escape.txt", "request": REQUEST}]}
+
+        with self.assertRaises(state.Rejected):
+            self.sharing().link_in(read._replace(document=document))
+
+
+class ProviderIsolationTest(SharedStoreCase):
+    def test_a_provider_key_never_lists_the_reads_of_another(self):
+        self.finished(self.sharing(provider="chat"))
+
+        listed = (len(self.sharing(provider="chat").shared_reads("history", HISTORY)), self.sharing(provider="chat_two").shared_reads("history", HISTORY))
+        self.assertEqual(listed, (1, []))
+
+    def test_lists_nothing_without_a_shared_root(self):
+        self.finished(self.sharing())
+
+        self.assertEqual(self.session().shared_reads("history", HISTORY), [])
+
+
+class StoreDirCheckTest(StoreCase):
+    LABEL = "places.local.store_dir"
+
+    def refusal(self, path):
+        with self.assertRaises(state.InputError) as caught:
+            store.check_store_dir(path, self.LABEL)
+        return str(caught.exception)
+
+    def test_accepts_a_folder_that_does_not_exist_yet(self):
+        self.assertIsNone(store.check_store_dir(os.path.join(self.tmp.name, "missing", "store"), self.LABEL))
+
+    def test_accepts_an_own_folder(self):
+        os.mkdir(self.shared, 0o700)
+
+        self.assertIsNone(store.check_store_dir(self.shared, self.LABEL))
+
+    def test_refuses_a_link(self):
+        os.mkdir(self.shared, 0o700)
+        linked = os.path.join(self.tmp.name, "linked")
+        os.symlink(self.shared, linked)
+
+        self.assertTrue(self.refusal(linked).startswith(self.LABEL + ": "))
+
+    def test_refuses_a_file(self):
+        pathlib.Path(self.shared).write_text("", encoding="utf-8")
+
+        self.assertTrue(self.refusal(self.shared).startswith(self.LABEL + ": "))
+
+    def test_refuses_another_users_folder(self):
+        os.mkdir(self.shared, 0o700)
+
+        with mock.patch.object(store.os, "getuid", return_value=os.getuid() + 1):
+            self.assertTrue(self.refusal(self.shared).startswith(self.LABEL + ": "))
+
+    def test_refuses_a_folder_inside_a_git_working_tree(self):
+        repository = os.path.join(self.tmp.name, "repository")
+        subprocess.run(["git", "init", "--quiet", repository], check=True)
+
+        self.assertTrue(self.refusal(os.path.join(repository, "store", "chat")).startswith(self.LABEL + ": "))
+
+    def test_never_shows_the_path_in_a_refusal(self):
+        pathlib.Path(self.shared).write_text("", encoding="utf-8")
+
+        self.assertNotIn(self.shared, self.refusal(self.shared))
 
 
 if __name__ == "__main__":

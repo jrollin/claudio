@@ -119,8 +119,16 @@ def choose_sources(config, routine, role_by_source, place):
     ]
 
 
+def store_dir_of(config, place):
+    store_dir = config["places"][place].get("store_dir")
+    if store_dir is not None:
+        store.check_store_dir(store_dir, f"places.{place}.store_dir")
+    return store_dir
+
+
 def run_sources(args):
     config, routine, role_by_source = load_routine(args)
+    store_dir_of(config, args.place)
     document = state.dump(choose_sources(config, routine, role_by_source, args.place))
     if args.out is not None:
         state.write_all([(args.out, document)])
@@ -418,7 +426,8 @@ def prepare(args, transport):
     options = state_options(run_state, engine, role, source, args.source, routine.get("thread_reads", "full"))
     configured = {key: value for key, value in source.items() if key not in ("threads", "rereads", "known_threads")}
     injected = transport == "api" and is_injected(provider, roles.injected_hosts(config, args.place))
-    return provider, {**configured, "name": args.source, "provider_config": provider, **options}, window, draft, injected
+    prepared = {**configured, "name": args.source, "provider_config": provider, **options}
+    return provider, prepared, window, draft, injected, config["places"][args.place].get("store_dir")
 
 
 def clean_reason(reason):
@@ -498,10 +507,14 @@ def relay_directory(run, name):
     return os.path.join(run, RELAY_DIR, name)
 
 
-def read_session(args, provider, source, transport):
+def read_session(args, provider, source, transport, store_dir):
+    if store_dir is not None:
+        store.check_store_dir(store_dir, f"places.{args.place}.store_dir")
     root = os.path.join(os.path.abspath(args.run), STORE_DIR)
     run = os.path.basename(os.path.normpath(os.path.abspath(args.run)))
-    return store.ReadSession(root, source["provider"], run, args.source, provider["adapter"], transport, runtime=store.runtime_commit())
+    return store.ReadSession(
+        root, source["provider"], run, args.source, provider["adapter"], transport, runtime=store.runtime_commit(), shared=store_dir
+    )
 
 
 def replay_session(args, provider, source, transport, reads):
@@ -524,9 +537,9 @@ def fetch_collection(provider, source, window, draft, client_of):
 
 
 def run_fetch(args):
-    provider, source, window, draft, injected = prepare(args, "api")
+    provider, source, window, draft, injected, store_dir = prepare(args, "api")
     if is_store_backed(providers.load(provider["adapter"])):
-        session = read_session(args, provider, source, "api")
+        session = read_session(args, provider, source, "api", store_dir)
         write_collection(args, fetch_collection(provider, source, window, draft, lambda adapter: with_http(session, api_client_for(adapter, provider, injected))))
         write_manifest(args, session)
         return 0
@@ -716,10 +729,10 @@ def relay_loop(directory, connector, compute, path_of=None):
     return step
 
 
-def relay_plan(args, provider, source, window, draft, connector):
+def relay_plan(args, provider, source, window, draft, connector, store_dir):
     adapter = providers.load(provider["adapter"])
     if is_store_backed(adapter):
-        session = read_session(args, provider, source, "mcp")
+        session = read_session(args, provider, source, "mcp", store_dir)
         return relay_directory(args.run, args.source), session.page_path, lambda: store_plan_step(adapter, source, window, draft, session, connector)
     directory = raw_directory(args.run, draft.base["role"], args.source)
     path_of = lambda call_id: os.path.join(os.path.abspath(directory), call_id + RESPONSE_SUFFIX)
@@ -727,9 +740,9 @@ def relay_plan(args, provider, source, window, draft, connector):
 
 
 def run_plan(args):
-    provider, source, window, draft, _ = prepare(args, "mcp")
+    provider, source, window, draft, _, store_dir = prepare(args, "mcp")
     connector = provider["mcp"]["connectors"][args.place]
-    directory, path_of, compute = relay_plan(args, provider, source, window, draft, connector)
+    directory, path_of, compute = relay_plan(args, provider, source, window, draft, connector, store_dir)
     calls_path = os.path.join(directory, CALLS_FILE)
     try:
         os.makedirs(directory, exist_ok=True)
@@ -798,9 +811,9 @@ def store_parse_collection(args, provider, source, window, draft, session):
 
 
 def run_parse(args):
-    provider, source, window, draft, _ = prepare(args, "mcp")
+    provider, source, window, draft, _, store_dir = prepare(args, "mcp")
     if is_store_backed(providers.load(provider["adapter"])):
-        session = read_session(args, provider, source, "mcp")
+        session = read_session(args, provider, source, "mcp", store_dir)
         write_collection(args, store_parse_collection(args, provider, source, window, draft, session))
         write_manifest(args, session)
         return 0
@@ -829,7 +842,7 @@ def replaying_client(adapter, provider, name, records, injected):
 
 
 def run_replay_fetch(args):
-    provider, source, window, draft, injected = prepare(args, "api")
+    provider, source, window, draft, injected, _ = prepare(args, "api")
     records = read_records(args.responses, args.source)
     write_collection(args, fetch_collection(provider, source, window, draft, lambda adapter: replaying_client(adapter, provider, args.source, records, injected)))
     return 0
@@ -846,7 +859,7 @@ def load_manifest(run):
 
 
 def replay_store_source(args, transport, reads):
-    provider, source, window, draft, _ = prepare(args, transport)
+    provider, source, window, draft, _, _ = prepare(args, transport)
     session = replay_session(args, provider, source, transport, reads)
     if transport == "api":
         collection = fetch_collection(provider, source, window, draft, lambda adapter: with_http(session, None))

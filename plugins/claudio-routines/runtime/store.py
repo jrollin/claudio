@@ -5,9 +5,11 @@ import errno
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 
 import providers
@@ -20,14 +22,20 @@ SCHEMA = 1
 READ_FILE = "read.json"
 RECORDS_FILE = "records.jsonl"
 MANIFEST_FILE = "manifest.json"
+INCOMING = ".incoming"
 PAGE_SUFFIXES = {"api": ".json", "mcp": ".txt"}
 STATUSES = ("complete", "failed", "partial")
 REQUEST_FIELDS = {"api": ("method", "path", "query", "body"), "mcp": ("tool", "arguments")}
 FOLDER_MODE = 0o700
+FILE_MODE = 0o600
+LINK_FALLBACK = (errno.EXDEV, errno.EPERM)
+PUBLISHED_ALREADY = (errno.EEXIST, errno.ENOTEMPTY)
+GIT_LOCATORS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR")
 PART_CAP = 200
 BARRED_IN_PART = ("/", "\\", "=", "\x00")
 KEY = re.compile(r"[a-z][a-z0-9_]*")
 TS = re.compile(r"[0-9]{1,16}(?:\.[0-9]{1,9})?")
+PAGE_FILE = re.compile(r"page-[0-9]{3,}\.(?:json|txt)")
 READ_NAME = re.compile(r"read=(?:(?P<start>[0-9.]+)_(?P<end>[0-9.]+)-)?(?P<fetch>[^/]+)")
 LONE_SURROGATE = re.compile(r"[\ud800-\udfff]")
 REPLACEMENT = "�"
@@ -168,6 +176,100 @@ def page_bytes(path, call_id):
         raise state.InputError(f"store: cannot read {path}: {error.strerror}") from error
 
 
+def is_regular(path):
+    try:
+        return stat.S_ISREG(os.lstat(path).st_mode)
+    except FileNotFoundError:
+        return False
+
+
+def copy_file(source, target):
+    data = saved_bytes(source)
+    try:
+        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, FILE_MODE)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
+    except OSError as error:
+        raise state.InputError(f"store: cannot copy {source} to {target}: {error.strerror}") from error
+
+
+def link_or_copy(source, target):
+    try:
+        os.link(source, target)
+    except OSError as error:
+        if error.errno not in LINK_FALLBACK:
+            raise state.InputError(f"store: cannot link {source} to {target}: {error.strerror}") from error
+        copy_file(source, target)
+
+
+def read_file_names(document):
+    pages = [page["file"] for page in document["pages"]]
+    if not all(isinstance(name, str) and PAGE_FILE.fullmatch(name) for name in pages):
+        raise state.Rejected("store: a read lists a page file outside its folder")
+    return [*pages, RECORDS_FILE, READ_FILE]
+
+
+def link_read(folder, target, document):
+    for name in read_file_names(document):
+        source = os.path.join(folder, name)
+        if is_regular(source) and not os.path.lexists(os.path.join(target, name)):
+            link_or_copy(source, os.path.join(target, name))
+
+
+def rename_read(staging, final):
+    try:
+        os.rename(staging, final)
+    except OSError as error:
+        if error.errno not in PUBLISHED_ALREADY:
+            raise state.InputError(f"store: cannot publish {final}: {error.strerror}") from error
+
+
+def existing_folder(path):
+    while not os.path.isdir(path):
+        parent = os.path.dirname(path)
+        if parent == path:
+            break
+        path = parent
+    return path
+
+
+def in_git_repository(path, label):
+    environment = {key: value for key, value in os.environ.items() if key not in GIT_LOCATORS}
+    try:
+        result = subprocess.run(
+            ["git", "-C", existing_folder(path), "rev-parse", "--git-dir"],
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT,
+            check=False,
+            env={**environment, "LC_ALL": "C", "LANGUAGE": "C"},
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise state.InputError(f"{label}: cannot run git to check that the folder lies outside every repository") from error
+    if result.returncode == 0:
+        return True
+    if "not a git repository" in result.stderr:
+        return False
+    raise state.InputError(f"{label}: cannot tell whether the folder lies inside a git repository")
+
+
+def check_store_dir(path, label):
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        info = None
+    except OSError as error:
+        raise state.InputError(f"{label}: cannot inspect the folder: {error.strerror}") from error
+    if info is not None and stat.S_ISLNK(info.st_mode):
+        raise state.InputError(f"{label}: is a link, set the folder it points to")
+    if info is not None and not stat.S_ISDIR(info.st_mode):
+        raise state.InputError(f"{label}: is not a folder")
+    if info is not None and info.st_uid != os.getuid():
+        raise state.InputError(f"{label}: belongs to another user")
+    if in_git_repository(path, label):
+        raise state.InputError(f"{label}: lies inside a git working tree, keep the store outside every repository")
+
+
 def check_read(document):
     state.check(document, READ_SPEC, "")
 
@@ -223,7 +325,7 @@ def list_reads(root, folder):
 
 
 class ReadSession:
-    def __init__(self, root, provider, run, source, adapter, transport, clock=None, runtime=None):
+    def __init__(self, root, provider, run, source, adapter, transport, clock=None, runtime=None, shared=None):
         if transport not in PAGE_SUFFIXES:
             raise state.Rejected(f"store: unknown transport {transport}")
         if not is_safe(run) or not is_safe(source):
@@ -231,6 +333,8 @@ class ReadSession:
         self.root = root
         self.provider = provider
         self.base = os.path.join(root, folder_part("provider", provider))
+        self.shared = shared
+        self.shared_base = None if shared is None else os.path.join(shared, folder_part("provider", provider))
         self.run = run
         self.source = source
         self.fetch_id = f"{run}.{source}"
@@ -241,11 +345,14 @@ class ReadSession:
         self.runtime = runtime
         self._used = {}
 
+    def entity_parts(self, kind, entity):
+        return [folder_part("kind", kind), *(folder_part(key, value) for key, value in entity)]
+
     def entity_folder(self, kind, entity):
-        return os.path.join(self.base, folder_part("kind", kind), *(folder_part(key, value) for key, value in entity))
+        return os.path.join(self.base, *self.entity_parts(kind, entity))
 
     def open(self, kind, entity, span=None):
-        parts = [folder_part("kind", kind), *(folder_part(key, value) for key, value in entity), read_part(span, self.fetch_id)]
+        parts = [*self.entity_parts(kind, entity), read_part(span, self.fetch_id)]
         handle = self.make_handle(kind, dict(entity), span, parts)
         self._used.setdefault(handle.stored, self.fetch_id)
         return handle
@@ -255,6 +362,34 @@ class ReadSession:
 
     def reads(self, kind, entity):
         return list_reads(self.root, self.entity_folder(kind, entity))
+
+    def shared_reads(self, kind, entity):
+        if self.shared is None:
+            return []
+        return list_reads(self.shared, os.path.join(self.shared_base, *self.entity_parts(kind, entity)))
+
+    def link_in(self, read):
+        target = os.path.join(self.root, *read.stored.split("/"))
+        make_folders(target)
+        link_read(read.folder, target, read.document)
+        self._used.setdefault(read.stored, read.fetch_id)
+        return read._replace(folder=target)
+
+    def publish(self, handle):
+        if self.shared_base is None:
+            return
+        final = os.path.join(self.shared_base, *handle.relative.split("/"))
+        if os.path.isfile(os.path.join(final, READ_FILE)):
+            return
+        incoming = os.path.join(self.shared_base, INCOMING)
+        make_folders(incoming)
+        staging = tempfile.mkdtemp(prefix="read-", dir=incoming)
+        try:
+            link_read(handle.folder, staging, handle.document())
+            make_folders(os.path.dirname(final))
+            rename_read(staging, final)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
 
     def used(self):
         return list(self._used)
@@ -315,12 +450,12 @@ class ReadHandle:
     def finish(self, status, reason=None, records=None):
         if status not in STATUSES:
             raise state.Rejected(f"store: unknown read status {status}")
-        if self.done():
-            return
-        make_folders(self.folder)
-        if status == "complete":
-            state.write_all([(os.path.join(self.folder, RECORDS_FILE), dump_lines(records or []))])
-        state.write_all([(os.path.join(self.folder, READ_FILE), state.dump(replaced(self._document(status, reason))))])
+        if not self.done():
+            make_folders(self.folder)
+            if status == "complete":
+                state.write_all([(os.path.join(self.folder, RECORDS_FILE), dump_lines(records or []))])
+            state.write_all([(os.path.join(self.folder, READ_FILE), state.dump(replaced(self._document(status, reason))))])
+        self.session.publish(self)
 
     def document(self):
         return load_document(self.folder)

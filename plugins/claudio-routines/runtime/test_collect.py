@@ -521,6 +521,44 @@ class SourcesTest(CollectTestCase):
         self.assertEqual(self.run_command("sources")[0], 0)
 
 
+class SourcesStoreDirTest(CollectTestCase):
+    def sources_with(self, store_dir, place="local"):
+        self.config["places"][place]["store_dir"] = store_dir
+        return self.run_command("sources", place=place)
+
+    def test_accepts_a_store_dir_outside_every_repository(self):
+        self.assertEqual(self.sources_with(self.path("store"))[0], 0)
+
+    def test_refuses_a_store_dir_inside_a_git_working_tree(self):
+        subprocess.run(["git", "init", "--quiet", self.path("repository")], check=True)
+
+        code, _, err = self.sources_with(self.path("repository/store"))
+
+        self.assertEqual((code, "places.local.store_dir" in err), (2, True))
+
+    def test_refuses_a_store_dir_that_is_a_link(self):
+        os.mkdir(self.path("store"), 0o700)
+        os.symlink(self.path("store"), self.path("linked"))
+
+        code, _, err = self.sources_with(self.path("linked"))
+
+        self.assertEqual((code, "places.local.store_dir" in err), (2, True))
+
+    def test_refuses_a_store_dir_of_another_user(self):
+        os.mkdir(self.path("store"), 0o700)
+
+        with mock.patch.object(store.os, "getuid", return_value=os.getuid() + 1):
+            code, _, err = self.sources_with(self.path("store"))
+
+        self.assertEqual((code, "places.local.store_dir" in err), (2, True))
+
+    def test_checks_only_the_store_dir_of_the_requested_place(self):
+        os.symlink(self.tmp.name, self.path("linked"))
+        self.config["places"]["cloud"]["store_dir"] = self.path("linked")
+
+        self.assertEqual(self.run_command("sources", place="local")[0], 0)
+
+
 class CheckEnvTest(CollectTestCase):
     def check_env(self, environ, place="cloud"):
         with mock.patch.dict(os.environ, environ, clear=True):
@@ -2075,6 +2113,30 @@ class StoreRelayTest(TribeChatCase):
         self.plan(source="team-chat")
         self.parse(source="team-chat")
         self.assertEqual(self.collection()["reason"], collect.PLAN_NOT_DONE)
+
+    def shared_read(self, call):
+        return self.path(os.path.join("shared", "provider=chat", call["id"].rsplit("/", 1)[0], store.READ_FILE))
+
+    def test_publishes_a_read_to_the_store_dir_of_the_place(self):
+        self.config["places"]["cloud"]["store_dir"] = self.path("shared")
+        call = self.first_call()
+        answer_planned({"calls": [call]}, CHAT_LISTING)
+        self.plan(source="team-chat")
+        self.parse(source="team-chat")
+        self.assertTrue(os.path.isfile(self.shared_read(call)))
+
+    def test_keeps_the_reads_in_the_run_store_without_a_store_dir(self):
+        call = self.first_call()
+        answer_planned({"calls": [call]}, CHAT_LISTING)
+        self.plan(source="team-chat")
+        self.parse(source="team-chat")
+        self.assertFalse(os.path.exists(self.path("shared")))
+
+    def test_plan_refuses_a_store_dir_inside_a_git_working_tree(self):
+        subprocess.run(["git", "init", "--quiet", self.path("repository")], check=True)
+        self.config["places"]["cloud"]["store_dir"] = self.path("repository/store")
+        code, _, err = self.plan(source="team-chat")
+        self.assertEqual((code, "places.cloud.store_dir" in err), (2, True))
 
     def test_fetches_a_store_backed_source_into_its_reads(self):
         opener = FakeOpener()

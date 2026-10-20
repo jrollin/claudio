@@ -175,7 +175,8 @@ Paths are under `plugins/claudio-routines/` unless they start with `docs/` or `s
 - **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime -p 'test_store.py' && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime -p 'test_collect.py'`
 - **Blocked by**: T-7, T-8, T-11
 - **Rules**: BR-3, BR-6, BR-12
-- **Status**: Not Started
+- **Status**: Complete
+- **Result**: a session with `store_dir` publishes each finished read through `.incoming/` and a rename, links shared reads into the run store (copy on `EXDEV`/`EPERM`), lists them per provider key; `sources` and the read session refuse a linked, foreign or in-repository `store_dir`: 40 new tests, store (97), collect (489), runtime (5701) and routines (786) suites passing
 
 ### T-13: Reuse fresh reads and fetch only the gaps
 - **Scope**:
