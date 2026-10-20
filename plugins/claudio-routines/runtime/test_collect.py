@@ -8,6 +8,7 @@ import sys
 import tempfile
 import types
 import unittest
+from datetime import datetime, timezone
 from unittest import mock
 
 import collect
@@ -2209,6 +2210,35 @@ class StoreReplayTest(StoreRelayTest):
         os.remove(self.path("run/manifest.json"))
         code, _, err = self.replay()
         self.assertEqual((code, "holds no manifest.json" in err), (2, True))
+
+    def reuse_run(self, command, out, run):
+        return self.run_main(
+            command, "--config", self.write("config.json", self.config), "--routine", ROUTINE, "--source", "team-chat", "--place", "cloud",
+            "--window", self.write("window.json", self.window), "--state", self.write("state.json", self.state), "--run", self.path(run), "--out", out,
+        )
+
+    def reuse_another_runs_read(self):
+        self.config["places"]["cloud"]["store_dir"] = self.path("shared")
+        self.config["routines"][ROUTINE]["sources"]["team-chat"]["max_age"] = 60
+        fetched = datetime.fromtimestamp(WINDOW_END - 60, timezone.utc).strftime(store.UTC_FORMAT)
+        with mock.patch.object(store, "utc_now", return_value=fetched):
+            self.reuse_run("plan", self.path("first-plan.json"), "first")
+            with open(self.path("first-plan.json"), encoding="utf-8") as handle:
+                answer_planned(json.load(handle), CHAT_LISTING)
+            self.reuse_run("plan", self.path("first-plan.json"), "first")
+            self.reuse_run("parse", self.path("first.json"), "first")
+            self.reuse_run("plan", self.path("plan.json"), RUN)
+            self.reuse_run("parse", self.path("collection.json"), RUN)
+
+    def test_a_later_run_reuses_the_read_of_an_earlier_run(self):
+        self.reuse_another_runs_read()
+        self.assertEqual((self.plan_doc()["calls"], self.manifest()["sources"]["team-chat"]["fetched"], self.manifest()["sources"]["team-chat"]["reused"]), ([], 0, 1))
+
+    def test_replays_a_source_that_reused_a_read_byte_for_byte(self):
+        self.reuse_another_runs_read()
+        self.assertEqual(self.replay()[0], 0)
+        with open(self.path("collection.json"), "rb") as run, open(self.path("replayed/team-chat.json"), "rb") as replayed:
+            self.assertEqual(replayed.read(), run.read())
 
     def test_replays_a_fetched_source_from_its_records(self):
         opener = FakeOpener()

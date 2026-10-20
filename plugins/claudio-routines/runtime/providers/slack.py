@@ -8,7 +8,7 @@ from . import _common, _slack_reads
 from ._common import dig
 from ._errors import CALL_CAP, PartialRead, SourceUnreadable
 from ._slack_read import KEY_PART_CAP, LINE_BREAK, _Calls, _channel_read, _Pending, _stored_ts, _thread_key
-from ._slack_reads import ApiReads, RelayReads
+from ._slack_reads import ApiReads, Freshness, RelayReads
 from ._slack_search import _ApiReader, _RelayReader, _search_units
 
 ROLE = "chat"
@@ -34,11 +34,15 @@ def _auth(values):
 
 def fetch(source, window, cursor, entries, session):
     stored, calls = _stored(cursor), _Calls(source.get("call_cap", CALL_CAP))
-    reads = ApiReads(session, session.http, calls)
+    reads = ApiReads(session, session.http, calls, _freshness(source, window))
     cited, refused = _cited(source)
     channel_reads = [_channel_read(reads, channel, window, stored, cited[channel]) for channel in _channels(source)]
     found = _search_units(source, window, _ApiReader(reads, window, source["owner"])) if source.get("searches") else None
     return _result(source, window, stored, channel_reads, refused, found)
+
+
+def _freshness(source, window):
+    return Freshness(source.get("max_age"), window["to_ts"])
 
 
 def _channels(source):
@@ -85,7 +89,7 @@ def _refused_key(channel, root):
 
 
 def _walk(source, window, stored, session):
-    reads = RelayReads(session)
+    reads = RelayReads(session, _freshness(source, window))
     cited, refused = _cited(source)
     channel_reads = [_channel_read(reads, channel, window, stored, cited[channel]) for channel in _channels(source)]
     found = _search_units(source, window, _RelayReader(reads, window)) if source.get("searches") else None

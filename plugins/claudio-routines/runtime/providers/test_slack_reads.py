@@ -1,15 +1,19 @@
 import decimal
 import json
+import os
 import tempfile
 import unittest
+import urllib.parse
 
 import state
 import store
 from providers import _slack_reads as reads
+from providers import slack
 from providers._errors import PartialRead, SourceUnreadable
-from providers._slack_read import HISTORY_PATH, ChannelFailed, Item, _api_page, _relay_page
-from providers._slack_search import Hit, _search_page, _search_types, _unit_thread_page
-from providers.slack_support import ROOT_TS, fixture
+from providers._slack_read import HISTORY_PATH, ChannelFailed, Item, _api_page, _Calls, _Pending, _relay_page
+from providers._slack_search import MEMBERS_PATH, REACTIONS_TOOL, SEARCH_TOOL, Hit, _search_page, _search_types, _unit_thread_page
+from providers.slack_support import CONNECTOR, ROOT_TS, STORED, WINDOW, fixture, one_channel, relay_message, relay_page
+from providers.test_http import FakeOpener, FakeResponse, make_client
 
 CHANNEL = "CHAN1"
 START = decimal.Decimal("1760000500.000050")
@@ -313,6 +317,232 @@ class ParseReadTest(unittest.TestCase):
         read = read_document("history", "mcp", {"channel": CHANNEL}, (str(START), str(TO)), [])
 
         self.assertEqual(reads.parse_read("history", read, []), [])
+
+
+SHARED_RUN = "20251009T115000Z-a1b2c3"
+STORED_AT = "2025-10-09T11:50:00Z"
+RUNTIME = "ab" * 20
+MID = "1760009000"
+NEW = Item(CHANNEL, "1760009500.000100", None, "U3", "Shipped", "Cy Example", False)
+REPLY = Item(CHANNEL, "1760002500.000100", ROOT_TS, "U2", "Thanks", "Bea Example", False)
+THREAD_ROOT = Item(CHANNEL, ROOT_TS, ROOT_TS, "U1", "Release notes", "Ada Example", False)
+
+
+class ReuseCase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.shared = os.path.join(self.tmp.name, "shared")
+
+    def store_read(self, key, rows, transport="mcp", status="complete", fetched_at=STORED_AT):
+        root = os.path.join(self.tmp.name, "other", transport)
+        session = store.ReadSession(root, "chat", SHARED_RUN, "channels", "slack", transport, clock=lambda: fetched_at, runtime=RUNTIME, shared=self.shared)
+        handle = session.open(*key)
+        handle.page({"tool": "stored"}, fetch=lambda: b"stored page")
+        handle.finish(status, None if status == "complete" else "why", rows)
+
+    def session(self, transport="mcp"):
+        root = os.path.join(self.tmp.name, "run", "store")
+        return store.ReadSession(root, "chat", RUN, "team-chat", "slack", transport, clock=lambda: "2025-10-09T11:55:00Z", runtime=RUNTIME, shared=self.shared)
+
+    def relay(self, max_age=60, session=None):
+        return reads.RelayReads(session or self.session(), reads.Freshness(max_age, TO))
+
+    def pending(self, call):
+        with self.assertRaises(_Pending) as caught:
+            call()
+        return caught.exception
+
+    def answer(self, session, pending, text):
+        path = session.page_path(pending.call_id)
+        store.make_folders(os.path.dirname(path))
+        with open(path, "w", encoding="utf-8") as stream:
+            stream.write(text)
+
+
+class RelayHistoryReuseTest(ReuseCase):
+    def stored_history(self, **options):
+        self.store_read(reads.history_key(CHANNEL, START, MID), reads.to_rows("history", [ITEM]), **options)
+
+    def test_reads_only_the_gap_after_a_fresh_read(self):
+        self.stored_history()
+
+        pending = self.pending(lambda: self.relay().history(CHANNEL, START, TO))
+
+        self.assertEqual(pending.arguments, {**HISTORY_ARGUMENTS, "oldest": MID})
+
+    def test_merges_the_reused_and_the_fetched_messages(self):
+        self.stored_history()
+        session = self.session()
+        pending = self.pending(lambda: self.relay(session=session).history(CHANNEL, START, TO))
+        self.answer(session, pending, relay_page(CHANNEL, relay_message("U3", NEW.ts, "Shipped")))
+
+        found = self.relay(session=session).history(CHANNEL, START, TO)
+
+        self.assertEqual([item.ts for item in found], [ITEM.ts, NEW.ts])
+
+    def test_reads_the_whole_span_with_a_max_age_of_zero(self):
+        self.stored_history()
+
+        pending = self.pending(lambda: self.relay(max_age=0).history(CHANNEL, START, TO))
+
+        self.assertEqual(pending.arguments, HISTORY_ARGUMENTS)
+
+    def test_reads_the_whole_span_without_freshness(self):
+        self.stored_history()
+
+        pending = self.pending(lambda: reads.RelayReads(self.session()).history(CHANNEL, START, TO))
+
+        self.assertEqual(pending.arguments, HISTORY_ARGUMENTS)
+
+    def test_rereads_a_span_whose_read_failed(self):
+        self.stored_history(status="failed")
+
+        pending = self.pending(lambda: self.relay().history(CHANNEL, START, TO))
+
+        self.assertEqual(pending.arguments, HISTORY_ARGUMENTS)
+
+    def test_rereads_a_span_whose_read_is_partial(self):
+        self.stored_history(status="partial")
+
+        pending = self.pending(lambda: self.relay().history(CHANNEL, START, TO))
+
+        self.assertEqual(pending.arguments, HISTORY_ARGUMENTS)
+
+    def test_needs_no_call_for_a_covered_span(self):
+        self.store_read(reads.history_key(CHANNEL, START, TO), reads.to_rows("history", [ITEM, NEW]))
+
+        self.assertEqual(self.relay().history(CHANNEL, START, TO), [ITEM, NEW])
+
+    def test_keeps_the_newest_fetch_of_a_message(self):
+        edited = NEW._replace(text="Shipped, edited")
+        self.store_read(reads.history_key(CHANNEL, START, TO), reads.to_rows("history", [NEW]), fetched_at="2025-10-09T11:40:00Z")
+        self.store_read(reads.history_key(CHANNEL, MID, TO), reads.to_rows("history", [edited]))
+
+        self.assertEqual(self.relay().history(CHANNEL, START, TO), [edited])
+
+    def test_keeps_only_messages_of_the_needed_span(self):
+        early = ITEM._replace(ts="1760000100.000100")
+        self.store_read(reads.history_key(CHANNEL, "1760000000", TO), reads.to_rows("history", [early, ITEM]))
+
+        self.assertEqual(self.relay().history(CHANNEL, START, TO), [ITEM])
+
+
+class RelayThreadReuseTest(ReuseCase):
+    def test_reads_a_thread_from_the_end_of_its_fresh_read(self):
+        self.store_read(reads.thread_key(CHANNEL, ROOT_TS, None, MID), reads.to_rows("thread", [THREAD_ROOT, REPLY]))
+
+        pending = self.pending(lambda: self.relay().thread(CHANNEL, ROOT_TS, None, TO))
+
+        self.assertEqual(pending.arguments, {**THREAD_ARGUMENTS, "oldest": MID})
+
+    def test_reuses_the_root_and_replies_of_a_covered_thread(self):
+        self.store_read(reads.thread_key(CHANNEL, ROOT_TS, None, TO), reads.to_rows("thread", [THREAD_ROOT, REPLY]))
+
+        self.assertEqual(self.relay().thread(CHANNEL, ROOT_TS, None, TO), [THREAD_ROOT, REPLY])
+
+    def test_reads_replies_after_the_root_of_a_covered_thread(self):
+        self.store_read(reads.thread_key(CHANNEL, ROOT_TS, START, TO), reads.to_rows("thread", [THREAD_ROOT, REPLY]))
+
+        self.assertEqual(self.relay().replies(CHANNEL, ROOT_TS, START, TO), [REPLY])
+
+
+class RelayKindReuseTest(ReuseCase):
+    def test_reuses_the_reactions_of_a_message(self):
+        self.store_read(reads.reactions_key(CHANNEL, ITEM.ts), reads.to_rows("reactions", ["U1", "U2"]))
+
+        self.assertEqual(self.relay().reactions(CHANNEL, ITEM.ts), {"U1", "U2"})
+
+    def test_reuses_reactions_only_under_their_own_max_age(self):
+        self.store_read(reads.reactions_key(CHANNEL, ITEM.ts), reads.to_rows("reactions", ["U1"]))
+
+        pending = self.pending(lambda: self.relay(max_age={"default": 60, "reactions": 0}).reactions(CHANNEL, ITEM.ts))
+
+        self.assertEqual(pending.tool, REACTIONS_TOOL)
+
+    def test_never_reuses_a_search(self):
+        search = {"name": "dms", "filters": "to:me", "channel_types": "im,mpim", "since": "window"}
+        self.store_read(reads.search_key("dms", 1760000000, TO), [])
+
+        pending = self.pending(lambda: self.relay().search(search, 1760000000, TO, 2))
+
+        self.assertEqual(pending.tool, SEARCH_TOOL)
+
+
+class ApiReuseTest(ReuseCase):
+    def api(self, opener, max_age=60):
+        calls = _Calls(5)
+        return reads.ApiReads(self.session("api"), make_client(opener, sleeps=[]), calls, reads.Freshness(max_age, TO)), calls
+
+    def test_an_api_source_rereads_a_span_held_by_a_connector_read(self):
+        self.store_read(reads.history_key(CHANNEL, START, TO), reads.to_rows("history", [ITEM]), transport="mcp")
+        opener = FakeOpener(FakeResponse(json.dumps({"ok": True, "messages": [], "has_more": False}).encode("utf-8")))
+        api, _ = self.api(opener)
+
+        api.history(CHANNEL, START, TO)
+
+        self.assertEqual(urllib.parse.parse_qs(urllib.parse.urlsplit(opener.requests[0].full_url).query)["oldest"], [str(START)])
+
+    def test_reuses_the_members_of_a_channel_without_a_call(self):
+        self.store_read(reads.members_key(CHANNEL), reads.to_rows("members", ["U1", "U2"]), transport="api")
+        opener = FakeOpener()
+        api, calls = self.api(opener)
+
+        members = api.members(CHANNEL, MEMBERS_PATH)
+
+        self.assertEqual((members, opener.requests, calls.left), (["U1", "U2"], [], 5))
+
+    def test_reuses_a_user_name_under_the_people_max_age(self):
+        self.store_read(reads.users_key("U1"), reads.to_rows("users", ["Ada Example"]), transport="api")
+        opener = FakeOpener()
+        api, _ = self.api(opener, max_age={"people": 1440})
+
+        self.assertEqual((api.user_name("U1"), opener.requests), ("Ada Example", []))
+
+
+class MaxAgeTest(unittest.TestCase):
+    def test_applies_minutes_to_every_kind(self):
+        self.assertEqual([reads.minutes(30, kind) for kind in ("history", "thread", "reactions", "members", "users")], [30] * 5)
+
+    def test_never_reuses_a_search(self):
+        self.assertEqual(reads.minutes({"default": 30}, "search"), 0)
+
+    def test_falls_back_to_the_default(self):
+        self.assertEqual(reads.minutes({"default": 30, "history": 5}, "thread"), 30)
+
+    def test_takes_zero_without_a_default(self):
+        self.assertEqual(reads.minutes({"history": 5}, "thread"), 0)
+
+    def test_maps_members_and_users_to_people(self):
+        self.assertEqual([reads.minutes({"people": 90}, kind) for kind in ("members", "users")], [90, 90])
+
+    def test_takes_zero_when_unset(self):
+        self.assertEqual(reads.minutes(None, "history"), 0)
+
+
+class AdapterReuseTest(ReuseCase):
+    def test_plans_only_the_gap_for_a_source_with_max_age(self):
+        self.store_read(reads.history_key(CHANNEL, START, MID), reads.to_rows("history", [ITEM]))
+
+        step = slack.plan({**one_channel(), "max_age": 60}, WINDOW, STORED, [], self.session(), CONNECTOR)
+
+        self.assertEqual(step["calls"][0]["arguments"], {**HISTORY_ARGUMENTS, "oldest": MID})
+
+    def test_plans_the_whole_span_for_a_source_without_max_age(self):
+        self.store_read(reads.history_key(CHANNEL, START, MID), reads.to_rows("history", [ITEM]))
+
+        step = slack.plan(one_channel(), WINDOW, STORED, [], self.session(), CONNECTOR)
+
+        self.assertEqual(step["calls"][0]["arguments"], HISTORY_ARGUMENTS)
+
+    def test_fetches_nothing_for_a_covered_api_source(self):
+        self.store_read(reads.history_key(CHANNEL, START, TO), reads.to_rows("history", [ITEM]), transport="api")
+        session, opener = self.session("api"), FakeOpener()
+        session.http = make_client(opener, sleeps=[])
+
+        result = slack.fetch({**one_channel(), "max_age": 60}, WINDOW, STORED, [], session)
+
+        self.assertEqual(([record["ts"] for record in result["records"]["messages"]], opener.requests), ([ITEM.ts], []))
 
 
 if __name__ == "__main__":

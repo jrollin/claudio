@@ -64,6 +64,7 @@ READ_SPEC = {
 MANIFEST_SPEC = {"schema": SCHEMA_ONE, "sources": {"*": {"reads": [state.TEXT], "fetched": COUNT, "reused": COUNT}}}
 
 StoredRead = collections.namedtuple("StoredRead", "folder stored span fetch_id document")
+Reuse = collections.namedtuple("Reuse", "read rows")
 
 
 class PagePending(Exception):
@@ -299,13 +300,49 @@ def load_records(folder):
     return records
 
 
+def fetched_epoch(document):
+    try:
+        return int(datetime.strptime(document["fetched_at"], UTC_FORMAT).replace(tzinfo=timezone.utc).timestamp())
+    except ValueError:
+        return None
+
+
+def overlaps(span, needed):
+    if span is None or needed is None:
+        return True
+    return decimal.Decimal(span[0]) < decimal.Decimal(needed[1]) and decimal.Decimal(span[1]) > decimal.Decimal(needed[0])
+
+
+def gaps(needed, spans):
+    start, end = (decimal.Decimal(bound) for bound in needed)
+    reached, reached_text, found = start, needed[0], []
+    for low, high in sorted(spans, key=lambda span: (decimal.Decimal(span[0]), decimal.Decimal(span[1]))):
+        if reached >= end:
+            break
+        if decimal.Decimal(low) > reached:
+            found.append((reached_text, low if decimal.Decimal(low) < end else needed[1]))
+        if decimal.Decimal(high) > reached:
+            reached, reached_text = decimal.Decimal(high), high
+    if reached < end:
+        found.append((reached_text, needed[1]))
+    return found
+
+
+def merge_newest(groups, key):
+    kept = {}
+    for records in groups:
+        for record in records:
+            kept[decimal.Decimal(key(record))] = record
+    return [kept[ts] for ts in sorted(kept)]
+
+
 def read_order(read):
     if read.span is None:
         return (decimal.Decimal(-1), decimal.Decimal(-1), read.fetch_id)
     return (decimal.Decimal(read.span[0]), decimal.Decimal(read.span[1]), read.fetch_id)
 
 
-def list_reads(root, folder):
+def list_reads(root, folder, needed=None):
     try:
         names = os.listdir(folder)
     except FileNotFoundError:
@@ -319,6 +356,8 @@ def list_reads(root, folder):
         if match is None or not os.path.isfile(os.path.join(path, READ_FILE)):
             continue
         span = None if match["start"] is None else (match["start"], match["end"])
+        if not overlaps(span, needed):
+            continue
         stored = os.path.relpath(path, root).replace(os.sep, "/")
         found.append(StoredRead(path, stored, span, match["fetch"], load_document(path)))
     return sorted(found, key=read_order)
@@ -360,13 +399,56 @@ class ReadSession:
     def make_handle(self, kind, entity, span, parts):
         return ReadHandle(self, kind, entity, span, parts)
 
-    def reads(self, kind, entity):
-        return list_reads(self.root, self.entity_folder(kind, entity))
+    def reads(self, kind, entity, needed=None):
+        return list_reads(self.root, self.entity_folder(kind, entity), needed)
 
-    def shared_reads(self, kind, entity):
+    def shared_reads(self, kind, entity, needed=None):
         if self.shared is None:
             return []
-        return list_reads(self.shared, os.path.join(self.shared_base, *self.entity_parts(kind, entity)))
+        return list_reads(self.shared, os.path.join(self.shared_base, *self.entity_parts(kind, entity)), needed)
+
+    def candidates(self, kind, entity, needed):
+        local = self.reads(kind, entity, needed)
+        held = {read.stored for read in local}
+        return local, [read for read in self.shared_reads(kind, entity, needed) if read.stored not in held]
+
+    def eligible(self, kind, entity, needed, minutes, window_end):
+        if minutes <= 0:
+            return []
+        local, shared = self.candidates(kind, entity, needed)
+        reused = []
+        for read, linked in [*((read, True) for read in local), *((read, False) for read in shared)]:
+            rows = self.reusable_rows(read, minutes, window_end)
+            if rows is None:
+                continue
+            if not linked:
+                read = self.link_in(read)
+            self._used.setdefault(read.stored, read.fetch_id)
+            reused.append(Reuse(read, rows))
+        return sorted(reused, key=lambda use: (use.read.document["fetched_at"], use.read.fetch_id))
+
+    def is_fresh(self, read, minutes, window_end):
+        document = read.document
+        fetched = fetched_epoch(document)
+        return (
+            read.fetch_id != self.fetch_id
+            and document["provider"] == self.provider
+            and document["outcome"]["status"] == "complete"
+            and (self.transport == "mcp" or document["transport"] == "api")
+            and fetched is not None
+            and window_end - fetched <= minutes * 60
+            and (fetched <= window_end or document["run"] == self.run)
+        )
+
+    def reusable_rows(self, read, minutes, window_end):
+        if not self.is_fresh(read, minutes, window_end):
+            return None
+        try:
+            if read.document["parsed_by"] is None or read.document["parsed_by"] != self.runtime:
+                return reparsed_rows(read)
+            return load_records(read.folder)
+        except (SourceUnreadable, PartialRead, state.Rejected, state.InputError):
+            return None
 
     def link_in(self, read):
         target = os.path.join(self.root, *read.stored.split("/"))
@@ -491,9 +573,12 @@ def request_label(request):
 
 
 class ReplaySession(ReadSession):
-    def __init__(self, root, provider, run, source, adapter, transport, reads):
-        super().__init__(root, provider, run, source, adapter, transport)
+    def __init__(self, root, provider, run, source, adapter, transport, reads, runtime=None):
+        super().__init__(root, provider, run, source, adapter, transport, runtime=runtime)
         self.recorded = frozenset(reads)
+
+    def candidates(self, kind, entity, needed):
+        return [read for read in self.reads(kind, entity, needed) if read.stored in self.recorded], []
 
     def make_handle(self, kind, entity, span, parts):
         handle = ReplayHandle(self, kind, entity, span, parts)

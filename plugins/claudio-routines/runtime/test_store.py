@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timezone
 from unittest import mock
 
 import state
@@ -24,6 +25,8 @@ WINDOW_SPAN = ("1760000500.000050", "1760010800")
 RUN = "20261020T073004Z-z1x7pc"
 OTHER_RUN = "20261019T120003Z-p8m1za"
 FETCHED_AT = "2026-10-20T07:30:09Z"
+FETCHED_EPOCH = int(datetime(2026, 10, 20, 7, 30, 9, tzinfo=timezone.utc).timestamp())
+WINDOW_END = FETCHED_EPOCH + 600
 HISTORY = (("channel", "C0TRIBE1"),)
 THREAD = (("channel", "C0TRIBE1"), ("root", "1792394100.000200"))
 SPAN = ("1792394810.000400", "1792481400")
@@ -909,6 +912,217 @@ class StoreDirCheckTest(StoreCase):
         pathlib.Path(self.shared).write_text("", encoding="utf-8")
 
         self.assertNotIn(self.shared, self.refusal(self.shared))
+
+
+class GapsTest(unittest.TestCase):
+    NEEDED = ("1792394810.000400", "1792481400")
+
+    def test_gives_the_needed_span_without_coverage(self):
+        self.assertEqual(store.gaps(self.NEEDED, []), [self.NEEDED])
+
+    def test_gives_nothing_for_a_covered_span(self):
+        self.assertEqual(store.gaps(self.NEEDED, [("1792300000", "1792500000")]), [])
+
+    def test_gives_the_tail_after_a_span_covering_the_start(self):
+        self.assertEqual(store.gaps(self.NEEDED, [("1792394810.000400", "1792400000.5")]), [("1792400000.5", "1792481400")])
+
+    def test_gives_nothing_for_adjacent_spans_covering_the_need(self):
+        spans = [("1792394810.000400", "1792400000"), ("1792400000", "1792481400")]
+        self.assertEqual(store.gaps(self.NEEDED, spans), [])
+
+    def test_joins_overlapping_spans(self):
+        spans = [("1792394000", "1792420000"), ("1792410000", "1792481400")]
+        self.assertEqual(store.gaps(self.NEEDED, spans), [])
+
+    def test_gives_the_hole_between_two_spans(self):
+        spans = [("1792394810.000400", "1792400000"), ("1792450000", "1792481400")]
+        self.assertEqual(store.gaps(self.NEEDED, spans), [("1792400000", "1792450000")])
+
+    def test_ignores_a_span_outside_the_need(self):
+        self.assertEqual(store.gaps(self.NEEDED, [("1792000000", "1792100000")]), [self.NEEDED])
+
+    def test_gives_every_gap_in_ascending_order(self):
+        spans = [("1792450000", "1792460000"), ("1792400000", "1792410000")]
+        expected = [("1792394810.000400", "1792400000"), ("1792410000", "1792450000"), ("1792460000", "1792481400")]
+        self.assertEqual(store.gaps(self.NEEDED, spans), expected)
+
+
+class MergeNewestTest(unittest.TestCase):
+    def test_keeps_the_record_of_the_newer_group_for_one_key(self):
+        merged = store.merge_newest([[{"ts": "1.1", "text": "old"}], [{"ts": "1.1", "text": "new"}]], lambda record: record["ts"])
+        self.assertEqual(merged, [{"ts": "1.1", "text": "new"}])
+
+    def test_orders_the_records_by_ascending_key(self):
+        merged = store.merge_newest([[{"ts": "10.5"}, {"ts": "9.9"}], [{"ts": "2.0"}]], lambda record: record["ts"])
+        self.assertEqual([record["ts"] for record in merged], ["2.0", "9.9", "10.5"])
+
+
+class EligibleCase(SharedStoreCase):
+    def stored(self, run=OTHER_RUN, source="channels", transport="mcp", fetched_at=FETCHED_AT, status="complete", span=SPAN, runtime="ab" * 20):
+        root = os.path.join(self.tmp.name, "runs", f"{run}-{source}")
+        session = store.ReadSession(root, "chat", run, source, "slack", transport, clock=lambda: fetched_at, runtime=runtime, shared=self.shared)
+        handle = session.open("history", HISTORY, span)
+        handle.page(REQUEST, fetch=lambda: b"page one")
+        handle.finish(status, None if status == "complete" else "why", RECORDS)
+        return handle
+
+    def mine(self, transport="mcp", run=RUN, source="channels", runtime="ab" * 20):
+        return store.ReadSession(self.root, "chat", run, source, "slack", transport, clock=lambda: FETCHED_AT, runtime=runtime, shared=self.shared)
+
+    def eligible(self, session=None, minutes=60, window_end=WINDOW_END, span=SPAN):
+        return (session or self.mine()).eligible("history", HISTORY, span, minutes, window_end)
+
+    def fetch_ids(self, reused):
+        return [use.read.fetch_id for use in reused]
+
+
+class EligibleTest(EligibleCase):
+    def test_reuses_a_complete_read_fetched_within_max_age(self):
+        self.stored()
+
+        self.assertEqual([(use.read.fetch_id, use.rows) for use in self.eligible()], [(OTHER_RUN + ".channels", RECORDS)])
+
+    def test_reuses_nothing_with_a_max_age_of_zero(self):
+        self.stored()
+
+        self.assertEqual(self.eligible(minutes=0), [])
+
+    def test_ignores_a_read_older_than_max_age(self):
+        self.stored()
+
+        self.assertEqual(self.eligible(minutes=9), [])
+
+    def test_reuses_a_read_exactly_max_age_old(self):
+        self.stored()
+
+        self.assertEqual(self.fetch_ids(self.eligible(minutes=10)), [OTHER_RUN + ".channels"])
+
+    def test_ignores_a_read_another_run_fetched_after_the_window_end(self):
+        self.stored()
+
+        self.assertEqual(self.eligible(window_end=FETCHED_EPOCH - 1), [])
+
+    def test_reuses_a_read_another_source_of_the_run_fetched_after_the_window_end(self):
+        self.stored(run=RUN, source="digest")
+
+        self.assertEqual(self.fetch_ids(self.eligible(window_end=FETCHED_EPOCH - 1)), [RUN + ".digest"])
+
+    def test_an_api_source_skips_a_connector_read(self):
+        self.stored(transport="mcp")
+
+        self.assertEqual(self.eligible(self.mine(transport="api")), [])
+
+    def test_an_api_source_reuses_an_api_read(self):
+        self.stored(transport="api")
+
+        self.assertEqual(self.fetch_ids(self.eligible(self.mine(transport="api"))), [OTHER_RUN + ".channels"])
+
+    def test_a_connector_source_reuses_an_api_read(self):
+        self.stored(transport="api")
+
+        self.assertEqual(self.fetch_ids(self.eligible(self.mine(transport="mcp"))), [OTHER_RUN + ".channels"])
+
+    def test_ignores_a_failed_read(self):
+        self.stored(status="failed")
+
+        self.assertEqual(self.eligible(), [])
+
+    def test_ignores_a_partial_read(self):
+        self.stored(status="partial")
+
+        self.assertEqual(self.eligible(), [])
+
+    def test_never_reuses_its_own_reads(self):
+        session = self.mine()
+        self.finished(session)
+
+        self.assertEqual(self.eligible(session), [])
+
+    def test_ignores_a_read_whose_span_lies_outside_the_need(self):
+        self.stored(span=("1792000000", "1792100000"))
+
+        self.assertEqual(self.eligible(), [])
+
+    def test_orders_reused_reads_oldest_fetch_first(self):
+        self.stored(run=OTHER_RUN, fetched_at="2026-10-20T07:30:09Z")
+        self.stored(run="20261020T072000Z-a1b2c3", fetched_at="2026-10-20T07:25:00Z")
+
+        self.assertEqual(self.fetch_ids(self.eligible()), ["20261020T072000Z-a1b2c3.channels", OTHER_RUN + ".channels"])
+
+    def test_links_a_reused_read_into_the_run_store(self):
+        handle = self.stored()
+
+        reused = self.eligible()
+
+        self.assertEqual(reused[0].read.folder, os.path.join(self.root, "provider=chat", *handle.relative.split("/")))
+
+    def test_counts_a_reused_read(self):
+        session = self.mine()
+        self.stored()
+
+        self.eligible(session)
+
+        self.assertEqual(session.counts(), {"fetched": 0, "reused": 1})
+
+    def test_reuses_a_read_of_another_source_in_the_run_store_without_a_shared_root(self):
+        root = self.root
+        other = store.ReadSession(root, "chat", RUN, "digest", "slack", "mcp", clock=lambda: FETCHED_AT, runtime="ab" * 20)
+        self.finished(other)
+        session = store.ReadSession(root, "chat", RUN, "channels", "slack", "mcp", clock=lambda: FETCHED_AT, runtime="ab" * 20)
+
+        self.assertEqual(self.fetch_ids(self.eligible(session)), [RUN + ".digest"])
+
+
+class EligibleReparseTest(EligibleCase):
+    PAGES = ("read_chan1_page_1.json", "read_chan1_page_2.json")
+    ENTITY = (("channel", "CHAN1"),)
+
+    def stored_real(self, runtime, pages=PAGES):
+        root = os.path.join(self.tmp.name, "runs", "other")
+        session = store.ReadSession(root, "chat", OTHER_RUN, "channels", "slack", "mcp", clock=lambda: FETCHED_AT, runtime=runtime, shared=self.shared)
+        handle = session.open("history", self.ENTITY, WINDOW_SPAN)
+        data = [(FIXTURES / name).read_bytes() for name in pages]
+        for number, page in enumerate(data):
+            handle.page({"tool": "slack_read_channel", "arguments": {"page": number}}, fetch=lambda page=page: page)
+        handle.finish("complete", None, [{"tampered": True}])
+        return slack.to_rows("history", slack.parse_read("history", handle.document(), data))
+
+    def reused_rows(self, runtime="ab" * 20):
+        return [use.rows for use in self.mine(runtime=runtime).eligible("history", self.ENTITY, WINDOW_SPAN, 60, WINDOW_END)]
+
+    def test_trusts_the_records_parsed_by_the_same_runtime(self):
+        self.stored_real("ab" * 20)
+
+        self.assertEqual(self.reused_rows(), [[{"tampered": True}]])
+
+    def test_reparses_records_another_runtime_parsed(self):
+        expected = self.stored_real("cd" * 20)
+
+        self.assertEqual(self.reused_rows(), [expected])
+
+    def test_reparses_records_of_an_unknown_runtime(self):
+        expected = self.stored_real(None)
+
+        self.assertEqual(self.reused_rows(), [expected])
+
+    def test_skips_a_read_whose_pages_no_longer_parse(self):
+        self.stored()
+        handle_rows = self.mine(runtime="cd" * 20).eligible("history", HISTORY, SPAN, 60, WINDOW_END)
+
+        self.assertEqual(handle_rows, [])
+
+
+class ReplayEligibleTest(EligibleCase):
+    def test_replays_only_the_reused_reads_the_run_recorded(self):
+        recorded = self.stored(run=OTHER_RUN)
+        self.eligible()
+        self.stored(run="20261020T072000Z-a1b2c3", fetched_at="2026-10-20T07:25:00Z")
+        self.mine().eligible("history", HISTORY, SPAN, 60, WINDOW_END)
+        replay = store.ReplaySession(self.root, "chat", RUN, "channels", "slack", "mcp", ["provider=chat/" + recorded.relative], runtime="ab" * 20)
+
+        reused = replay.eligible("history", HISTORY, SPAN, 60, WINDOW_END)
+
+        self.assertEqual(self.fetch_ids(reused), [OTHER_RUN + ".channels"])
 
 
 if __name__ == "__main__":

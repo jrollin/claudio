@@ -109,7 +109,7 @@ graph LR
 
 ### TD-4: A read session replaces `responses` and `http` for store-backed adapters
 
-**Choice**: an adapter with `STORE = True` receives a `ReadSession` where it received `responses` (plan, parse) or `http` (fetch). The walk calls `session.open(kind, entity, span)`, with the entity keys and span `_slack_reads` derives from the read's arguments and `to`, and gets a handle with `page(request)` and `finish(outcome, records)`; reuse goes through `session.eligible(kind, entity)`. `parse_read(kind, read, pages)` becomes an adapter entry point.
+**Choice**: an adapter with `STORE = True` receives a `ReadSession` where it received `responses` (plan, parse) or `http` (fetch). The walk calls `session.open(kind, entity, span)`, with the entity keys and span `_slack_reads` derives from the read's arguments and `to`, and gets a handle with `page(request)` and `finish(outcome, records)`; reuse goes through `session.eligible(kind, entity, span, minutes, window_end)`. `parse_read(kind, read, pages)` becomes an adapter entry point.
 **Alternatives considered**:
 - Keep `<source>-<n>` relay ids and file responses into the store after parsing: rejected, two copies of every page, and the ids depend on walk order, which phase 2 reuse changes.
 - Let the adapter write files: rejected, file IO inside adapters, and their tests would need a file system.
@@ -324,8 +324,12 @@ session.open(kind, entity, span) -> ReadHandle            # entity: ordered (key
 handle.page(request, fetch=None) -> bytes                  # saved page, else fetch() saved, else PagePending for the relay
 handle.records() -> [dict]                                 # rows of a complete read, without the path values
 handle.finish(outcome, records)                            # records.jsonl then read.json, then publish
-session.eligible(kind, entity) -> [StoredRead]             # TD-7, linked into the run store on use
-session.counts(source) -> {"fetched": N, "reused": M}
+session.eligible(kind, entity, span, minutes, window_end) -> [Reuse(read, rows)]  # TD-7, oldest fetch first, linked into the run store on use
+session.link_in(read) -> StoredRead                        # shared read linked into the run store, read.json last
+session.shared_reads(kind, entity, span) -> [StoredRead]   # reads under <store_dir>/provider=<key>
+session.counts() -> {"fetched": N, "reused": M}
+store.gaps(needed, spans) -> [(from, to)]                  # TD-8, ascending
+store.merge_newest(groups, key) -> [record]                # BR-5, groups ordered oldest fetch first
 ```
 
 ### Performance

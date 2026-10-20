@@ -520,7 +520,7 @@ def read_session(args, provider, source, transport, store_dir):
 def replay_session(args, provider, source, transport, reads):
     root = os.path.join(os.path.abspath(args.run), STORE_DIR)
     run = os.path.basename(os.path.normpath(os.path.abspath(args.run)))
-    return store.ReplaySession(root, source["provider"], run, args.source, provider["adapter"], transport, reads)
+    return store.ReplaySession(root, source["provider"], run, args.source, provider["adapter"], transport, reads, runtime=store.runtime_commit())
 
 
 def write_manifest(args, session):

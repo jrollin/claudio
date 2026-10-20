@@ -56,8 +56,10 @@ SLACK_ID = re.compile(r"[A-Z0-9]{1,32}")
 MESSAGE_TS = re.compile(r"[0-9]{1,16}\.[0-9]{1,9}")
 RECORD_KEYS = ("response", "error")
 ERROR_KEYS = ("class", "message", "status")
+AGE_KEYS = {"history": "history", "thread": "thread", "reactions": "reactions", "members": "people", "users": "people"}
 
 ReadKey = collections.namedtuple("ReadKey", "kind entity span")
+Freshness = collections.namedtuple("Freshness", "max_age window_end")
 
 MESSAGE_ROW = {"ts": state.TEXT, "author": state.TEXT, "text": state.TEXT, "name": state.TEXT, "bot": state.BOOLEAN}
 THREADED_ROW = {**MESSAGE_ROW, "thread_ts": state.Nullable(state.TEXT)}
@@ -307,29 +309,96 @@ def _thread_arguments(channel, root, oldest):
     return {"channel_id": channel, "message_ts": root, "oldest": str(oldest), "limit": RELAY_THREAD_PAGE_SIZE, "response_format": "detailed"}
 
 
-class RelayReads:
-    def __init__(self, session):
+def minutes(max_age, kind):
+    if kind not in AGE_KEYS:
+        return 0
+    if isinstance(max_age, dict):
+        return max_age.get(AGE_KEYS[kind], max_age.get("default", 0))
+    return max_age if state.is_integer(max_age) else 0
+
+
+def _item_ts(item):
+    return item.ts
+
+
+def _needed(key, item):
+    start, to = (decimal.Decimal(bound) for bound in key.span)
+    is_root = key.kind == "thread" and item.ts == dict(key.entity)["root"]
+    return is_root or start < decimal.Decimal(item.ts) <= to
+
+
+def _gap_spans(key, reused):
+    if key.kind != "thread":
+        return store.gaps(key.span, [use.read.span for use in reused])
+    root = dict(key.entity)["root"]
+    after_root = lambda span: (max(span[0], root, key=decimal.Decimal), span[1])
+    gaps = store.gaps(after_root(key.span), [after_root(use.read.span) for use in reused])
+    return [(gaps[0][0], key.span[1])] if gaps else []
+
+
+class _Reads:
+    def __init__(self, session, freshness):
         self.session = session
+        self.freshness = freshness
+
+    def _reused(self, key):
+        age = 0 if self.freshness is None else minutes(self.freshness.max_age, key.kind)
+        if age <= 0:
+            return []
+        return self.session.eligible(key.kind, key.entity, key.span, age, self.freshness.window_end)
+
+    def _spanned(self, key, fresh, gap_read):
+        reused = self._reused(key)
+        if not reused:
+            return fresh()
+        entity = dict(key.entity)
+        groups = [from_rows(key.kind, entity, use.rows) for use in reused]
+        groups.extend(gap_read(*gap) for gap in _gap_spans(key, reused))
+        return [item for item in store.merge_newest(groups, _item_ts) if _needed(key, item)]
+
+    def _kept(self, key, fresh):
+        reused = self._reused(key)
+        if not reused:
+            return fresh()
+        return from_rows(key.kind, dict(key.entity), reused[-1].rows)
+
+
+class RelayReads(_Reads):
+    def __init__(self, session, freshness=None):
+        super().__init__(session, freshness)
 
     def history(self, channel, start, to):
-        arguments = {"channel_id": channel, "oldest": str(start), "latest": str(to), "limit": RELAY_PAGE_SIZE, "response_format": "detailed"}
-        return self._read(history_key(channel, start, to), TOOL, arguments)
+        def read(low, high):
+            arguments = {"channel_id": channel, "oldest": str(low), "latest": str(high), "limit": RELAY_PAGE_SIZE, "response_format": "detailed"}
+            return self._read(history_key(channel, low, high), TOOL, arguments)
+
+        return self._spanned(history_key(channel, start, to), lambda: read(start, to), read)
 
     def replies(self, channel, root, oldest, to):
-        items = self._read(thread_key(channel, root, oldest, to), THREAD_TOOL, _thread_arguments(channel, root, oldest))
+        read = lambda low, high: self._read(thread_key(channel, root, low, high), THREAD_TOOL, _thread_arguments(channel, root, low))
+        items = self._spanned(thread_key(channel, root, oldest, to), lambda: read(oldest, to), read)
         return [item for item in items if decimal.Decimal(item.ts) > decimal.Decimal(root)]
 
     def cited(self, channel, root, oldest, to):
-        first, start = decimal.Decimal(root), max(decimal.Decimal(root), decimal.Decimal(oldest))
-        reached = lambda items: any(first < decimal.Decimal(item.ts) <= start for item in items)
-        items = self._read(thread_key(channel, root, oldest, to), THREAD_TOOL, _thread_arguments(channel, root, oldest), reached)
+        first = decimal.Decimal(root)
+
+        def read(low, high):
+            start = max(first, decimal.Decimal(low))
+            reached = lambda items: any(first < decimal.Decimal(item.ts) <= start for item in items)
+            return self._read(thread_key(channel, root, low, high), THREAD_TOOL, _thread_arguments(channel, root, low), reached)
+
+        items = self._spanned(thread_key(channel, root, oldest, to), lambda: read(oldest, to), read)
+        start = max(first, decimal.Decimal(oldest))
         return [item for item in items if decimal.Decimal(item.ts) > start]
 
     def thread(self, channel, root, oldest, to):
-        arguments = {"channel_id": channel, "message_ts": root, "limit": RELAY_THREAD_PAGE_SIZE, "response_format": "detailed"}
-        if oldest is not None:
-            arguments["oldest"] = str(oldest)
-        return self._read(thread_key(channel, root, oldest, to), THREAD_TOOL, arguments)
+        def read(low, high):
+            arguments = {"channel_id": channel, "message_ts": root, "limit": RELAY_THREAD_PAGE_SIZE, "response_format": "detailed"}
+            if low is not None:
+                arguments["oldest"] = str(low)
+            return self._read(thread_key(channel, root, low, high), THREAD_TOOL, arguments)
+
+        return self._spanned(thread_key(channel, root, oldest, to), lambda: read(oldest, to), read)
 
     def search(self, search, start, to, cap):
         key, arguments, kept = search_key(search["name"], start, to), _search_arguments(search, start, to), []
@@ -350,7 +419,8 @@ class RelayReads:
         return kept, None
 
     def reactions(self, channel, ts):
-        return set(self._read(reactions_key(channel, ts), REACTIONS_TOOL, {"channel_id": channel, "message_ts": ts}))
+        key = reactions_key(channel, ts)
+        return set(self._kept(key, lambda: self._read(key, REACTIONS_TOOL, {"channel_id": channel, "message_ts": ts})))
 
     def _read(self, key, tool, arguments, stop=None):
         handle = self.session.open(*key)
@@ -358,29 +428,38 @@ class RelayReads:
         return _settled(handle, key.kind, lambda: _relay_read_pages(handle, tool, arguments, parse, stop))
 
 
-class ApiReads:
-    def __init__(self, session, http, calls):
-        self.session = session
+class ApiReads(_Reads):
+    def __init__(self, session, http, calls, freshness=None):
+        super().__init__(session, freshness)
         self.http = http
         self.calls = calls
 
     def history(self, channel, start, to):
-        params = {"channel": channel, "oldest": str(start), "latest": str(to), "limit": str(API_PAGE_SIZE)}
-        return self._read(history_key(channel, start, to), channel, HISTORY_PATH, params)
+        def read(low, high):
+            params = {"channel": channel, "oldest": str(low), "latest": str(high), "limit": str(API_PAGE_SIZE)}
+            return self._read(history_key(channel, low, high), channel, HISTORY_PATH, params)
+
+        return self._spanned(history_key(channel, start, to), lambda: read(start, to), read)
 
     def replies(self, channel, root, oldest, to):
-        params = {"channel": channel, "ts": root, "oldest": str(oldest), "latest": str(to), "limit": str(API_PAGE_SIZE)}
-        items = self._read(thread_key(channel, root, oldest, to), channel, REPLIES_PATH, params)
+        def read(low, high):
+            params = {"channel": channel, "ts": root, "oldest": str(low), "latest": str(high), "limit": str(API_PAGE_SIZE)}
+            return self._read(thread_key(channel, root, low, high), channel, REPLIES_PATH, params)
+
+        items = self._spanned(thread_key(channel, root, oldest, to), lambda: read(oldest, to), read)
         return [item._replace(thread_ts=root) for item in _in_span(items, max(decimal.Decimal(root), decimal.Decimal(oldest)), to)]
 
     def cited(self, channel, root, oldest, to):
         return self.replies(channel, root, oldest, to)
 
     def thread(self, channel, root, oldest, to):
-        params = {"channel": channel, "ts": root, "latest": str(to), "limit": str(API_PAGE_SIZE)}
-        if oldest is not None:
-            params["oldest"] = str(oldest)
-        items = self._read(thread_key(channel, root, oldest, to), channel, REPLIES_PATH, params)
+        def read(low, high):
+            params = {"channel": channel, "ts": root, "latest": str(high), "limit": str(API_PAGE_SIZE)}
+            if low is not None:
+                params["oldest"] = str(low)
+            return self._read(thread_key(channel, root, low, high), channel, REPLIES_PATH, params)
+
+        items = self._spanned(thread_key(channel, root, oldest, to), lambda: read(oldest, to), read)
         return [item for item in items if decimal.Decimal(item.ts) <= to]
 
     def search(self, search, start, to, cap):
@@ -406,15 +485,17 @@ class ApiReads:
         return found, None
 
     def members(self, channel, path):
+        key = members_key(channel)
         params = {"channel": channel} if path == INFO_PATH else {"channel": channel, "limit": str(API_PAGE_SIZE)}
-        return self._single(members_key(channel), path, params, lambda body: _api_members(channel, path, body))
+        return self._kept(key, lambda: self._single(key, path, params, lambda body: _api_members(channel, path, body)))
 
     def user_name(self, user):
-        return self._single(users_key(user), USERS_PATH, {"user": user}, lambda body: [_api_user_name(body)])[0]
+        key = users_key(user)
+        return self._kept(key, lambda: self._single(key, USERS_PATH, {"user": user}, lambda body: [_api_user_name(body)]))[0]
 
     def reactions(self, channel, ts):
-        params = {"channel": channel, "timestamp": ts, "full": "true"}
-        return set(self._single(reactions_key(channel, ts), REACTIONS_PATH, params, lambda body: sorted(_api_reactions(channel, body))))
+        key, params = reactions_key(channel, ts), {"channel": channel, "timestamp": ts, "full": "true"}
+        return set(self._kept(key, lambda: self._single(key, REACTIONS_PATH, params, lambda body: sorted(_api_reactions(channel, body)))))
 
     def _read(self, key, channel, path, params):
         handle = self.session.open(*key)

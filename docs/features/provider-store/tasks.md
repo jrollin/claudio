@@ -189,7 +189,8 @@ Paths are under `plugins/claudio-routines/` unless they start with `docs/` or `s
 - **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime -p 'test_store.py' && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime -p 'test_slack*.py'`
 - **Blocked by**: T-12
 - **Rules**: BR-5, BR-7, BR-8, BR-9, BR-11, BR-12, BR-13
-- **Status**: Not Started
+- **Status**: Complete
+- **Result**: `session.eligible` (TD-7), `store.gaps` (TD-8) and `store.merge_newest` (BR-5); Slack history and thread reads fetch only the gaps, reactions, members and users reuse the newest fresh read, searches never reuse, records of another runtime are reparsed; replay reuses only manifest reads: 59 new tests, store (129), slack (490), collect (491), runtime (5762) and routines (786) suites passing
 
 ### T-14: Count fetched and reused reads in collections
 - **Scope**:
