@@ -29,14 +29,13 @@ from ._slack_read import (
     ThreadNotFound,
     _api_failure,
     _api_pages,
-    _api_read,
+    _channel_read,
     _error_code,
     _is_count,
     _next_cursor,
     _no_replies_line,
     _relay_body,
     _relay_pages,
-    _relay_read,
     _replies_line,
     _string,
     _thread_key,
@@ -119,8 +118,8 @@ def _unit_window(window, start):
     return {**window, "first_read_from_ts": first}
 
 
-def _within(hit, start, window):
-    return start < decimal.Decimal(hit.item.ts) <= window["to_ts"]
+def _within(hit, start, to):
+    return start < decimal.Decimal(hit.item.ts) <= to
 
 
 def _search_units(source, window, reader):
@@ -271,7 +270,8 @@ def _conversation_kind(channel, name, types):
 
 
 class _RelayReader:
-    def __init__(self, relay, window):
+    def __init__(self, reads, relay, window):
+        self.reads = reads
         self.relay = relay
         self.window = window
 
@@ -292,17 +292,17 @@ class _RelayReader:
             cut = cap
         else:
             cut = None
-        return [hit for hit in kept if _within(hit, start, self.window)], cut
+        return [hit for hit in kept if _within(hit, start, self.window["to_ts"])], cut
 
     def conversation(self, channel, start=None):
-        return _relay_read(self.relay, channel, _unit_window(self.window, start), {}, [])
+        return _channel_read(self.reads, channel, _unit_window(self.window, start), {}, [])
 
     def thread(self, channel, root, oldest):
         arguments = {"channel_id": channel, "message_ts": root, "limit": RELAY_THREAD_PAGE_SIZE, "response_format": "detailed"}
         if oldest is not None:
             arguments["oldest"] = str(oldest)
         seen_ts = set()
-        parse = lambda call_id, text: _unit_thread_page(channel, call_id, text, root, self.window, seen_ts)
+        parse = lambda call_id, text: _unit_thread_page(channel, call_id, text, root, self.window["to_ts"], seen_ts)
         return _relay_pages(self.relay, THREAD_TOOL, arguments, parse)
 
     def participants(self, unit):
@@ -313,15 +313,19 @@ class _RelayReader:
 
     def reactions(self, channel, ts):
         _, text = self.relay.read(REACTIONS_TOOL, {"channel_id": channel, "message_ts": ts})
-        result = _reactions_text(text)
-        if result is None:
-            raise ReactionsFailed("unreadable reactions response")
-        users = set()
-        for line in LINE_BREAK.split(result)[1:]:
-            _, separator, names = line.partition(NAME_SEPARATOR)
-            if separator:
-                users.update(REACTION_USER.findall(names.rstrip()))
-        return users
+        return _relay_reactions(text)
+
+
+def _relay_reactions(text):
+    result = _reactions_text(text)
+    if result is None:
+        raise ReactionsFailed("unreadable reactions response")
+    users = set()
+    for line in LINE_BREAK.split(result)[1:]:
+        _, separator, names = line.partition(NAME_SEPARATOR)
+        if separator:
+            users.update(REACTION_USER.findall(names.rstrip()))
+    return users
 
 
 def _reactions_text(text):
@@ -414,10 +418,10 @@ def _search_hit(call_id, block, types):
     return Hit(cid, shown, kind, [(who, EMAIL_TAIL.sub("", name).strip()) for name, who in participants], root, item)
 
 
-def _unit_thread_page(channel, call_id, text, root, window, seen_ts):
+def _unit_thread_page(channel, call_id, text, root, to, seen_ts):
     messages, info = _relay_body(THREAD_TOOL, call_id, channel, text, THREAD_PARENT)
     lines = LINE_BREAK.split(messages)
-    items = [] if messages.strip() in NO_THREAD else [*_thread_replies(call_id, channel, root, lines, window, seen_ts), _thread_parent(channel, root, lines)]
+    items = [] if messages.strip() in NO_THREAD else [*_thread_replies(call_id, channel, root, lines, to, seen_ts), _thread_parent(channel, root, lines)]
     return items, _next_cursor(THREAD_TOOL, call_id, info, (NO_MORE, THREAD_NO_MORE))
 
 
@@ -431,7 +435,8 @@ def _thread_parent(channel, root, lines):
 
 
 class _ApiReader:
-    def __init__(self, http, calls, window, owner):
+    def __init__(self, reads, http, calls, window, owner):
+        self.reads = reads
         self.http = http
         self.calls = calls
         self.window = window
@@ -445,50 +450,37 @@ class _ApiReader:
         for page in range(1, cap + 1):
             self.calls.spend()
             body = self.http.get(SEARCH_PATH, {**params, "page": str(page)})
-            matches = dig(body, "messages", "matches")
-            if dig(body, "ok") is not True or not isinstance(matches, list):
-                raise SourceUnreadable(f"GET {SEARCH_PATH}: {search['name']}: {_error_code(body)}")
-            found.extend(hit for hit in map(_api_hit, matches) if types is None or hit.kind_type in types)
+            found.extend(hit for hit in _api_search_page(search["name"], body) if types is None or hit.kind_type in types)
             pages = dig(body, "messages", "paging", "pages")
             if not _is_count(pages) or page >= pages:
                 cut = None
                 break
-        return [hit for hit in found if _within(hit, start, self.window)], cut
+        return [hit for hit in found if _within(hit, start, self.window["to_ts"])], cut
 
     def conversation(self, channel, start=None):
-        return _api_read(channel, _unit_window(self.window, start), {}, self.http, self.calls, [])
+        return _channel_read(self.reads, channel, _unit_window(self.window, start), {}, [])
 
     def thread(self, channel, root, oldest):
-        params = {"channel": channel, "ts": root, "latest": str(self.window["to_ts"]), "limit": str(API_PAGE_SIZE)}
+        to = self.window["to_ts"]
+        params = {"channel": channel, "ts": root, "latest": str(to), "limit": str(API_PAGE_SIZE)}
         if oldest is not None:
             params["oldest"] = str(oldest)
         items = _api_pages(channel, REPLIES_PATH, params, self.http, self.calls)
-        return [item for item in items if decimal.Decimal(item.ts) <= self.window["to_ts"]]
+        return [item for item in items if decimal.Decimal(item.ts) <= to]
 
     def participants(self, unit):
         self.calls.spend()
         if unit.kind == DM:
-            body = self.http.get(INFO_PATH, {"channel": unit.channel})
-            if dig(body, "ok") is not True:
-                raise _api_failure(unit.channel, body)
-            other = _string(dig(body, "channel", "user"))
+            others = _api_members(unit.channel, INFO_PATH, self.http.get(INFO_PATH, {"channel": unit.channel}))
+            other = others[0] if others else ""
             members = [other, self.owner] if other and other != self.owner else [self.owner]
         else:
-            body = self.http.get(MEMBERS_PATH, {"channel": unit.channel, "limit": str(API_PAGE_SIZE)})
-            if dig(body, "ok") is not True:
-                raise _api_failure(unit.channel, body)
-            members = [member for member in _common.as_list(dig(body, "members")) if isinstance(member, str)]
+            members = _api_members(unit.channel, MEMBERS_PATH, self.http.get(MEMBERS_PATH, {"channel": unit.channel, "limit": str(API_PAGE_SIZE)}))
         return [(member, self._name_of(member)) for member in members]
 
     def reactions(self, channel, ts):
         self.calls.spend()
-        body = self.http.get(REACTIONS_PATH, {"channel": channel, "timestamp": ts, "full": "true"})
-        if dig(body, "ok") is not True:
-            if _error_code(body) == "message_not_found":
-                raise ReactionsFailed("message_not_found")
-            raise _api_failure(channel, body)
-        found = _common.as_list(dig(body, "message", "reactions"))
-        return {user for reaction in found for user in _common.as_list(dig(reaction, "users")) if isinstance(user, str)}
+        return _api_reactions(channel, self.http.get(REACTIONS_PATH, {"channel": channel, "timestamp": ts, "full": "true"}))
 
     def named(self, item):
         return item if item.name or not item.author else item._replace(name=self._name_of(item.author))
@@ -500,14 +492,42 @@ class _ApiReader:
 
     def _lookup(self, user):
         self.calls.spend()
-        body = self.http.get(USERS_PATH, {"user": user})
-        if dig(body, "ok") is not True:
-            code = _error_code(body)
-            if code == "user_not_found":
-                return ""
-            raise SourceUnreadable(f"GET {USERS_PATH}: {code}")
-        profile = dig(body, "user", "profile")
-        return _string(dig(profile, "display_name")) or _string(dig(profile, "real_name")) or _string(dig(body, "user", "real_name"))
+        return _api_user_name(self.http.get(USERS_PATH, {"user": user}))
+
+
+def _api_search_page(name, body):
+    matches = dig(body, "messages", "matches")
+    if dig(body, "ok") is not True or not isinstance(matches, list):
+        raise SourceUnreadable(f"GET {SEARCH_PATH}: {name}: {_error_code(body)}")
+    return [_api_hit(match) for match in matches]
+
+
+def _api_members(channel, path, body):
+    if dig(body, "ok") is not True:
+        raise _api_failure(channel, body)
+    if path == INFO_PATH:
+        other = _string(dig(body, "channel", "user"))
+        return [other] if other else []
+    return [member for member in _common.as_list(dig(body, "members")) if isinstance(member, str)]
+
+
+def _api_reactions(channel, body):
+    if dig(body, "ok") is not True:
+        if _error_code(body) == "message_not_found":
+            raise ReactionsFailed("message_not_found")
+        raise _api_failure(channel, body)
+    found = _common.as_list(dig(body, "message", "reactions"))
+    return {user for reaction in found for user in _common.as_list(dig(reaction, "users")) if isinstance(user, str)}
+
+
+def _api_user_name(body):
+    if dig(body, "ok") is not True:
+        code = _error_code(body)
+        if code == "user_not_found":
+            return ""
+        raise SourceUnreadable(f"GET {USERS_PATH}: {code}")
+    profile = dig(body, "user", "profile")
+    return _string(dig(profile, "display_name")) or _string(dig(profile, "real_name")) or _string(dig(body, "user", "real_name"))
 
 
 def _api_query(search, start, window):

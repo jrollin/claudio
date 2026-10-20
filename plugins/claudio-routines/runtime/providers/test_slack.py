@@ -1,13 +1,19 @@
 import email.message
 import io
 import json
+import os
+import tempfile
 import unittest
 import urllib.parse
 
 import roles
 import state
+import store
 from providers import _http, slack
 from providers.slack_support import (
+    RUN,
+    relay_through,
+    store_session,
     BASE,
     CONNECTOR,
     HISTORY_PATH,
@@ -1648,6 +1654,166 @@ class RelayFailureTest(unittest.TestCase):
         with self.assertRaises(_http.PartialRead) as caught:
             relay(responses)
         self.assertEqual(str(caught.exception), "partial: cursor repeated")
+
+
+class StoreCase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def session(self, transport="mcp"):
+        return store_session(self.tmp.name, transport)
+
+    def api_session(self, *outcomes):
+        session = self.session("api")
+        session.http = client(FakeOpener(outcomes))
+        return session
+
+    def listed(self, session, kind):
+        base = os.path.join(session.base, f"kind={kind}")
+        return sorted(os.path.relpath(folder, session.base) for folder, _, files in os.walk(base) if store.READ_FILE in files)
+
+    def document(self, session, relative):
+        with open(os.path.join(session.base, relative, store.READ_FILE), encoding="utf-8") as stream:
+            return json.load(stream)
+
+
+class RelayStoreTest(StoreCase):
+    def test_names_the_first_call_by_its_read(self):
+        step = slack.plan(SOURCE, WINDOW, STORED, [], self.session(), CONNECTOR)
+
+        self.assertEqual(step["calls"][0]["id"], f"kind=history/channel=CHAN1/read=1760000500.000050_1760010800-{RUN}.team-chat/page-001")
+
+    def test_keeps_the_arguments_of_the_first_call(self):
+        step = slack.plan(SOURCE, WINDOW, STORED, [], self.session(), CONNECTOR)
+
+        self.assertEqual(step["calls"], [call(step["calls"][0]["id"], "CHAN1", "1760000500.000050")])
+
+    def test_gives_the_collection_of_the_same_responses_by_call_order(self):
+        _, result = relay_through(self.session(), shared_responses())
+
+        self.assertEqual(state.dump(result), state.dump(relay(shared_responses())))
+
+    def test_files_each_channel_read_under_its_entity(self):
+        session = self.session()
+        relay_through(session, shared_responses())
+
+        self.assertEqual(
+            self.listed(session, "history") + self.listed(session, "thread"),
+            [
+                f"kind=history/channel=CHAN1/read=1760000500.000050_1760010800-{RUN}.team-chat",
+                f"kind=history/channel=CHAN2/read=1760000000_1760010800-{RUN}.team-chat",
+                f"kind=thread/channel=CHAN1/root={ROOT_TS}/read=1760000500.000050_1760010800-{RUN}.team-chat",
+            ],
+        )
+
+    def test_writes_the_records_of_a_complete_read(self):
+        session = self.session()
+        relay_through(session, shared_responses())
+
+        records = session.open("history", (("channel", "CHAN2"),), ("1760000000", "1760010800")).records()
+
+        self.assertEqual(sorted(record["ts"] for record in records), ["1760004000.000400", "1760004500.000450"])
+
+    def test_keeps_the_root_in_the_records_of_a_thread_read(self):
+        session = self.session()
+        relay_through(session, shared_responses())
+
+        records = session.open("thread", (("channel", "CHAN1"), ("root", ROOT_TS)), ("1760000500.000050", "1760010800")).records()
+
+        self.assertIn(ROOT_TS, [record["ts"] for record in records])
+
+    def test_marks_a_channel_the_token_cannot_read_failed(self):
+        session = self.session()
+        relay_through(session, {"team-chat-1": error_body("is_archived")}, source=one_channel())
+
+        relative = f"kind=history/channel=CHAN1/read=1760000500.000050_1760010800-{RUN}.team-chat"
+        self.assertEqual(self.document(session, relative)["outcome"], {"reason": "is_archived", "status": "failed"})
+
+    def test_keeps_the_failed_entry_of_a_channel_the_token_cannot_read(self):
+        _, result = relay_through(self.session(), {"team-chat-1": error_body("is_archived")}, source=one_channel())
+
+        self.assertEqual(result["entries"], {"CHAN1": failed("is_archived")})
+
+    def test_marks_a_read_with_a_repeated_cursor_partial(self):
+        session = self.session()
+        responses = {f"team-chat-{n}": relay_page("CHAN1", pagination=MORE.format("again")) for n in (1, 2)}
+        with self.assertRaises(_http.PartialRead):
+            relay_through(session, responses, source=one_channel())
+
+        relative = f"kind=history/channel=CHAN1/read=1760000500.000050_1760010800-{RUN}.team-chat"
+        self.assertEqual(self.document(session, relative)["outcome"], {"reason": "partial: cursor repeated", "status": "partial"})
+
+    def test_reads_a_cited_thread_in_its_own_read(self):
+        session = self.session()
+        source = {**one_channel(), "threads": [{"channel": "CHAN1", "root_ts": "1759990000.000100"}]}
+        relay_through(session, {"team-chat-1": relay_page("CHAN1"), "team-chat-2": thread_page(root="1759990000.000100", total=0)}, source=source)
+
+        self.assertEqual(self.listed(session, "thread"), [f"kind=thread/channel=CHAN1/root=1759990000.000100/read=1760000000_1760010800-{RUN}.team-chat"])
+
+    def test_reports_a_missing_page_by_its_read(self):
+        with self.assertRaises(_http.SourceUnreadable) as caught:
+            slack.parse(one_channel(), WINDOW, STORED, [], self.session(), {})
+
+        self.assertIn("kind=history/channel=CHAN1/", str(caught.exception))
+
+
+class ApiStoreTest(StoreCase):
+    def test_gives_the_collection_of_a_fetch_without_store(self):
+        result = slack.fetch(SOURCE, WINDOW, STORED, [], self.api_session(*(ok(name) for name in SHARED_OVER_API)))
+
+        self.assertEqual(state.dump(result), state.dump(read_shared()[1]))
+
+    def test_records_each_page_of_a_read(self):
+        session = self.api_session(*(ok(name) for name in SHARED_OVER_API))
+        slack.fetch(SOURCE, WINDOW, STORED, [], session)
+
+        relative = f"kind=history/channel=CHAN1/read=1760000500.000050_1760010800-{RUN}.team-chat"
+        self.assertEqual([page["file"] for page in self.document(session, relative)["pages"]], ["page-001.json", "page-002.json"])
+
+    def test_names_each_api_request_of_a_read(self):
+        session = self.api_session(*(ok(name) for name in SHARED_OVER_API))
+        slack.fetch(SOURCE, WINDOW, STORED, [], session)
+
+        relative = f"kind=history/channel=CHAN1/read=1760000500.000050_1760010800-{RUN}.team-chat"
+        request = self.document(session, relative)["pages"][0]["request"]
+        self.assertEqual((request["method"], request["path"], urllib.parse.parse_qs(request["query"])["oldest"]), ("GET", HISTORY_PATH, ["1760000500.000050"]))
+
+    def test_saves_the_record_of_a_failed_call(self):
+        session = self.api_session(status(401))
+
+        with self.assertRaises(_http.SourceUnreadable):
+            slack.fetch(one_channel(), WINDOW, STORED, [], session)
+
+        relative = f"kind=history/channel=CHAN1/read=1760000500.000050_1760010800-{RUN}.team-chat"
+        with open(os.path.join(session.base, relative, "page-001.json"), encoding="utf-8") as stream:
+            self.assertEqual(json.load(stream)["error"]["status"], 401)
+
+    def test_marks_a_read_failed_by_its_call_failed(self):
+        session = self.api_session(status(401))
+
+        with self.assertRaises(_http.SourceUnreadable):
+            slack.fetch(one_channel(), WINDOW, STORED, [], session)
+
+        relative = f"kind=history/channel=CHAN1/read=1760000500.000050_1760010800-{RUN}.team-chat"
+        self.assertEqual(self.document(session, relative)["outcome"]["status"], "failed")
+
+    def test_marks_the_read_cut_by_the_call_cap_partial(self):
+        roots = [root_item(ts=f"{1760001000 + 100 * n}.000100") for n in range(60)]
+        session = self.api_session(history(*roots), *(history() for _ in range(60)))
+
+        with self.assertRaises(_http.PartialRead):
+            slack.fetch(one_channel(), WINDOW, STORED, [], session)
+
+        statuses = [self.document(session, relative)["outcome"] for relative in self.listed(session, "thread")]
+        self.assertIn({"reason": "partial: call cap", "status": "partial"}, statuses)
+
+    def test_writes_no_root_thread_into_a_history_record(self):
+        session = self.api_session(*(ok(name) for name in SHARED_OVER_API))
+        slack.fetch(SOURCE, WINDOW, STORED, [], session)
+
+        rows = session.open("thread", (("channel", "CHAN1"), ("root", ROOT_TS)), ("1760000500.000050", "1760010800")).records()
+        self.assertNotIn("thread_ts", rows[0])
 
 
 if __name__ == "__main__":

@@ -1,9 +1,11 @@
 import email.message
 import io
 import json
+import os
 import pathlib
 import urllib.parse
 
+import store
 from providers import slack
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "slack"
@@ -29,6 +31,8 @@ TOOL = "slack_read_channel"
 THREAD_TOOL = "slack_read_thread"
 ROOT_TS = "1760002000.000200"
 NO_MORE = "There are no more messages available."
+RUN = "20261020T073004Z-z1x7pc"
+FETCHED_AT = "2026-10-20T07:30:09Z"
 
 
 class FakeResponse:
@@ -159,3 +163,26 @@ def thread_page(*replies, root=ROOT_TS, total=2, pagination=NO_MORE, parent_text
 
 def failed(code):
     return {"status": "failed", "reason": code}
+
+
+def store_session(root, transport="mcp", name=SOURCE["name"]):
+    return store.ReadSession(root, "chat", RUN, name, "slack", transport, clock=lambda: FETCHED_AT)
+
+
+def save_planned(session, call, text):
+    path = os.path.join(session.base, call["id"] + session.suffix)
+    store.make_folders(os.path.dirname(path))
+    with open(path, "w", encoding="utf-8") as stream:
+        stream.write(text)
+
+
+def relay_through(session, responses, source=SOURCE, cursor=STORED, window=WINDOW):
+    answers = [responses[call_id] for call_id in sorted(responses, key=lambda call_id: int(call_id.rsplit("-", 1)[1]))]
+    planned = []
+    while answers:
+        step = slack.plan(source, window, cursor, [], session, CONNECTOR)
+        if step["done"]:
+            break
+        planned.append(step["calls"][0]["id"])
+        save_planned(session, step["calls"][0], answers.pop(0))
+    return planned, slack.parse(source, window, cursor, [], session, {})
