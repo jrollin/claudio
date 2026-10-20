@@ -1,3 +1,4 @@
+import argparse
 import collections
 import decimal
 import errno
@@ -5,11 +6,15 @@ import json
 import os
 import re
 import stat
+import subprocess
+import sys
 from datetime import datetime, timezone
 
+import providers
 import state
 from providers._errors import PartialRead, SourceUnreadable
 from providers._http import BODY_CAP
+from providers._replay import ReplayMismatch
 
 SCHEMA = 1
 READ_FILE = "read.json"
@@ -17,6 +22,7 @@ RECORDS_FILE = "records.jsonl"
 MANIFEST_FILE = "manifest.json"
 PAGE_SUFFIXES = {"api": ".json", "mcp": ".txt"}
 STATUSES = ("complete", "failed", "partial")
+REQUEST_FIELDS = {"api": ("method", "path", "query", "body"), "mcp": ("tool", "arguments")}
 FOLDER_MODE = 0o700
 PART_CAP = 200
 BARRED_IN_PART = ("/", "\\", "=", "\x00")
@@ -26,6 +32,8 @@ READ_NAME = re.compile(r"read=(?:(?P<start>[0-9.]+)_(?P<end>[0-9.]+)-)?(?P<fetch
 LONE_SURROGATE = re.compile(r"[\ud800-\udfff]")
 REPLACEMENT = "�"
 UTC_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+GIT_TIMEOUT = 10
+HERE = os.path.dirname(os.path.abspath(__file__))
 
 SCHEMA_ONE = state.leaf(lambda value: state.is_integer(value) and value == SCHEMA, f"schema {SCHEMA}")
 COUNT = state.leaf(lambda value: state.is_integer(value) and value >= 0, "a non-negative integer")
@@ -60,6 +68,15 @@ class PagePending(Exception):
 
 def utc_now():
     return datetime.now(timezone.utc).strftime(UTC_FORMAT)
+
+
+def runtime_commit():
+    try:
+        result = subprocess.run(["git", "-C", HERE, "rev-parse", "HEAD"], capture_output=True, text=True, timeout=GIT_TIMEOUT, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    commit = result.stdout.strip()
+    return commit if result.returncode == 0 and commit else None
 
 
 def is_safe(value):
@@ -229,9 +246,12 @@ class ReadSession:
 
     def open(self, kind, entity, span=None):
         parts = [folder_part("kind", kind), *(folder_part(key, value) for key, value in entity), read_part(span, self.fetch_id)]
-        handle = ReadHandle(self, kind, dict(entity), span, parts)
+        handle = self.make_handle(kind, dict(entity), span, parts)
         self._used.setdefault(handle.stored, self.fetch_id)
         return handle
+
+    def make_handle(self, kind, entity, span, parts):
+        return ReadHandle(self, kind, entity, span, parts)
 
     def reads(self, kind, entity):
         return list_reads(self.root, self.entity_folder(kind, entity))
@@ -273,12 +293,15 @@ class ReadHandle:
     def done(self):
         return os.path.isfile(os.path.join(self.folder, READ_FILE))
 
-    def page(self, request, fetch=None):
+    def next_page(self, request):
         number = len(self._pages) + 1
         name = f"page-{number:03d}{self.session.suffix}"
         self._pages.append({"file": name, "request": request})
         self.last_id = f"{self.relative}/page-{number:03d}"
-        path = os.path.join(self.folder, name)
+        return number, os.path.join(self.folder, name)
+
+    def page(self, request, fetch=None):
+        _, path = self.next_page(request)
         saved = page_bytes(path, self.last_id)
         if saved is not None:
             return saved
@@ -326,9 +349,191 @@ class ReadHandle:
         }
 
 
+def request_label(request):
+    if "tool" in request:
+        return str(request["tool"])
+    return f"{request.get('method')} {request.get('path')}"
+
+
+class ReplaySession(ReadSession):
+    def __init__(self, root, provider, run, source, adapter, transport, reads):
+        super().__init__(root, provider, run, source, adapter, transport)
+        self.recorded = frozenset(reads)
+
+    def make_handle(self, kind, entity, span, parts):
+        handle = ReplayHandle(self, kind, entity, span, parts)
+        if handle.stored not in self.recorded:
+            raise ReplayMismatch(f"replay: source {self.source} asks {handle.stored}, a read the run did not make")
+        return handle
+
+
+class ReplayHandle(ReadHandle):
+    def page(self, request, fetch=None):
+        number, path = self.next_page(request)
+        if self.done():
+            listed = self.document()["pages"]
+            where = f"replay: {self.stored} call {number} {request_label(request)}"
+            if number > len(listed):
+                raise ReplayMismatch(f"{where}: no record, {len(listed)} recorded")
+            held = listed[number - 1]["request"]
+            differing = [field for field in REQUEST_FIELDS[self.session.transport] if held.get(field) != request.get(field)]
+            if differing:
+                raise ReplayMismatch(f"{where}: request differs from its record in {', '.join(differing)}")
+        saved = page_bytes(path, self.last_id)
+        if saved is None:
+            raise PagePending(self.last_id, path, request)
+        return saved
+
+    def finish(self, status, reason=None, records=None):
+        return None
+
+
 def write_manifest(run_dir, source, session):
     path = os.path.join(run_dir, MANIFEST_FILE)
     document = state.load(path, "manifest", check_manifest) if os.path.exists(path) else {"schema": SCHEMA, "sources": {}}
     entry = {"reads": session.used(), **session.counts()}
     make_folders(run_dir)
     state.write_all([(path, state.dump({"schema": SCHEMA, "sources": {**document["sources"], source: entry}}))])
+
+
+def utc_time(value):
+    try:
+        moment = datetime.strptime(value, UTC_FORMAT).replace(tzinfo=timezone.utc)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a UTC time like 2026-10-20T07:30:00Z") from None
+    return decimal.Decimal(int(moment.timestamp()))
+
+
+def walk_reads(root):
+    for folder, folders, files in os.walk(root):
+        folders[:] = sorted(name for name in folders if not name.startswith("."))
+        match = READ_NAME.fullmatch(os.path.basename(folder))
+        if match is None:
+            continue
+        folders[:] = []
+        if READ_FILE in files:
+            span = None if match["start"] is None else (match["start"], match["end"])
+            yield StoredRead(folder, os.path.relpath(folder, root).replace(os.sep, "/"), span, match["fetch"], load_document(folder))
+
+
+class ReadFilter:
+    def __init__(self, args):
+        self.args = args
+        self.providers = args.provider
+        self.channels = args.channel
+        self.threads = args.thread
+        self.kinds = args.kind
+        self.start = args.start
+        self.end = args.end
+
+    def matches(self, read):
+        document, entity = read.document, read.document["entity"]
+        checks = (
+            self.providers is None or document["provider"] in self.providers,
+            self.kinds is None or document["kind"] in self.kinds,
+            self.channels is None or entity.get("channel") in self.channels,
+            self.threads is None or (document["kind"] == "thread" and f"{entity.get('channel')}:{entity.get('root')}" in self.threads),
+            self.overlaps(read.span),
+        )
+        return document["outcome"]["status"] == "complete" and all(checks)
+
+    def overlaps(self, span):
+        if self.start is None and self.end is None:
+            return True
+        if span is None:
+            return False
+        low, high = decimal.Decimal(span[0]), decimal.Decimal(span[1])
+        return (self.end is None or low < self.end) and (self.start is None or high > self.start)
+
+    def text(self):
+        args = self.args
+        pairs = [("--provider", args.provider), ("--channel", args.channel), ("--thread", args.thread), ("--kind", args.kind)]
+        parts = [f"{flag} {value}" for flag, values in pairs for value in values or ()]
+        parts += [f"{flag} {raw}" for flag, raw in (("--from", args.from_text), ("--to", args.to_text)) if raw is not None]
+        return " ".join(parts) or "no filter"
+
+
+def reparsed_rows(read):
+    document, pages = read.document, []
+    for page in document["pages"]:
+        data = page_bytes(os.path.join(read.folder, page["file"]), page["file"])
+        if data is None:
+            raise SourceUnreadable(f"page {page['file']} is missing")
+        pages.append(data)
+    adapter = providers.load(document["adapter"])
+    return adapter.to_rows(document["kind"], adapter.parse_read(document["kind"], document, pages))
+
+
+def reparse_read(read, commit):
+    records = dump_lines(reparsed_rows(read))
+    path = os.path.join(read.folder, RECORDS_FILE)
+    changed = saved_bytes(path) != records
+    if changed:
+        state.write_all([(path, records)])
+    if changed or read.document["parsed_by"] != commit:
+        state.write_all([(os.path.join(read.folder, READ_FILE), state.dump(replaced({**read.document, "parsed_by": commit})))])
+    return changed
+
+
+def rejection(error):
+    if isinstance(error, (SourceUnreadable, state.Rejected, state.InputError)):
+        return state.blank_controls(str(error))
+    return f"adapter error: {type(error).__name__}"
+
+
+def run_reparse(args):
+    if not os.path.isdir(args.root):
+        raise state.InputError(f"reparse: root {args.root} is not a folder")
+    selector = ReadFilter(args)
+    selected = [read for read in walk_reads(args.root) if selector.matches(read)]
+    if not selected:
+        raise state.InputError(f"reparse: no read matches {selector.text()}")
+    commit, changed, rejected = runtime_commit(), 0, 0
+    for read in selected:
+        try:
+            moved = reparse_read(read, commit)
+        except Exception as error:
+            rejected += 1
+            print(f"rejected {read.stored}: {rejection(error)}")
+            continue
+        changed += moved
+        print(f"{'changed' if moved else 'same'} {read.stored}")
+    print(f"reparsed {len(selected) - rejected}, changed {changed}, rejected {rejected}")
+    return 3 if rejected else 0
+
+
+COMMANDS = {"reparse": run_reparse}
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(prog="store.py", description="Maintain the read store of routine sources")
+    commands = parser.add_subparsers(dest="command", required=True)
+    reparse = commands.add_parser("reparse", help="rewrite the records of the selected reads from their saved pages")
+    reparse.add_argument("--root", required=True)
+    for flag in ("--provider", "--channel", "--thread", "--kind"):
+        reparse.add_argument(flag, action="append")
+    reparse.add_argument("--from", dest="from_text", metavar="UTC_TIME")
+    reparse.add_argument("--to", dest="to_text", metavar="UTC_TIME")
+    return parser
+
+
+def main(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        args.start = None if args.from_text is None else utc_time(args.from_text)
+        args.end = None if args.to_text is None else utc_time(args.to_text)
+    except argparse.ArgumentTypeError as error:
+        parser.error(str(error))
+    try:
+        return COMMANDS[args.command](args)
+    except state.InputError as error:
+        print(f"store.py: {error}", file=sys.stderr)
+        return 2
+    except state.Rejected as error:
+        print(f"store.py: rejected: {error}", file=sys.stderr)
+        return 3
+
+
+if __name__ == "__main__":
+    sys.exit(main())

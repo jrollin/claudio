@@ -21,6 +21,7 @@ LINKS_BASE = "https://slack.com"
 ROOT_TS = re.compile(r"[0-9]{1,16}\.[0-9]{1,9}")
 
 parse_read = _slack_reads.parse_read
+to_rows = _slack_reads.to_rows
 
 
 def api_client(provider, opener=None, environ=None, sleep=None):

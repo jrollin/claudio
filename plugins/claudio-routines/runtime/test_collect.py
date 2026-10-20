@@ -359,7 +359,7 @@ class ParserTest(unittest.TestCase):
     def test_parses_the_six_commands(self):
         fetch = ["--source", "s", "--window", "w", "--state", "s", "--out", "o", "--run", "r"]
         relay = fetch
-        replay = ["--window", "w", "--state", "s", "--raw", "r", "--out", "o"]
+        replay = ["--window", "w", "--state", "s", "--run", "r", "--out", "o"]
         parsed = [
             self.parse("sources", *self.COMMON).command,
             self.parse("check-env", *self.COMMON).command,
@@ -1782,7 +1782,7 @@ class ReplayTest(RelayTestCase):
         stored = self.write("state.json", self.state)
         return self.run_main(
             "replay", "--config", config, "--routine", ROUTINE, "--place", place,
-            "--window", window, "--state", stored, "--raw", self.raw, "--out", self.path("replayed"), *extra,
+            "--window", window, "--state", stored, "--run", self.path(RUN), "--out", self.path("replayed"), *extra,
         )
 
     def bytes_of(self, name, folder="replayed"):
@@ -2085,6 +2085,82 @@ class StoreRelayTest(TribeChatCase):
             self.fetch(source="team-chat", place="local")
         pages = [name for _, _, files in os.walk(self.path("run/store/provider=chat/kind=history")) for name in files if name.startswith("page-")]
         self.assertEqual((pages, self.manifest()["sources"]["team-chat"]["fetched"]), (["page-001.json"], 1))
+
+
+class StoreReplayTest(StoreRelayTest):
+    def setUp(self):
+        super().setUp()
+        routine = self.config["routines"][ROUTINE]
+        routine["sources"] = {"team-chat": routine["sources"]["team-chat"]}
+        routine["query_pack"] = []
+
+    def record_relay(self):
+        call = self.first_call()
+        answer_planned({"calls": [call]}, CHAT_LISTING)
+        self.plan(source="team-chat")
+        self.parse(source="team-chat")
+        return call
+
+    def replay(self):
+        config = self.write("config.json", self.config)
+        return self.run_main(
+            "replay", "--config", config, "--routine", ROUTINE, "--place", "cloud", "--window", self.write("window.json", self.window),
+            "--state", self.write("state.json", self.state), "--run", self.path(RUN), "--out", self.path("replayed"),
+        )
+
+    def read_document_path(self, call):
+        return os.path.join(os.path.dirname(call["path"]), store.READ_FILE)
+
+    def test_replays_a_relayed_source_byte_for_byte(self):
+        self.record_relay()
+        self.assertEqual(self.replay()[0], 0)
+        with open(self.path("collection.json"), "rb") as run, open(self.path("replayed/team-chat.json"), "rb") as replayed:
+            self.assertEqual(replayed.read(), run.read())
+
+    def test_writes_nothing_into_the_run_folder(self):
+        self.record_relay()
+        before = sorted(os.path.relpath(os.path.join(folder, name), self.path(RUN)) for folder, _, files in os.walk(self.path(RUN)) for name in files)
+        self.replay()
+        after = sorted(os.path.relpath(os.path.join(folder, name), self.path(RUN)) for folder, _, files in os.walk(self.path(RUN)) for name in files)
+        self.assertEqual(after, before)
+
+    def test_exits_3_on_a_read_the_run_did_not_make(self):
+        self.record_relay()
+        manifest = self.manifest()
+        manifest["sources"]["team-chat"]["reads"] = []
+        self.write("run/manifest.json", manifest)
+        code, _, err = self.replay()
+        self.assertEqual((code, "a read the run did not make" in err, "kind=history/channel=CHAN1/" in err), (3, True, True))
+
+    def test_exits_3_on_a_request_that_differs_from_its_record(self):
+        call = self.record_relay()
+        with open(self.read_document_path(call), encoding="utf-8") as handle:
+            document = json.load(handle)
+        document["pages"][0]["request"]["arguments"]["limit"] = 99
+        with open(self.read_document_path(call), "w", encoding="utf-8") as handle:
+            json.dump(document, handle)
+        code, _, err = self.replay()
+        self.assertEqual((code, "call 1 slack_read_channel: request differs from its record in arguments" in err), (3, True))
+
+    def test_exits_2_without_a_manifest(self):
+        self.record_relay()
+        os.remove(self.path("run/manifest.json"))
+        code, _, err = self.replay()
+        self.assertEqual((code, "holds no manifest.json" in err), (2, True))
+
+    def test_replays_a_fetched_source_from_its_records(self):
+        opener = FakeOpener()
+        opener.outcomes = [FakeResponse(json.dumps({"ok": True, "messages": [{"type": "message", "user": "U1", "text": "hi", "ts": "1780000100.000100"}], "has_more": False}).encode("utf-8"))]
+        client = make_client(opener, sleeps=[])
+        with mock.patch.dict(os.environ, {"CHAT_TOKEN": "set"}), mock.patch.object(providers.load("slack"), "api_client", lambda provider, opener=None, environ=None, sleep=None: client):
+            self.fetch(source="team-chat", place="local")
+            config = self.write("config.json", self.config)
+            code, _, _ = self.run_main(
+                "replay", "--config", config, "--routine", ROUTINE, "--place", "local", "--window", self.path("window.json"),
+                "--state", self.path("state.json"), "--run", self.path(RUN), "--out", self.path("replayed"),
+            )
+        with open(self.path("collection.json"), "rb") as run, open(self.path("replayed/team-chat.json"), "rb") as replayed:
+            self.assertEqual((code, replayed.read()), (0, run.read()))
 
 
 def answer_planned(plan, text):

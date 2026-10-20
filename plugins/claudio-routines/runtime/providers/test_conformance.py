@@ -38,8 +38,13 @@ class ConformanceTest(unittest.TestCase):
 
         self.assertEqual(missing, [])
 
-    def test_every_store_adapter_exposes_parse_read(self):
-        missing = [name for name, module in adapters().items() if getattr(module, "STORE", False) and not callable(getattr(module, "parse_read", None))]
+    def test_every_store_adapter_exposes_parse_read_and_to_rows(self):
+        missing = [
+            (name, entry)
+            for name, module in adapters().items()
+            for entry in ("parse_read", "to_rows")
+            if getattr(module, "STORE", False) and not callable(getattr(module, entry, None))
+        ]
 
         self.assertEqual(missing, [])
 

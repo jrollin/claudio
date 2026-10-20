@@ -109,7 +109,8 @@ Paths are under `plugins/claudio-routines/` unless they start with `docs/` or `s
 - **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime -p 'test_collect.py'`
 - **Blocked by**: T-6
 - **Rules**: BR-2
-- **Status**: Not Started
+- **Status**: Complete
+- **Result**: `replay` takes `--run`; a store-backed source replays through a `ReplaySession` bound to the manifest that serves the run's pages, compares every asked request with `read.json` (exit 3 naming the read, call number and differing fields, never a value) and writes nothing into the run; the manifest is required only when a store-backed source is replayed (exit 2 without it); 8 new store tests and 6 new collect tests, full runtime suite (5619) green
 
 ### T-8: Add the reparse command
 - **Scope**:
@@ -121,7 +122,8 @@ Paths are under `plugins/claudio-routines/` unless they start with `docs/` or `s
 - **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime -p 'test_store.py'`
 - **Blocked by**: T-1, T-4
 - **Rules**: BR-2, BR-3
-- **Status**: Not Started
+- **Status**: Complete
+- **Result**: `store.py reparse --root` with `--provider`, `--channel`, `--thread`, `--kind`, `--from` and `--to` combined with AND over complete reads; it rewrites `records.jsonl`, then `read.json` when the records or the runtime commit changed, prints `same`, `changed` or `rejected` per read and the counts, leaves a rejected read untouched and exits 3, and exits 2 on no match; `runtime_commit` moves to `store.py` and `slack.py` exposes `to_rows`; 16 new tests, full runtime suite green
 
 ### T-9: Switch the templates to `--run` and the call's save path
 - **Scope**:

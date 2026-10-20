@@ -185,7 +185,7 @@ graph LR
 
 ### TD-12: Replay runs the walk on the run's own reads
 
-**Choice**: `replay` builds a session in replay mode: root `<run>/store`, no shared store, no network, eligible reads limited to the manifest. A read the walk asks for resolves by its folder name; an `api` read serves its pages through `ReplayClient`, a connector read compares each page's recorded request with the asked one.
+**Choice**: `replay` builds a session in replay mode: root `<run>/store`, no shared store, no network, eligible reads limited to the manifest. A read the walk asks for resolves by its folder name; for both transports, each asked request is compared with the one `read.json` recorded for that page, and the saved page is served. The manifest is required only when the routine has a store-backed source.
 **Alternatives considered**:
 - Replay as reparse only: rejected, a walk change (which reads, which arguments) would go unchecked (AC-5.2, AC-5.3).
 

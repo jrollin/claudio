@@ -5,7 +5,6 @@ import json
 import os
 import re
 import stat
-import subprocess
 import sys
 from datetime import datetime, time, timedelta
 from urllib.parse import urlsplit
@@ -38,8 +37,6 @@ PLANNED_FILE = "planned.json"
 RAW_DIR = "raw"
 RELAY_DIR = "relay"
 STORE_DIR = "store"
-GIT_TIMEOUT = 10
-HERE = os.path.dirname(os.path.abspath(__file__))
 STORE_CALL_ID = re.compile(r"kind=[a-z][a-z0-9_]*(?:/[a-z][a-z0-9_]*=[^/]+)+/page-[0-9]{3}")
 MISMATCH_PATHS = 5
 DAY_SECONDS = 86400
@@ -501,19 +498,16 @@ def relay_directory(run, name):
     return os.path.join(run, RELAY_DIR, name)
 
 
-def runtime_commit():
-    try:
-        result = subprocess.run(["git", "-C", HERE, "rev-parse", "HEAD"], capture_output=True, text=True, timeout=GIT_TIMEOUT, check=False)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    commit = result.stdout.strip()
-    return commit if result.returncode == 0 and commit else None
-
-
 def read_session(args, provider, source, transport):
     root = os.path.join(os.path.abspath(args.run), STORE_DIR)
     run = os.path.basename(os.path.normpath(os.path.abspath(args.run)))
-    return store.ReadSession(root, source["provider"], run, args.source, provider["adapter"], transport, runtime=runtime_commit())
+    return store.ReadSession(root, source["provider"], run, args.source, provider["adapter"], transport, runtime=store.runtime_commit())
+
+
+def replay_session(args, provider, source, transport, reads):
+    root = os.path.join(os.path.abspath(args.run), STORE_DIR)
+    run = os.path.basename(os.path.normpath(os.path.abspath(args.run)))
+    return store.ReplaySession(root, source["provider"], run, args.source, provider["adapter"], transport, reads)
 
 
 def write_manifest(args, session):
@@ -844,24 +838,46 @@ def run_replay_fetch(args):
 REPLAYERS = {"api": run_replay_fetch, "mcp": run_parse}
 
 
+def load_manifest(run):
+    path = os.path.join(run, store.MANIFEST_FILE)
+    if not os.path.exists(path):
+        raise state.InputError(f"replay: {run} holds no {store.MANIFEST_FILE}")
+    return state.load(path, "manifest", store.check_manifest)
+
+
+def replay_store_source(args, transport, reads):
+    provider, source, window, draft, _ = prepare(args, transport)
+    session = replay_session(args, provider, source, transport, reads)
+    if transport == "api":
+        collection = fetch_collection(provider, source, window, draft, lambda adapter: with_http(session, None))
+    else:
+        collection = store_parse_collection(args, provider, source, window, draft, session)
+    write_collection(args, collection)
+
+
 def run_replay(args):
     config, routine, role_by_source = load_routine(args)
     try:
         os.makedirs(args.out, exist_ok=True)
     except OSError as error:
         raise state.InputError(f"out: cannot create {args.out}: {error.strerror}") from error
+    manifest = None
     for name, source in sorted(routine["sources"].items()):
         replayed = argparse.Namespace(
             **{
                 **vars(args),
                 "source": name,
-                "run": os.path.dirname(os.path.normpath(args.raw)),
-                "responses": os.path.join(args.raw, role_by_source[name], name),
+                "responses": raw_directory(args.run, role_by_source[name], name),
                 "out": os.path.join(args.out, name + COLLECTION_SUFFIX),
                 "replaying": True,
             }
         )
-        REPLAYERS[read_through(source_choice(config, source, name, replayed), source, args.place)](replayed)
+        transport = read_through(source_choice(config, source, name, replayed), source, args.place)
+        if is_store_backed(providers.load(config["providers"][source["provider"]]["adapter"])):
+            manifest = manifest or load_manifest(args.run)
+            replay_store_source(replayed, transport, manifest["sources"].get(name, {}).get("reads", []))
+        else:
+            REPLAYERS[transport](replayed)
     return 0
 
 
@@ -878,7 +894,7 @@ def build_parser():
         ("fetch", "read one api source and write its collection", RELAY_FLAGS),
         ("plan", "write the next connector calls of one mcp source", RELAY_FLAGS),
         ("parse", "parse the saved connector responses of one mcp source into its collection", RELAY_FLAGS),
-        ("replay", "rebuild every collection of a run offline from its raw folder", ("--window", "--state", "--raw", "--out")),
+        ("replay", "rebuild every collection of a run offline from its run folder", ("--window", "--state", "--run", "--out")),
     )
     for name, help_text, flags in specs:
         command = commands.add_parser(name, help=help_text)

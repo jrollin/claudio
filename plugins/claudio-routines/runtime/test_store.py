@@ -1,5 +1,9 @@
+import contextlib
+import io
 import json
 import os
+import pathlib
+import socket
 import stat
 import tempfile
 import unittest
@@ -7,6 +11,11 @@ from unittest import mock
 
 import state
 import store
+from providers import slack
+
+FIXTURES = pathlib.Path(__file__).parent / "providers" / "fixtures" / "slack"
+ROOT_TS = "1760002000.000200"
+WINDOW_SPAN = ("1760000500.000050", "1760010800")
 
 RUN = "20261020T073004Z-z1x7pc"
 OTHER_RUN = "20261019T120003Z-p8m1za"
@@ -346,6 +355,77 @@ class ListingTest(StoreCase):
         self.assertEqual([(read.span, read.fetch_id, read.document["outcome"]["status"]) for read in listed], [(None, RUN + ".channels", "complete")])
 
 
+class ReplaySessionTest(StoreCase):
+    def replay(self, reads=None, transport="mcp"):
+        recorded = ["provider=chat/" + self.session(transport=transport).open("history", HISTORY, SPAN).relative] if reads is None else reads
+        return store.ReplaySession(self.root, "chat", RUN, "channels", "slack", transport, recorded)
+
+    def test_serves_the_pages_of_a_read_the_run_made(self):
+        self.finished(self.session())
+
+        self.assertEqual(self.replay().open("history", HISTORY, SPAN).page(REQUEST), b"page one")
+
+    def test_refuses_a_read_the_run_did_not_make(self):
+        with self.assertRaises(store.ReplayMismatch) as caught:
+            self.replay(reads=[]).open("history", HISTORY, SPAN)
+
+        self.assertIn("kind=history/channel=C0TRIBE1/read=", str(caught.exception))
+
+    def test_refuses_a_request_that_differs_from_its_record(self):
+        self.finished(self.session())
+
+        with self.assertRaises(store.ReplayMismatch) as caught:
+            self.replay().open("history", HISTORY, SPAN).page({**REQUEST, "arguments": {**REQUEST["arguments"], "limit": 99}})
+
+        self.assertTrue(str(caught.exception).endswith("call 1 slack_read_channel: request differs from its record in arguments"))
+
+    def test_names_no_value_of_a_differing_request(self):
+        self.finished(self.session())
+
+        with self.assertRaises(store.ReplayMismatch) as caught:
+            self.replay().open("history", HISTORY, SPAN).page({**REQUEST, "arguments": {"channel_id": "C0SECRET"}})
+
+        self.assertNotIn("C0SECRET", str(caught.exception))
+
+    def test_refuses_a_call_past_the_last_recorded_page(self):
+        handle = self.replay().open("history", HISTORY, SPAN)
+        self.finished(self.session())
+        handle.page(REQUEST)
+
+        with self.assertRaises(store.ReplayMismatch) as caught:
+            handle.page(NEXT_REQUEST)
+
+        self.assertIn("call 2 slack_read_channel: no record, 1 recorded", str(caught.exception))
+
+    def test_names_the_method_and_path_of_an_api_call(self):
+        request = {"method": "GET", "path": "/api/conversations.history", "query": "limit=200", "body": None}
+        handle = self.session(transport="api").open("history", HISTORY, SPAN)
+        handle.page(request, fetch=lambda: b"{}")
+        handle.finish("complete", None, [])
+
+        with self.assertRaises(store.ReplayMismatch) as caught:
+            self.replay(transport="api").open("history", HISTORY, SPAN).page({**request, "query": "limit=1"})
+
+        self.assertIn("call 1 GET /api/conversations.history: request differs from its record in query", str(caught.exception))
+
+    def test_leaves_a_missing_page_of_an_unfinished_read_pending(self):
+        self.session().open("history", HISTORY, SPAN).page(REQUEST, fetch=lambda: b"page one")
+        handle = self.replay().open("history", HISTORY, SPAN)
+        handle.page(REQUEST)
+
+        with self.assertRaises(store.PagePending):
+            handle.page(NEXT_REQUEST)
+
+    def test_writes_nothing_into_the_run(self):
+        self.session().open("history", HISTORY, SPAN).page(REQUEST, fetch=lambda: b"page one")
+        handle = self.replay().open("history", HISTORY, SPAN)
+        handle.page(REQUEST)
+
+        handle.finish("complete", None, RECORDS)
+
+        self.assertFalse(handle.done())
+
+
 class CountTest(StoreCase):
     def test_counts_the_reads_this_source_opened(self):
         session = self.session()
@@ -414,6 +494,155 @@ class ManifestTest(StoreCase):
 
         with self.assertRaises(state.Rejected):
             store.write_manifest(self.tmp.name, "channels", self.session())
+
+
+class ReparseTest(StoreCase):
+    def write_read(self, kind, entity, span, tool, fixtures):
+        session = store.ReadSession(self.root, "chat", RUN, "channels", "slack", "mcp", clock=lambda: FETCHED_AT, runtime="ab" * 20)
+        handle = session.open(kind, entity, span)
+        pages = [(FIXTURES / name).read_bytes() for name in fixtures]
+        for number, data in enumerate(pages):
+            handle.page({"tool": tool, "arguments": {"page": number}}, fetch=lambda data=data: data)
+        handle.finish("complete", None, [])
+        rows = slack.to_rows(kind, slack.parse_read(kind, handle.document(), pages))
+        state.write_all([(os.path.join(handle.folder, store.RECORDS_FILE), store.dump_lines(rows))])
+        return handle
+
+    def history(self, channel="CHAN1", fixtures=("read_chan1_page_1.json", "read_chan1_page_2.json"), span=WINDOW_SPAN):
+        return self.write_read("history", (("channel", channel),), span, "slack_read_channel", fixtures)
+
+    def thread(self):
+        return self.write_read("thread", (("channel", "CHAN1"), ("root", ROOT_TS)), (ROOT_TS, WINDOW_SPAN[1]), "slack_read_thread", ("thread_chan1_page_1.json", "thread_chan1_page_2.json"))
+
+    def reparse(self, *filters):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), mock.patch.object(store, "runtime_commit", return_value="ab" * 20):
+            code = store.main(["reparse", "--root", self.root, *filters])
+        return code, out.getvalue().splitlines(), err.getvalue()
+
+    def files(self, handle):
+        return {name: (pathlib.Path(handle.folder) / name).read_bytes() for name in (store.RECORDS_FILE, store.READ_FILE)}
+
+    def test_changes_no_byte_with_an_unchanged_parser(self):
+        handle = self.history()
+        before = self.files(handle)
+
+        self.reparse()
+
+        self.assertEqual(self.files(handle), before)
+
+    def test_reports_a_read_whose_records_are_unchanged(self):
+        handle = self.history()
+
+        self.assertEqual(self.reparse(), (0, [f"same {handle.stored}", "reparsed 1, changed 0, rejected 0"], ""))
+
+    def test_rewrites_and_reports_records_that_differ_from_the_pages(self):
+        handle = self.history()
+        expected = self.files(handle)[store.RECORDS_FILE]
+        state.write_all([(os.path.join(handle.folder, store.RECORDS_FILE), b"{}\n")])
+
+        code, lines, _ = self.reparse()
+
+        self.assertEqual((code, lines[0], self.files(handle)[store.RECORDS_FILE]), (0, f"changed {handle.stored}", expected))
+
+    def test_records_the_runtime_that_parsed_the_records(self):
+        handle = self.history()
+        document = handle.document()
+        state.write_all([(os.path.join(handle.folder, store.READ_FILE), state.dump({**document, "parsed_by": "cd" * 20}))])
+
+        self.reparse()
+
+        self.assertEqual(handle.document()["parsed_by"], "ab" * 20)
+
+    def test_selects_the_reads_of_a_channel(self):
+        first, second = self.history(), self.history(channel="CHAN2", fixtures=("read_chan2.json",))
+
+        _, lines, _ = self.reparse("--channel", "CHAN2")
+
+        self.assertEqual(lines[:-1], [f"same {second.stored}"])
+
+    def test_selects_the_reads_of_a_kind(self):
+        self.history()
+        thread = self.thread()
+
+        _, lines, _ = self.reparse("--kind", "thread")
+
+        self.assertEqual(lines[:-1], [f"same {thread.stored}"])
+
+    def test_selects_the_reads_of_a_thread(self):
+        self.history()
+        thread = self.thread()
+
+        _, lines, _ = self.reparse("--thread", f"CHAN1:{ROOT_TS}")
+
+        self.assertEqual(lines[:-1], [f"same {thread.stored}"])
+
+    def test_selects_the_reads_whose_span_overlaps_the_time_range(self):
+        early = self.history(span=("1760000000", "1760001500"))
+        self.history(channel="CHAN2", fixtures=("read_chan2.json",), span=("1760003500", "1760010800"))
+
+        _, lines, _ = self.reparse("--from", "2025-10-09T09:00:00Z", "--to", "2025-10-09T09:30:00Z")
+
+        self.assertEqual(lines[:-1], [f"same {early.stored}"])
+
+    def test_selects_the_reads_of_a_provider(self):
+        handle = self.history()
+
+        self.assertEqual(self.reparse("--provider", "chat")[1][:-1], [f"same {handle.stored}"])
+
+    def test_combines_the_filters(self):
+        self.history()
+        self.thread()
+
+        code, _, err = self.reparse("--kind", "thread", "--channel", "CHAN2")
+
+        self.assertEqual((code, "no read matches --channel CHAN2 --kind thread" in err), (2, True))
+
+    def test_exits_2_when_no_read_matches(self):
+        self.history()
+
+        code, lines, err = self.reparse("--provider", "docs")
+
+        self.assertEqual((code, lines, "no read matches --provider docs" in err), (2, [], True))
+
+    def test_exits_3_on_a_rejected_read_and_still_reparses_the_others(self):
+        broken, kept = self.history(), self.history(channel="CHAN2", fixtures=("read_chan2.json",))
+        state.write_all([(os.path.join(broken.folder, "page-001.txt"), b"not json")])
+        before = self.files(broken)
+
+        code, lines, _ = self.reparse()
+
+        self.assertEqual(
+            (code, lines[0].startswith(f"rejected {broken.stored}: "), lines[1], lines[2], self.files(broken)),
+            (3, True, f"same {kept.stored}", "reparsed 1, changed 0, rejected 1", before),
+        )
+
+    def test_skips_a_read_that_did_not_complete(self):
+        session = self.session()
+        handle = session.open("history", (("channel", "CHAN1"),), WINDOW_SPAN)
+        handle.page(REQUEST, fetch=lambda: b"not_in_channel")
+        handle.finish("failed", "not_in_channel")
+
+        self.assertEqual(self.reparse()[0], 2)
+
+    def test_reads_no_environment_and_opens_no_connection(self):
+        handle = self.history()
+
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(socket, "socket", side_effect=AssertionError("network")):
+            code, lines, _ = self.reparse()
+
+        self.assertEqual((code, lines[0]), (0, f"same {handle.stored}"))
+
+    def test_exits_2_on_a_root_that_does_not_exist(self):
+        code, _, err = self.reparse_root(os.path.join(self.tmp.name, "missing"))
+
+        self.assertEqual((code, "missing" in err), (2, True))
+
+    def reparse_root(self, root):
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            code = store.main(["reparse", "--root", root])
+        return code, None, err.getvalue()
 
 
 if __name__ == "__main__":
