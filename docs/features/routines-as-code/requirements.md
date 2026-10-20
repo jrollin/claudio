@@ -763,10 +763,10 @@ WHEN a local run ends
 THE run folder keeps every raw source result, sorted by role and source, and a replay rebuilds the run's collections from them with no network
 
 **Acceptance Criteria:**
-- [ ] Every source's raw results land under `<run>/raw/<role>/<source>/`: the connector results of an `mcp` source, and one record per HTTP call of an `api` source *(AC-51.1)*
+- [ ] Every source's raw results land under `<run>/raw/<role>/<source>/`: the connector results of an `mcp` source, and one record per HTTP call of an `api` source; a store-backed source files them in the run store instead, per [provider-store](../provider-store/requirements.md) US-1 *(AC-51.1)*
 - [ ] An `api` record holds the method, the path with its query, the request body, the status, the `Link` response header and the decoded response, and no request header *(AC-51.2)*
 - [ ] A local run's folder lives under the place's `runs_dir`, named by routine and start time; without `runs_dir`, the run folder is a temporary folder under `/tmp` *(AC-51.3)*
-- [ ] `collect.py replay` rebuilds every collection of a run from its raw folder, byte-identical to the collections the run wrote, and fails naming the first request it holds no record for *(AC-51.4)*
+- [ ] `collect.py replay` rebuilds every collection of a run from its run folder, byte-identical to the collections the run wrote, and fails naming the first request it holds no record for; a store-backed source replays read by read, per [provider-store](../provider-store/requirements.md) US-5 *(AC-51.4)*
 
 ### Prefer the api transport, fall back to the connector {#US-52}
 

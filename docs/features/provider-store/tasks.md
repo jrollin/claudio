@@ -146,7 +146,8 @@ Paths are under `plugins/claudio-routines/` unless they start with `docs/` or `s
 - **Files**: `README.md` (modify), `runtime/providers/README.md` (modify), `docs/features/routines-as-code/requirements.md` (modify)
 - **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime -p 'test_conformance.py' && python3 scripts/leak_check.py --tree`
 - **Blocked by**: T-7, T-8, T-9
-- **Status**: Not Started
+- **Status**: Complete
+- **Result**: plugin README gains the Read store section (layout, read folder files, manifest, `reparse`, DuckDB query) and `--run`, the call's `path`, the relay folder, read-by-read replay, `store.py` exit codes and two replay troubleshooting rows; providers README covers per-read pages, records and replay and the Slack read kinds; routines-as-code AC-51.1 and AC-51.4 point here; conformance and leak check green
 
 ## Phase 2: Shared local store
 
