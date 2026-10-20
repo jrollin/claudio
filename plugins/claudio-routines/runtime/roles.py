@@ -32,7 +32,7 @@ WEEKLY_ROLES = ("issue_tracker", "code_host", "chat", "document_store")
 RECAP_LANDINGS = ("waiting", "good_to_know")
 RECAP_LOOKBACK_CAP = 365
 PAGE_FROM_STATE = ("previous_page",)
-PAGE_OPTIONS = ("page_id", "pages", "page_from_state", "edited_by")
+PAGE_OPTIONS = ("page_id", "pages", "page_from_state", "edited_by", "created_by")
 EDITED_CAP_MAX = 20
 TREND_AGGREGATORS = ("max", "min", "sum", "avg", "last")
 COLLECTION_SCHEMA = 1
@@ -159,6 +159,8 @@ ROLE_OPTIONS = {
         "pages": Omittable(ListOf(PAGE_ID_TEXT, non_empty=True)),
         "page_from_state": Omittable(Choice(PAGE_FROM_STATE)),
         "edited_by": Omittable(Rule(lambda value: isinstance(value, str) and value.strip() != "", "must be non-blank text")),
+        "created_by": Omittable(NON_BLANK),
+        "exclude_paths": Omittable(ListOf(NON_BLANK)),
         "edited_cap": Omittable(
             Rule(lambda value: is_integer(value) and 1 <= value <= EDITED_CAP_MAX, f"must be an integer from 1 to {EDITED_CAP_MAX}")
         ),
@@ -653,9 +655,18 @@ def _validate_page_options(source, path, engine):
         raise ConfigError(f"{path}.page_from_state: only a routine with the {TRIBE_ENGINE} engine keeps a previous page")
     if "edited_cap" in source and "edited_by" not in source:
         raise ConfigError(f"{path}.edited_cap: needs edited_by")
-    relayed = next((place for place in PLACES if "mcp" in transports_of(source["transport"][place])), None)
+    if "exclude_paths" in source and "created_by" not in source:
+        raise ConfigError(f"{path}.exclude_paths: needs created_by")
+    relayed = _place_listing(source, "mcp")
     if "edited_by" in source and relayed is not None:
         raise ConfigError(f"{path}.edited_by: reads over api only, the {relayed} transport lists mcp")
+    direct = _place_listing(source, "api")
+    if "created_by" in source and direct is not None:
+        raise ConfigError(f"{path}.created_by: reads over mcp only, the {direct} transport lists api")
+
+
+def _place_listing(source, transport):
+    return next((place for place in PLACES if transport in transports_of(source["transport"][place])), None)
 
 
 def validate_pack(pack, sources, routine=None, *, rules):

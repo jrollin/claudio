@@ -1180,7 +1180,7 @@ Owner-gated: needs the release tag, the tokens per place and an approved sync.
 - **Refs**: US-58, TD-72
 - **Files**: `plugins/claudio-routines/runtime/providers/notion.py` (modify), `plugins/claudio-routines/runtime/providers/test_notion.py` (modify), `plugins/claudio-routines/runtime/roles.py` (modify), `plugins/claudio-routines/runtime/test_roles.py` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify)
 - **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
-- **Status**: Not Started
+- **Status**: Complete
 
 ### T-109: Partial recap thread reads
 - `thread_reads`, `owner_last_ts`, the partial reads and the merged facts follow TD-73.
