@@ -139,6 +139,7 @@ Routine files and routines inline under `routines` in `config.json` are both acc
 | `places.<place>.runtime_dir` | Where the setup script installs the runtime in that place: absolute, at least two levels below the root, no `.` or `..` component, last component starting with `claudio-runtime` (for example `/opt/claudio-runtime`) |
 | `places.<place>.state_dir` | Absolute path of the private repository checkout in that place |
 | `places.<place>.runs_dir` | Optional. Absolute folder where a run of that place creates its run folder, `<runs_dir>/<slug>/<UTC start time>-<random>`; `/tmp` without it. Raw results hold source content, so keep it in a folder git ignores (for example `/srv/claudio-runs`) |
+| `places.<place>.store_dir` | Optional. Absolute folder of the shared read store of that place, outside every git working tree (for example `/srv/claudio-store`): the runs of the place file their chat reads under `<store_dir>/provider=<key>/` and reuse the fresh ones (see Shared store). Leave it unset on the cloud place |
 | `places.<place>.injected_hosts` | Optional. List of plain host names (such as `api.example.test`) whose credentials the place's proxy adds, for example the cloud environment's network secrets. An `api` provider whose `api.base_url` host is listed is usable there without its credential variables, and the client sends no credential header. The code host's host is refused |
 | `providers.<name>` | One provider; sources point at it by `<name>` |
 | `providers.<name>.adapter` | Module name of its adapter under `runtime/providers/` |
@@ -193,6 +194,7 @@ A source also holds the options of its provider's role:
 | Document store | `edited_by` | A user id, in place of `page_id` and `pages`: over `api`, the pages that user last edited in the window, newest first, up to `edited_cap` (1 to 20, default 10) |
 | Document store | `created_by` | A user id (`me` for the connected user), in place of `page_id` and `pages`: over `mcp` only, the pages that user created in the window, without their blocks; `exclude_paths` drops pages whose path starts with one of its prefixes |
 | Chat channel | `channels` | A non-empty list of channels; the replies of each thread whose root lies in the window are read too |
+| Chat channel | `max_age` | Optional, 0 by default: the minutes before the window end within which a stored read is reused instead of fetched (see Shared store). An integer for every read kind, or an object with `default`, `history`, `thread`, `reactions` and `people` (members and user names), a missing kind taking `default`. Searches are always fetched |
 | Code host | `repos` | A non-empty list of `owner/name` repositories |
 | Code host | `query` | Optional search query; a source with a non-empty one is not read, since neither transport takes a search query |
 | Issue tracker | `filter` | The saved filter id, digits only; a source sets `filter` or `jql`, not both |
@@ -223,8 +225,11 @@ Entries match this schema exactly: `severity`, `urgency` and `threshold` are rej
 
 Config checks:
 - `places.cloud` and `places.local` are both required.
-- `places.<place>.runtime_dir`, `places.<place>.state_dir` and, when present, `places.<place>.runs_dir` match `^(/[A-Za-z0-9._-]+)+/?$`, with no `.` or `..` component, since the template uses them unquoted in shell commands.
-- `places.<place>.runs_dir` is a string: a relative path or another type fails the config check, naming `places.<place>.runs_dir`.
+- `places.<place>.runtime_dir`, `places.<place>.state_dir` and, when present, `places.<place>.runs_dir` and `places.<place>.store_dir` match `^(/[A-Za-z0-9._-]+)+/?$`, with no `.` or `..` component, since the template uses them unquoted in shell commands.
+- `places.<place>.runs_dir` and `places.<place>.store_dir` are strings: a relative path or another type fails the config check, naming the key.
+- `collect.py sources` exits 2 naming `places.<place>.store_dir` when that folder is a link, belongs to another user or lies inside a git working tree.
+- A chat source's `max_age` is a non-negative integer, or an object of the keys above with such values: anything else, or an unknown key, fails the load, naming the key path and never the value.
+- A search named `.` or `..` fails the load, since its name becomes a store folder.
 - `places.<place>.injected_hosts` is a list of plain host names matching `^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*$`: another type, a URL or a host with a port fails the config check, naming `places.<place>.injected_hosts`. A code host provider read over `api` at that place whose host is listed fails it too.
 - `timezone` matches `^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+)*$`, since the template uses it unquoted in shell commands.
 - `runtime.dir`, a shared `values.state.dir` and a routine `values.state.dir` are refused; their values belong in `places.<place>.runtime_dir` and `places.<place>.state_dir`.
@@ -537,7 +542,7 @@ python3 runtime/weekly.py message  --summary SUMMARY --features FEATURES --out M
   - Excerpts: pull request activity up to 10 and chat messages up to 15, each text cut to 500 characters, newest first; a page gives its first 1000 characters as one excerpt.
   - `--recap` is the folder of the recap routine's `state.json` and `runs/` records. A recap unit first seen or last written in the week makes a chat item with its title, status and link (a thread's root message, or the conversation); the week's records give `recap_counts` (`new`, `resolved`, `handled`). A direct chat source adds its messages to the item of the same key, or makes its own.
   - Chat units in `exclude.channels` are dropped from the items and the counts.
-  - `sources` lists each source with `read` and `reason`; a source with no collection file is not read, with the reason `no collection`.
+  - `sources` lists each source with `read` and `reason`, and `reads` when its collection holds them; a source with no collection file is not read, with the reason `no collection`.
 - `judge` checks the model's judgment, `{"schema": 1, "accomplishments": [{"text", "cites"}], "decisions": [{"text", "cites"}], "open": [{"text", "owner", "cites"}]}`, and writes the summary: the judgment with the features' `window`, `week_start`, `recap_counts` and `sources`.
   - Counts: accomplishments 1 to 6, or none when the features hold no item; decisions 0 to 6; open 0 to 8.
   - `text`: 1 to 200 characters, with no URL (`http://`, `https://`, `www.`), no line break and no other control character; all texts hold at most 220 words together.
@@ -546,7 +551,7 @@ python3 runtime/weekly.py message  --summary SUMMARY --features FEATURES --out M
   - An unknown key, a missing key or another schema is rejected too; the rejection names the key path, such as `open[0].cites[1]`.
 - `apply` writes the next state and the run record.
   - The next state keeps the digest and sets `last_run` to the window's end (`run_at`) and its `week_start`; a `report_only` window leaves the state as it was.
-  - The record holds `schema`, `run_at`, `window`, `week_start`, `report_only`, `counts` (cited items per role, bullets per section), `cited` (the sorted item keys) and `sources` (`source`, `read`, `reason`). It holds no bullet text, title or owner name.
+  - The record holds `schema`, `run_at`, `window`, `week_start`, `report_only`, `counts` (cited items per role, bullets per section), `cited` (the sorted item keys) and `sources` (`source`, `read`, `reason`, and `reads` when present). It holds no bullet text, title or owner name.
 - `message` renders the summary as the chat message, with the links of each bullet taken from its cited items:
   - Title `**Weekly status, week of Mon 12 Oct**`, then `**Key accomplishments**`, `**Decisions**` and `**Still open / next week**`; an empty section shows `- None`, or `- None recorded` for decisions.
   - A bullet reads `- <text> (owner: <name>) ([<label>](<link>), ...)`; the owner shows on open bullets that have one.
@@ -631,6 +636,26 @@ Each read folder:
 
 `<run>/manifest.json` lists, per store-backed source, the reads its collection used and how many the run fetched.
 
+### Shared store
+
+With `places.<place>.store_dir` set, the runs of that place share their reads:
+- A run still writes each read in `<run>/store`, then publishes it under `<store_dir>/provider=<key>/`. Its files are linked into `.incoming/`, then the folder is renamed into place, so no reader sees a partial read. A link falls back to a copy across file systems.
+- A source with `max_age` above 0 reuses a stored read when all of these hold:
+  - same provider key
+  - outcome `complete`
+  - kind other than `search`
+  - fetched at most `max_age` minutes before the window end
+  - fetched before the window end, unless by another source of the same run
+  - not one of the source's own reads in this run
+  - trust rule: an `api` source reuses `api` reads only, an `mcp` source reuses both
+- A channel history fetches only the gaps of its span that the reused reads leave, one read per gap. A thread is read from the end of its covered part.
+- Messages merge by ts, the newest fetch winning, then keep the needed span.
+- Reactions, members and user names reuse the newest fresh read whole.
+- A reused read is linked into `<run>/store` and listed in the manifest, so the run folder replays alone.
+- A reused read spends no call of `call_cap` or of the page caps.
+- Records that another runtime commit parsed are reparsed from their pages before use, with no network.
+- With `max_age` above 0 for some kind, the collection, the run record (`collected.<source>.reads`) and the weekly record's source rows hold `reads`: `{"fetched": N, "reused": M}`. Without it they are unchanged.
+
 Reparse:
 
 ```text
@@ -644,6 +669,18 @@ python3 runtime/store.py reparse --root ROOT [--provider P] [--channel C] [--thr
 - It prints `same`, `changed` or `rejected <read>: <reason>` per read, then the counts.
 - A read the parser rejects stays as it was, and the command exits 3.
 - Filters that match no read exit 2, naming them.
+
+Prune:
+
+```text
+python3 runtime/store.py prune --root STORE_DIR --older-than-days N [--dry-run]
+```
+
+- It deletes, whole, each read folder fetched more than N days ago.
+- A folder without `read.json`, and a `.incoming/` leftover, go by their modification time.
+- It prints `<provider> deleted <N> kept <M>` per provider key; `--dry-run` prints the same and deletes nothing.
+- Nothing else deletes a read. A run folder keeps the reads it linked, so it still replays after a prune.
+- An age that is not a positive whole number exits 2, and so does a root that is not a folder.
 
 Query the store with an outside tool, with no runtime code. DuckDB example:
 
@@ -765,5 +802,8 @@ Record text written by other people (messages, titles) reaches a model that hold
 | A source is not read with `partial: call cap` | Its relay loop reached 50 calls | Narrow the source's queries, or set its transport to `api` for that place |
 | `replay` exits 3 with `a read the run did not make` | The walk asks a read the run's manifest does not list: the config, the window or the walk changed since the run | Replay with the config and the runtime of the run; to check a parser change alone, use `store.py reparse` |
 | `replay` exits 2 with `holds no manifest.json` | The run folder holds a store-backed source but no manifest: it was written by a runtime without the read store, or the run stopped before its collections | Replay it with the runtime tag that wrote it |
+| `collect.py sources` exits 2 naming `places.<place>.store_dir` | The folder is a link, belongs to another user, or lies inside a git working tree | Point `store_dir` at a folder you own, outside every repository |
+| A source with `max_age` still fetches its whole span | No stored read is eligible: older than `max_age`, fetched after the window end by another run, not complete, a connector read for an `api` source, or another provider key | Read the `read.json` of the stored reads, or raise `max_age` for that kind |
+| `store_dir` keeps growing | Only `prune` deletes reads | Run `store.py prune --root <store_dir> --older-than-days N` |
 | A source is not read with `plan not done` | The relay loop stopped before `plan` returned `done`: a missing connector, or the run stopped relaying | Fix the connector, then run again |
 | `plan` prints the same call again after the model made it | The hook captured nothing for it: the hook is not in `.claude/settings.json`, `CLAUDIO_RUNTIME_DIR` is wrong for the place, the capture folder is a link or belongs to another user, or the arguments differ from the printed ones (`plan` then prints a `relay capture mismatch` line) | Read `errors.log` in the capture folder and the `relay capture mismatch` line of the error output: it names the paths where the call differs, never their values, and a line that names identity paths such as `channel_id` or `message_ts` usually points at another source's capture when several sources relay in parallel (a known false positive). Fix the hook settings, or save that result by hand as the template says |

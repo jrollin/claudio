@@ -56,6 +56,10 @@
       "owner": "<chat-user-id>",
       "reactions": true,
       "call_cap": 200,
+      "max_age": {
+        "default": 30,
+        "people": 1440
+      },
       "searches": [
         {
           "name": "conversations",

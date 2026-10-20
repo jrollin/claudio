@@ -248,7 +248,8 @@ Paths are under `plugins/claudio-routines/` unless they start with `docs/` or `s
 - **Files**: `README.md` (modify), `runtime/providers/README.md` (modify), `example/config.json` (modify), `example/config/routines/chat-recap.json` (modify)
 - **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/skills/routines/scripts && python3 scripts/leak_check.py --tree`
 - **Blocked by**: T-15, T-16, T-17
-- **Status**: Not Started
+- **Status**: Complete
+- **Result**: plugin README (`store_dir` and `max_age` rows, config checks, Shared store, Prune, weekly `reads`, 3 Troubleshooting rows), providers README reuse bullet, example `store_dir` and recap `max_age`: runtime, routines (786) and leak check passing
 
 ## Related Features
 
