@@ -174,16 +174,16 @@ PAGE_KEY = "page:page-ab12"
 OWNER_NAME = "Ada Lovelace"
 
 
-def make_item_document(source, role, kind, title, link):
-    return {"source": source, "role": role, "kind": kind, "title": title, "status": None, "link": link, "when": "2026-10-14T09:30:00Z", "people": [], "excerpts": []}
+def make_item_document(source, role, kind, title, link, waiting_on=None):
+    return {"source": source, "role": role, "kind": kind, "title": title, "status": None, "link": link, "when": "2026-10-14T09:30:00Z", "people": [], "excerpts": [], "waiting_on": waiting_on}
 
 
 def make_features_items():
     return {
         ISSUE_KEY: make_item_document("issues", "issue_tracker", "issue", "Checkout fails", "https://tracker.example.test/browse/PROJ-12"),
         PR_KEY: make_item_document("code", "code_host", "pull_request", "Fix the export", "https://code.example.test/example-org/service/pull/7"),
-        THREAD_ITEM: make_item_document("recap", "chat", "thread", "Review the rollout plan", f"https://{HOST}/archives/{CHAN}/p1791990000000100"),
-        DM_ITEM: make_item_document("recap", "chat", "dm", "Question about the launch", f"https://{HOST}/archives/{DM}/p1791990000000200"),
+        THREAD_ITEM: make_item_document("recap", "chat", "thread", "Review the rollout plan", f"https://{HOST}/archives/{CHAN}/p1791990000000100", "owner"),
+        DM_ITEM: make_item_document("recap", "chat", "dm", "Question about the launch", f"https://{HOST}/archives/{DM}/p1791990000000200", "Peer Name"),
         PAGE_KEY: make_item_document("docs", "document_store", "page", "Launch plan for the autumn release of the export", "https://docs.example.test/page-ab12"),
     }
 
@@ -377,6 +377,7 @@ class IssueFeaturesTest(FeaturesCase):
                 "people": [],
                 "excerpts": [],
                 "channel_name": None,
+                "waiting_on": None,
             },
         )
 
@@ -423,6 +424,9 @@ class PullRequestFeaturesTest(FeaturesCase):
                 {"by": "alice", "at": "2026-10-13T10:00:00Z", "text": "First comment"},
             ],
         )
+
+    def test_a_pull_request_waits_on_nobody(self):
+        self.assertIsNone(self.pull_request(make_activity("2026-10-15T10:00:00Z"))["waiting_on"])
 
     def test_an_excerpt_is_cut_to_500_characters(self):
         item = self.pull_request(make_activity("2026-10-15T10:00:00Z", text="x" * 501))
@@ -479,6 +483,7 @@ class PageFeaturesTest(FeaturesCase):
                 "people": [],
                 "excerpts": [{"by": None, "at": "2026-10-15T08:00:00Z", "text": "Plan\nShip it"}],
                 "channel_name": None,
+                "waiting_on": None,
             },
         )
 
@@ -520,8 +525,34 @@ class RecapFeaturesTest(FeaturesCase):
                 "people": ["Peer Name"],
                 "excerpts": [],
                 "channel_name": "#export",
+                "waiting_on": "owner",
             },
         )
+
+    def waiting_on(self, **fields):
+        unit = make_unit(kind="thread", channel=CHAN, **RECAP_FRESH, **fields)
+        return self.items(recap=self.stored(**{THREAD_KEY: unit}))[f"chat:{THREAD_KEY}"]["waiting_on"]
+
+    def test_a_waiting_unit_waits_on_the_owner(self):
+        self.assertEqual(self.waiting_on(status="waiting"), "owner")
+
+    def test_a_promise_unit_waits_on_the_owner(self):
+        self.assertEqual(self.waiting_on(status="promise"), "owner")
+
+    def test_a_unit_waiting_on_others_waits_on_its_person(self):
+        self.assertEqual(self.waiting_on(status="waiting_on_others", person={"id": PEER, "name": NAMES[PEER]}), "Peer Name")
+
+    def test_a_unit_waiting_on_others_without_a_person_waits_on_nobody_named(self):
+        self.assertIsNone(self.waiting_on(status="waiting_on_others", person=None))
+
+    def test_a_team_ask_unit_waits_on_the_team(self):
+        self.assertEqual(self.waiting_on(status="team_ask"), "team")
+
+    def test_a_handled_unit_waits_on_nobody(self):
+        self.assertIsNone(self.waiting_on(status="handled"))
+
+    def test_an_announcement_unit_waits_on_nobody(self):
+        self.assertIsNone(self.waiting_on(status="announcement"))
 
     def test_a_recap_dm_links_to_its_conversation(self):
         unit = make_unit(kind="dm", channel=DM, **RECAP_FRESH)
@@ -618,12 +649,13 @@ class DirectChatFeaturesTest(FeaturesCase):
         item = self.chat(thread)[f"chat:thread-{CHAN}-{root}"]
 
         self.assertEqual(
-            {key: item[key] for key in ("source", "role", "kind", "status", "when", "people", "link")},
+            {key: item[key] for key in ("source", "role", "kind", "status", "waiting_on", "when", "people", "link")},
             {
                 "source": "chat",
                 "role": "chat",
                 "kind": "thread",
                 "status": None,
+                "waiting_on": None,
                 "when": "2026-10-14T09:00:00Z",
                 "people": ["Owner Name", "Peer Name"],
                 "link": f"https://{HOST}/archives/{CHAN}/p{reply.replace('.', '')}?thread_ts={root}&cid={CHAN}",
@@ -993,6 +1025,24 @@ class JudgeInputTest(JudgeCase):
 
         self.assertEqual(code, 2)
         self.assertIn("recap_counts", err)
+
+    def test_features_with_a_waiting_on_that_is_not_text_are_an_input_error_naming_the_key_path(self):
+        features = make_features_document()
+        features["items"][THREAD_ITEM]["waiting_on"] = 7
+
+        code, _, err = self.judge(make_judgment(), features)
+
+        self.assertEqual(code, 2)
+        self.assertIn(f"items.{THREAD_ITEM}.waiting_on", err)
+
+    def test_features_without_a_waiting_on_are_an_input_error_naming_the_key_path(self):
+        features = make_features_document()
+        del features["items"][THREAD_ITEM]["waiting_on"]
+
+        code, _, err = self.judge(make_judgment(), features)
+
+        self.assertEqual(code, 2)
+        self.assertIn(f"items.{THREAD_ITEM}.waiting_on", err)
 
 
 class ApplyCase(WeeklyCase):

@@ -147,6 +147,7 @@ Read `<run>/features.json`, and no other file. Write `<run>/judgment.json` from 
 - Group related items by theme or project in one bullet, and prefer an outcome to an activity.
 - Write a decision only when an item shows one.
 - An open item says who waits on whom. `owner` is null, or the name of the person who owns it when that is another person than the owner of the status, at most 60 characters.
+- An open item's `owner` is the item's `waiting_on` when it names another person. When `waiting_on` is `owner`, the owner of the status waits on nobody and `owner` stays null. When `waiting_on` is `team`, the item is a team ask and `owner` stays null. An item with a null `waiting_on` keeps `owner` as you judge it from the item.
 - The checker reports only the first failure and one correction is allowed, so write within its limits:
   - Each `text` is plain text of 1 to 200 characters, with no link and no line break.
   - All texts together hold at most 220 words.
