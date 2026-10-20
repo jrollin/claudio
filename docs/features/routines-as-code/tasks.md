@@ -3,7 +3,7 @@
 ---
 feature: routines-as-code
 spec_version: 1
-total_tasks: 110
+total_tasks: 112
 phases:
   - name: "Leak guard"
     tasks: [T-1, T-2, T-3]
@@ -49,6 +49,8 @@ phases:
     tasks: [T-99, T-100, T-101, T-102, T-103, T-104, T-105]
   - name: "Backlog after the cloud rollout"
     tasks: [T-106, T-107, T-108, T-109, T-110]
+  - name: "Relay capture"
+    tasks: [T-111, T-112]
 depends_on: []
 ---
 
@@ -1197,6 +1199,31 @@ Owner-gated: needs the release tag, the tokens per place and an approved sync.
 - **Files**: `plugins/claudio-routines/runtime/providers/_slack_read.py` (modify), `plugins/claudio-routines/runtime/providers/_slack_search.py` (modify), `plugins/claudio-routines/runtime/providers/test_slack.py` (modify), `plugins/claudio-routines/runtime/providers/test_slack_search.py` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify), `docs/features/routines-as-code/design.md` (modify)
 - **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
 - **Status**: Complete
+
+## Phase 23: Relay capture
+
+### T-111: Relay capture by a PostToolUse hook
+- `relay_capture.py` is the hook command and the `take` function; `collect.relay_loop` serves `collect.py plan` and `tribe.py publish-plan` through `planned.json`; the templates have the model make each call once and save a result by hand only for a call the plan prints again (TD-74).
+- Tests: the hook captures a list result and a saved-result file byte-exact (an emoji, an escaped surrogate sequence), skips a path outside the session folder or outside a `tool-results` folder, a tool that is not a connector tool, malformed input, a linked or foreign folder and an over-cap text, and exits 0 on every failure with one log line and no result text; `take` matches the exact tool name and arguments, ignores a capture older than the planned time, takes the newest, deletes what it matched and the captures older than 24 hours, and skips malformed captures; a planned call that is captured is saved by the next plan, which walks to done through captures only, ignores a capture taken before the call was planned, and lists a call again when nothing was captured, with a hand-saved response still working; the same for the publish plan. Every test that plans uses a temporary capture folder and a fixed clock.
+- **Refs**: US-60, US-15, TD-74, TD-21
+- **Files**: `plugins/claudio-routines/runtime/relay_capture.py` (new), `plugins/claudio-routines/runtime/test_relay_capture.py` (new), `plugins/claudio-routines/runtime/collect.py` (modify), `plugins/claudio-routines/runtime/tribe_publish.py` (modify), `plugins/claudio-routines/runtime/support.py` (modify), `plugins/claudio-routines/runtime/tribe_support.py` (modify), `plugins/claudio-routines/runtime/test_collect.py` (modify), `plugins/claudio-routines/runtime/test_tribe_publish.py` (modify), `plugins/claudio-routines/skills/routines/templates/*.md` (modify), `plugins/claudio-routines/skills/routines/scripts/test_routines.py` (modify), `plugins/claudio-routines/README.md` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify), `README.md` (modify), `docs/features/routines-as-code/requirements.md` (modify), `docs/features/routines-as-code/design.md` (modify), `docs/features/routines-as-code/tasks.md` (modify)
+- **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
+- **Rules**: BR-66, BR-77, BR-78, BR-79, BR-80, BR-81
+- **Status**: Complete
+
+### T-112: Relay capture rollout
+Owner-gated: needs the release tag, the setup script paste at the cloud environment and an approved sync.
+1. Add the `PostToolUse` hook of the README to the private repository's `.claude/settings.json`, and `CLAUDIO_RUNTIME_DIR` to its `.claude/settings.local.json` `env` for local runs.
+2. Tag a release that holds T-111, set `runtime.tag` and `runtime.sha` in the private config, and paste `setup-script` into the cloud environment's setup script.
+3. Copy the public templates to the private `<name>-runtime.md` copies, and run `/routines sync` for each of the 5 routines.
+4. Put the chat recap back on its runtime template after seeding `claude/state` from the recap state the document store holds (`/routines seed`).
+5. Run one cloud run of a relay routine and check that `plan` saved each result from a capture and that `errors.log` is empty.
+- **Refs**: US-60
+- **Files**: none in this repository; the private repository's settings, config and template copies change
+- **Verify**: `python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --private "$CLAUDIO_PRIVATE_DIR"`
+- **Blocked by**: T-111
+- **Rules**: BR-77, BR-80, BR-81
+- **Status**: Not Started
 
 ## Related Features
 

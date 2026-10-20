@@ -19,6 +19,7 @@ Manage claude.ai routines (scheduled cloud agents) as code:
 | Skeletons | `skills/routines/templates/` | Generic `prod-watch.md`, `tribe-digest.md`, `chat-recap.md` and `weekly-status.md` prompts and the `setup-env.sh` setup script, placeholders only |
 | State engine | `runtime/state.py` | Run window, item lifecycle, blind spots, mutes and run records for routine runs |
 | Collector | `runtime/collect.py` | Lists a routine's sources, checks the place's credentials and connectors, reads one source per command into a collection, and rebuilds every collection of a run offline from its raw folder |
+| Relay capture | `runtime/relay_capture.py` | The `PostToolUse` hook command that saves each connector result byte-exact, and the `take` function `collect.py plan` and `tribe.py publish-plan` use to pick the captures up |
 | Evaluator | `runtime/evaluate.py` | `features` computes the judgment features, `judge` checks the model's judgment and merges it into the facts, `annotate` adds the analysis of new and escalated items |
 | Digest | `runtime/digest.py` | Renders the posted message as Markdown from the change summary, the next state, the run record and the base file; the model posts it unchanged |
 | Features | `runtime/features.py` | Computes the features, base and rules files of one run; decides nothing |
@@ -72,7 +73,7 @@ A private `<name>-runtime.md` template is a byte copy of the public runnable tem
 3. Copy the contents of the plugin's `example/` directory into `$CLAUDIO_PRIVATE_DIR`: `config.json` and `config/routines/`. Fill in every `<placeholder>`.
    - Name each routine file after the live routine's slug, as `export` prints it, and set its `id`.
    - Delete the files of the routines you do not track.
-4. Add `$CLAUDIO_PRIVATE_DIR/.claude/settings.json` with `permissions.deny` listing `PushNotification`, `Bash(sleep *)` and `Monitor`.
+4. Add `$CLAUDIO_PRIVATE_DIR/.claude/settings.json` with `permissions.deny` listing `PushNotification`, `Bash(sleep *)` and `Monitor`, and the relay capture hook (see Relay capture).
    - It applies to every routine.
    - `lint --private` reports `settings-missing`, `settings-invalid` or `deny-missing:<entry>` without it.
 5. Add your templates under `$CLAUDIO_PRIVATE_DIR/templates/<template>.md`. A routine without a private template renders from the public skeleton of the same name.
@@ -239,8 +240,9 @@ Templates use `{{dotted.key}}` placeholders; `\{{` renders a literal `{{`. Rende
 Each source has an ordered list of transports per place, from its own `transport` or its provider's default. The first usable one reads the source:
 - `api`: `collect.py fetch` calls the provider's HTTPS API from the place that runs the routine, and `--responses` records each HTTP call.
 - `mcp`: a relay loop.
-  - `collect.py plan` writes the next connector calls.
-  - The model makes each call and saves each result unchanged.
+  - `collect.py plan` saves the results a hook captured, then writes the next connector calls.
+  - The model makes each call once; the hook captures the result byte-exact (see Relay capture).
+  - The model saves a result by hand only for a call the plan lists again, as the fallback.
   - `collect.py parse` turns the saved results into the collection.
 
 Transport choice:
@@ -302,6 +304,62 @@ Discovery:
 - Each tracked `monitor-<id>` key is read by id until its item resolves, whether it came from the pack or from discovery.
 - A failed or capped discovery, or a failed by-id read of an event-named monitor other than not found, adds the blind spot `discovery incomplete` and leaves the by-id reads counted as read.
 - A monitor named by an alert event of the window that is outside the pack, untracked and not found by the search is read by id and reaches the model with its state and transitions, even when it is `OK` at run time; at most 50 per run, the excess adding `event monitors capped at 50` to the source's blind spot.
+
+### Relay capture
+
+A Claude Code `PostToolUse` hook saves each connector result byte-exact, so the model never copies a result into a file. `collect.py plan` and `tribe.py publish-plan` pick the captures up.
+
+Hook:
+- `runtime/relay_capture.py` is the hook command. It reads the hook JSON on stdin, prints nothing and exits 0 whatever happens: it never fails or blocks a tool.
+- It acts on a tool named `mcp__<connector>__<tool>` and saves the result text:
+  - A result that is a list of text blocks is saved as the concatenation of its texts.
+  - A result too large for the session, which the harness replaces with an error line naming the file it saved the result to, is read from that file. The file must be a regular file in a `tool-results` folder inside the session's folder, the folder of the transcript; any other path is skipped.
+  - Any other shape of result is skipped, and so is a text over 10 MB.
+- A failure adds one line to `errors.log` in the capture folder: the time, the error class and a message, never result text.
+
+Capture folder:
+- `$CLAUDIO_RELAY_DIR` when set and not blank, else `/tmp/claudio-relay`. The hook and `plan` both read the variable, so they share one folder when the session sets it once.
+- The hook creates it with mode 0700. The hook and `plan` leave it alone when it is a link, is not a folder or belongs to another user.
+- One file per result, written with mode 0600 as `<time in ns>-<tool use id>.json`, holding `tool_name`, `arguments`, `text` and `captured_at_ns`.
+- A capture is deleted when `plan` takes it, and every capture is deleted after 24 hours.
+
+Pick up:
+- `plan` records, per call id it printed, the time it first printed it, in `planned.json` of the responses folder.
+- Before it prints a step, `plan` saves as `<id>.txt` the capture of each call it printed before: the same tool name (`mcp__<connector>__<tool>`, the connector being `mcp.connectors.<place>` of the provider), the same arguments (an exact match, key order aside) and a capture time at or after the first print. The newest capture wins, and every capture it matched is deleted.
+- It then computes the step again, and repeats until nothing is picked up.
+- `tribe.py publish-plan` does the same for `<run>/responses/publish/<id>.txt`.
+
+Model:
+- The model makes each call of `calls` once and runs `plan` again.
+- When `plan` prints again a call the model already made, the hook missed its result. The model then saves that result by hand as `<id>.txt`, unchanged: it copies the file when the harness saved the result to one, else it writes the text with the Write tool, never in a shell command. It then runs `plan` again.
+
+Hook settings, in `$CLAUDIO_PRIVATE_DIR/.claude/settings.json` beside `permissions.deny`. A cloud routine reads the file because the private repository is its only source:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I \"${CLAUDIO_RUNTIME_DIR:-/opt/claudio-runtime}/plugins/claudio-routines/runtime/relay_capture.py\" || true"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+- The default path stands for `places.cloud.runtime_dir`: write the configured value there.
+- `|| true` keeps the hook silent when the runtime path is wrong: Python exits 2 for a missing script, and Claude Code shows the error of a `PostToolUse` hook that exits 2 to the model.
+- A local run sets `CLAUDIO_RUNTIME_DIR` to `places.local.runtime_dir` through `env` in `$CLAUDIO_PRIVATE_DIR/.claude/settings.local.json`, the local settings file that Claude Code keeps out of git:
+
+```json
+{ "env": { "CLAUDIO_RUNTIME_DIR": "<places.local.runtime_dir>" } }
+```
 
 ## Judgment
 
@@ -370,7 +428,7 @@ python3 runtime/tribe.py seed          --page FETCHED [--page FETCHED ...] --rou
 - The model writes only `judgment.json`, from `features.json` and `rules.json`. `judge` rejects a cite that the features do not hold (exit 3, with the key path).
 - `apply` merges the judgment and the edits made on the previous page into the next state, the summary and the run record. A report-only run (`--since` or `--report-only`) leaves the state byte-identical.
 - `render` writes the page and runs its structure check; a failed check exits 3 and no page is written.
-- `publish-plan` prints one connector call at a time: on the first run of an ISO week the weekly heading, then the page create and one poll per plan step (at most 20). The model relays each call unchanged and saves each result as `DIR/<id>.txt`. `publish-parse` reads the results into the page id and the week of the state, and writes `RESULT` with the status `created`, `failed` or `report-only`; a failed create leaves the state as it was.
+- `publish-plan` prints one connector call at a time: on the first run of an ISO week the weekly heading, then the page create and one poll per plan step (at most 20). The model makes each call once and runs `publish-plan` again: the captured result is saved as `DIR/<id>.txt` (see Relay capture), and the model saves it by hand only for a call the plan prints again. `publish-parse` reads the results into the page id and the week of the state, and writes `RESULT` with the status `created`, `failed` or `report-only`; a failed create leaves the state as it was.
 - `message` writes the chat message with the page link, or one `degraded:` line for a rejected judgment, a failed structure check or a failed page create.
 - The judgment may carry an optional `coverage_notes` list of at most 10 `{source, text}`: `source` is a label of at most 60 characters, no two notes share a source, and a note holds no cite. The notes show under Blind spots of the page and name their sources in the blind spots line of the message for that run only; they are stored in no state and change no warning, check or blind spot count.
 - A document store source with `page_from_state: previous_page` reads the previous page named by the state; its blocks give the status edits and the ticked checks that `features` hands to the judgment.
@@ -441,7 +499,7 @@ Seed:
 - `recap.py seed` drops the permalinks, maps the statuses, cuts titles to 8 words and exits 3 naming the key path of a unit it cannot map.
 
 Settings:
-- The private repository holds `.claude/settings.json` with `permissions.deny` listing `PushNotification`, `Bash(sleep *)` and `Monitor`. A cloud routine reads it because the private repository is its only source.
+- The private repository holds `.claude/settings.json` with `permissions.deny` listing `PushNotification`, `Bash(sleep *)` and `Monitor`, and the `PostToolUse` hook of the relay capture. A cloud routine reads it because the private repository is its only source.
 - `routines.py lint --private` fails with `settings-missing`, `settings-invalid` or `deny-missing:<entry>` when the file or an entry is absent.
 
 ## Weekly engine
@@ -513,6 +571,7 @@ The `weekly-status` template needs the routine values `digest.slug` (the state f
 `/claudio-routines:routines run <slug> [--since T] [--post]` renders the routine for the `local` place and follows the prompt in the current session.
 
 - The run uses the pinned runtime at `places.local.runtime_dir`; a missing or stale runtime stops it before it renders.
+- The relay capture hook finds the runtime through `CLAUDIO_RUNTIME_DIR` (see Relay capture). Without it no result is captured, `plan` prints each call again and the model saves each result by hand.
 - The run creates its folder at `<runs_dir>/<slug>/<UTC start time>-<random>`, with `runs_dir` from `places.local.runs_dir`, or `/tmp` without it.
 - The run folder keeps the raw results of every source and stays after the run.
 - Before collecting, it names every missing credential variable and every missing connector.
@@ -630,3 +689,4 @@ Record text written by other people (messages, titles) reaches a model that hold
 | A run reports `degraded: judgment rejected` | The model's judgment or analysis failed the checker twice | Read the key path in the message, then fix the rule text that led the model astray and run again |
 | A source is not read with `partial: call cap` | Its relay loop reached 50 calls | Narrow the source's queries, or set its transport to `api` for that place |
 | A source is not read with `plan not done` | The relay loop stopped before `plan` returned `done`: a missing connector, or the run stopped relaying | Fix the connector, then run again |
+| `plan` prints the same call again after the model made it | The hook captured nothing for it: the hook is not in `.claude/settings.json`, `CLAUDIO_RUNTIME_DIR` is wrong for the place, the capture folder is a link or belongs to another user, or the arguments differ from the printed ones | Read `errors.log` in the capture folder, fix the hook settings, or save that result by hand as the template says |

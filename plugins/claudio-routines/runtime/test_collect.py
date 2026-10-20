@@ -11,9 +11,10 @@ import unittest
 from unittest import mock
 
 import collect
+import relay_capture
 import roles
 import state
-from support import publication_values
+from support import RELAY_START_NS, isolate_relay, publication_values
 from providers._http import PAGE_CAP, PartialRead, SourceUnreadable
 from providers import _common
 from providers._errors import CredentialsMissing
@@ -271,6 +272,7 @@ def fake_adapter(name, role):
 
 class CollectTestCase(unittest.TestCase):
     def setUp(self):
+        self.relay_dir, self.relay_clock = isolate_relay(self)
         self.obs = fake_adapter("fakeobs", "observability")
         self.doc = fake_adapter("fakedoc", "document_store")
         self.modules = mock.patch.dict(sys.modules, {"providers.fakeobs": self.obs, "providers.fakedoc": self.doc})
@@ -2219,6 +2221,11 @@ class TribePreviousPageTest(RelayTestCase):
         self.fetch(source="sources-page", place="local")
         self.assertEqual((self.doc.clients, self.doc.calls), ([], []))
 
+    def test_a_planned_run_with_no_previous_page_lists_no_call_and_writes_no_planned_file(self):
+        self.without_previous_page()
+        self.plan()
+        self.assertEqual((self.plan_doc(), os.path.exists(os.path.join(self.path(RESPONSES), "planned.json"))), ({"done": True, "partial": None, "calls": []}, False))
+
     def test_a_skipped_source_keeps_its_stored_cursor(self):
         self.without_previous_page()
         self.state["cursors"]["sources-page"] = {"pages": {page_id(): UTC_EDIT}}
@@ -2479,6 +2486,224 @@ class RelistTest(RelayTestCase):
         self.respond("sources-page-1")
         self.plan()
         self.assertEqual(self.plan_doc(), {"done": True, "partial": "no new call", "calls": []})
+
+
+class RelayCaptureTest(RelayTestCase):
+    TOOL = "mcp__docs-cloud__read-page"
+
+    def at(self, offset):
+        self.relay_clock.now_ns = RELAY_START_NS + offset
+
+    def capture(self, page, text, offset, tool=None, arguments=None):
+        at = RELAY_START_NS + offset
+        document = {"tool_name": tool or self.TOOL, "arguments": {"page": page} if arguments is None else arguments, "text": text, "captured_at_ns": at}
+        os.makedirs(self.relay_dir, mode=0o700, exist_ok=True)
+        relay_capture.write_capture(self.relay_dir, f"{at}-toolu_{page}.json", document)
+
+    def plan_at(self, offset, source="sources-page", place="cloud"):
+        self.at(offset)
+        self.assertEqual(self.plan(source, place)[0], 0)
+
+    def saved(self, call_id):
+        with open(self.response_path(call_id), "rb") as handle:
+            return handle.read()
+
+    def planned_doc(self):
+        with open(os.path.join(self.path(RESPONSES), "planned.json"), encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def kept_captures(self):
+        return sorted(os.listdir(self.relay_dir))
+
+    def test_saves_the_result_of_a_planned_call_captured_after_the_listing(self):
+        self.plan_at(0)
+        self.capture(1, "page one", 1)
+        self.plan_at(2)
+        self.assertEqual(self.saved("sources-page-1"), b"page one")
+
+    def test_asks_the_next_call_once_the_captured_result_is_saved(self):
+        self.plan_at(0)
+        self.capture(1, "page one", 1)
+        self.plan_at(2)
+        self.assertEqual((self.plan_doc()["done"], self.call_ids()), (False, ["sources-page-2"]))
+
+    def test_hands_the_captured_text_to_the_adapter_unchanged(self):
+        text = '{"note": "caf\u00e9 \\ud800 ' + chr(0x1F600) + '"}\r\n  '
+        self.plan_at(0)
+        self.capture(1, text, 1)
+        self.plan_at(2)
+        self.assertEqual((self.saved("sources-page-1"), self.doc.plans[-1]["responses"]), (text.encode("utf-8"), {"sources-page-1": text}))
+
+    def test_deletes_the_capture_it_took(self):
+        self.plan_at(0)
+        self.capture(1, "page one", 1)
+        self.plan_at(2)
+        self.assertEqual(self.kept_captures(), [])
+
+    def test_walks_to_done_through_captures_only(self):
+        self.doc.pages = 4
+        for page in range(1, 5):
+            self.plan_at(10 * page)
+            self.capture(page, f"page {page}", 10 * page + 1)
+        self.plan_at(100)
+        self.assertEqual(
+            (self.plan_doc(), [self.saved(f"sources-page-{page}") for page in range(1, 5)]),
+            ({"done": True, "partial": None, "calls": []}, [f"page {page}".encode() for page in range(1, 5)]),
+        )
+
+    def test_chains_the_pick_ups_of_calls_planned_in_earlier_runs(self):
+        os.makedirs(self.path(RESPONSES))
+        planned = {"planned": {"sources-page-1": RELAY_START_NS, "sources-page-2": RELAY_START_NS}}
+        with open(os.path.join(self.path(RESPONSES), "planned.json"), "wb") as handle:
+            handle.write(state.dump(planned))
+        self.capture(1, "page one", 1)
+        self.capture(2, "page two", 1)
+        self.plan_at(2)
+        self.assertEqual((self.plan_doc(), self.saved("sources-page-2")), ({"done": True, "partial": None, "calls": []}, b"page two"))
+
+    def test_the_walk_through_captures_parses_into_a_collection(self):
+        for page in (1, 2):
+            self.plan_at(10 * page)
+            self.capture(page, "{}", 10 * page + 1)
+        self.plan_at(100)
+        self.parse()
+        self.assertEqual(self.collection()["read"], True)
+
+    def test_records_every_listed_call_across_a_walk_through_captures(self):
+        for page in (1, 2):
+            self.plan_at(10 * page)
+            self.capture(page, "{}", 10 * page + 1)
+        self.plan_at(100)
+        expected = {"calls": {"sources-page-1": digest(1), "sources-page-2": digest(2)}, "done": True, "partial": None}
+        self.assertEqual(self.calls_doc(), expected)
+
+    def test_records_the_time_each_call_was_first_planned(self):
+        self.plan_at(0)
+        self.capture(1, "page one", 1)
+        self.plan_at(5)
+        self.assertEqual(self.planned_doc(), {"planned": {"sources-page-1": RELAY_START_NS, "sources-page-2": RELAY_START_NS + 5}})
+
+    def test_the_planned_file_is_canonical_json(self):
+        self.plan_at(0)
+        with open(os.path.join(self.path(RESPONSES), "planned.json"), "rb") as handle:
+            raw = handle.read()
+        self.assertEqual(raw, state.dump(json.loads(raw)))
+
+    def test_keeps_the_first_planned_time_when_a_call_is_listed_again(self):
+        self.plan_at(0)
+        self.plan_at(5)
+        self.assertEqual(self.planned_doc(), {"planned": {"sources-page-1": RELAY_START_NS}})
+
+    def test_ignores_a_capture_taken_before_the_call_was_planned(self):
+        self.capture(1, "stale", -1)
+        self.plan_at(0)
+        self.plan_at(5)
+        self.assertEqual((self.call_ids(), os.path.exists(self.response_path("sources-page-1"))), (["sources-page-1"], False))
+
+    def test_picks_up_a_capture_taken_at_the_planned_time(self):
+        self.plan_at(0)
+        self.capture(1, "page one", 0)
+        self.plan_at(5)
+        self.assertEqual(self.saved("sources-page-1"), b"page one")
+
+    def test_the_first_listing_of_a_call_takes_nothing(self):
+        self.capture(1, "early", 3)
+        self.plan_at(0)
+        self.assertEqual((self.call_ids(), os.path.exists(self.response_path("sources-page-1"))), (["sources-page-1"], False))
+
+    def test_lists_the_same_call_again_without_a_capture(self):
+        self.plan_at(0)
+        self.plan_at(5)
+        self.assertEqual((self.plan_doc()["done"], self.call_ids()), (False, ["sources-page-1"]))
+
+    def test_a_result_saved_by_hand_still_moves_the_plan_on(self):
+        self.plan_at(0)
+        self.plan_at(5)
+        self.respond("sources-page-1")
+        self.plan_at(6)
+        self.assertEqual(self.call_ids(), ["sources-page-2"])
+
+    def test_a_result_saved_by_hand_wins_over_a_later_capture(self):
+        self.plan_at(0)
+        self.respond("sources-page-1", "by hand")
+        self.capture(1, "captured", 1)
+        self.plan_at(2)
+        self.assertEqual((self.saved("sources-page-1"), self.call_ids()), (b"by hand", ["sources-page-2"]))
+
+    def test_ignores_a_capture_with_other_arguments(self):
+        self.plan_at(0)
+        self.capture(1, "other page", 1, arguments={"page": 2})
+        self.plan_at(2)
+        self.assertEqual((self.call_ids(), os.path.exists(self.response_path("sources-page-1"))), (["sources-page-1"], False))
+
+    def test_ignores_a_capture_with_an_extra_argument(self):
+        self.plan_at(0)
+        self.capture(1, "wider", 1, arguments={"page": 1, "size": 5})
+        self.plan_at(2)
+        self.assertEqual(self.call_ids(), ["sources-page-1"])
+
+    def test_ignores_a_capture_of_another_connector(self):
+        self.plan_at(0)
+        self.capture(1, "elsewhere", 1, tool="mcp__other__read-page")
+        self.plan_at(2)
+        self.assertEqual(self.call_ids(), ["sources-page-1"])
+
+    def test_ignores_a_capture_of_another_tool(self):
+        self.plan_at(0)
+        self.capture(1, "elsewhere", 1, tool="mcp__docs-cloud__list-pages")
+        self.plan_at(2)
+        self.assertEqual(self.call_ids(), ["sources-page-1"])
+
+    def test_keeps_a_capture_it_did_not_match(self):
+        self.plan_at(0)
+        self.capture(1, "other page", 1, arguments={"page": 2})
+        self.plan_at(2)
+        self.assertEqual(len(self.kept_captures()), 1)
+
+    def test_takes_the_newest_of_two_captures_of_a_call(self):
+        self.plan_at(0)
+        self.capture(1, "first try", 1)
+        self.relay_clock.now_ns = RELAY_START_NS + 2
+        relay_capture.write_capture(
+            self.relay_dir, f"{RELAY_START_NS + 2}-toolu_x.json",
+            {"tool_name": self.TOOL, "arguments": {"page": 1}, "text": "second try", "captured_at_ns": RELAY_START_NS + 2},
+        )
+        self.plan_at(3)
+        self.assertEqual((self.saved("sources-page-1"), self.kept_captures()), (b"second try", []))
+
+    def test_takes_the_connector_of_the_place(self):
+        self.plan_at(0, source="metrics", place="local")
+        self.capture(1, "metric one", 1, tool="mcp__obs-local__read-page")
+        self.plan_at(2, source="metrics", place="local")
+        self.assertEqual((self.saved("metrics-1"), self.call_ids()), (b"metric one", ["metrics-2"]))
+
+    def test_leaves_a_capture_of_the_connector_of_another_place(self):
+        self.plan_at(0, source="metrics", place="local")
+        self.capture(1, "metric one", 1, tool="mcp__obs-cloud__read-page")
+        self.plan_at(2, source="metrics", place="local")
+        self.assertEqual(self.call_ids(), ["metrics-1"])
+
+    def test_reads_no_capture_folder_that_does_not_exist(self):
+        shutil.rmtree(self.relay_dir)
+        self.plan_at(0)
+        self.plan_at(5)
+        self.assertEqual((self.call_ids(), os.path.exists(self.relay_dir)), (["sources-page-1"], False))
+
+    def test_reads_the_folder_the_variable_names(self):
+        elsewhere = self.path("elsewhere")
+        with mock.patch.dict(os.environ, {relay_capture.ENV_DIR: elsewhere}):
+            self.plan_at(0)
+            self.relay_dir = elsewhere
+            self.capture(1, "page one", 1)
+            self.plan_at(2)
+        self.assertEqual(self.saved("sources-page-1"), b"page one")
+
+    def test_a_planned_file_that_is_not_valid_exits_2_naming_it(self):
+        self.plan_at(0)
+        with open(os.path.join(self.path(RESPONSES), "planned.json"), "w", encoding="utf-8") as handle:
+            handle.write('{"planned": {"sources-page-1": "soon"}}')
+        code, _, err = self.plan()
+        self.assertEqual((code, "planned" in err), (3, True))
 
 
 class CallCapTest(RelayTestCase):

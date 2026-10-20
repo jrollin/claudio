@@ -1,12 +1,18 @@
 import contextlib
 import io
+import os
+import shutil
+import tempfile
 from datetime import datetime
+from unittest import mock
 
+import relay_capture
 import state
 
 TZ = "Europe/Paris"
 PREVIOUS = "2026-06-01T10:00:00Z"
 NOW = "2026-06-01T11:00:00Z"
+RELAY_START_NS = 1_780_000_000 * 10**9
 
 
 def ts(text):
@@ -144,3 +150,26 @@ def publication_values(provider="docs"):
             "results": {"task": "task.id", "status": "task.status", "page": "task.page.id", "heading": "block.id", "done": ["completed"], "failed": ["failed"]},
         },
     }
+
+
+class RelayClock:
+    def __init__(self):
+        self.now_ns = RELAY_START_NS
+
+    def __call__(self):
+        return self.now_ns
+
+
+def isolate_relay(case):
+    directory = tempfile.mkdtemp()
+    clock = RelayClock()
+    patchers = [
+        mock.patch.object(relay_capture, "DEFAULT_DIR", directory),
+        mock.patch.dict(os.environ, {relay_capture.ENV_DIR: directory}),
+        mock.patch.object(relay_capture, "time_ns", clock),
+    ]
+    case.addCleanup(shutil.rmtree, directory, True)
+    for patcher in patchers:
+        patcher.start()
+        case.addCleanup(patcher.stop)
+    return directory, clock

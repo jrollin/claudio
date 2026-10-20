@@ -246,6 +246,13 @@ def call_values(target, summary, slug, content=""):
     return {"parent": spec["parent"], "title": title, "content": content, **run}
 
 
+def publish_step(target, slug, directory, week_due, values):
+    progress = walk(target.spec, load_responses(directory), week_due)
+    if progress.pending is None:
+        return {"done": True, "partial": progress.failure, "calls": []}
+    return {"done": False, "partial": None, "calls": [planned_call(target.spec, target.connector, slug, progress, values)]}
+
+
 def run_publish_plan(args):
     target = publish_target(args)
     summary = tribe_state.load_input(args.summary, "summary", SUMMARY_SPEC)
@@ -256,11 +263,8 @@ def run_publish_plan(args):
     if not summary["report_only"]:
         values["content"] = checked_page(read_page(args.page))
         os.makedirs(args.responses, exist_ok=True)
-        progress = walk(target.spec, load_responses(args.responses), document["run"]["weekly_heading_week"] != values["week"])
-        if progress.pending is not None:
-            step = {"done": False, "partial": None, "calls": [planned_call(target.spec, target.connector, args.routine, progress, values)]}
-        else:
-            step["partial"] = progress.failure
+        week_due = document["run"]["weekly_heading_week"] != values["week"]
+        step = collect.relay_loop(args.responses, target.connector, lambda: publish_step(target, args.routine, args.responses, week_due, values))
     state.write_all([(args.out, state.dump(step))])
     return 0
 

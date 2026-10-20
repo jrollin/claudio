@@ -13,6 +13,7 @@ import config_tree
 import providers
 import recap_state
 import recap_window
+import relay_capture
 import roles
 import state
 import tribe_state
@@ -31,6 +32,7 @@ NO_PREVIOUS_PAGE = "no previous digest page in the state"
 PLAN_NOT_DONE = "plan not done"
 NO_RESPONSE = "no response saved (connector missing or relay not run)"
 CALLS_FILE = "calls.json"
+PLANNED_FILE = "planned.json"
 DAY_SECONDS = 86400
 RESPONSE_SUFFIX = ".txt"
 RECORD_SUFFIX = ".json"
@@ -61,6 +63,7 @@ STEP_SPEC = {
     "calls": [{"id": state.TEXT, "tool": state.TEXT, "arguments": {}, "digest": state.Nullable(state.TEXT)}],
 }
 CALLS_SPEC = {"calls": {"*": state.Nullable(state.TEXT)}, "done": state.BOOLEAN, "partial": state.Nullable(state.TEXT)}
+PLANNED_SPEC = {"planned": {"*": state.INTEGER}}
 RECORD_SPEC = {
     "method": state.TEXT,
     "path": state.TEXT,
@@ -550,6 +553,10 @@ def check_calls(document):
     state.check(document, CALLS_SPEC, "")
 
 
+def check_planned(document):
+    state.check(document, PLANNED_SPEC, "")
+
+
 def check_step(step, name):
     state.check(step, STEP_SPEC, "plan")
     if step["done"] and step["calls"]:
@@ -600,6 +607,36 @@ def plan_step(adapter, source, window, draft, directory, connector):
     return next_step(adapter_step(adapter, source, window, draft, responses, connector), responses, source.get("call_cap", CALL_CAP))
 
 
+def load_planned(directory):
+    path = os.path.join(directory, PLANNED_FILE)
+    return state.load(path, "planned", check_planned)["planned"] if os.path.exists(path) else {}
+
+
+def pick_up(directory, connector, calls, planned):
+    picked, captures = 0, relay_capture.capture_dir()
+    for call in calls:
+        if call["id"] not in planned:
+            continue
+        tool_name = f"{relay_capture.TOOL_PREFIX}{connector}__{call['tool']}"
+        text = relay_capture.take(captures, tool_name, call["arguments"], planned[call["id"]])
+        if text is not None:
+            state.write_all([(os.path.join(directory, call["id"] + RESPONSE_SUFFIX), text.encode("utf-8"))])
+            picked += 1
+    return picked
+
+
+def relay_loop(directory, connector, compute):
+    planned = load_planned(directory)
+    step = compute()
+    while pick_up(directory, connector, step["calls"], planned):
+        step = compute()
+    listed_ns = relay_capture.time_ns()
+    fresh = {call["id"]: listed_ns for call in step["calls"] if call["id"] not in planned}
+    if fresh:
+        state.write_all([(os.path.join(directory, PLANNED_FILE), state.dump({"planned": {**planned, **fresh}}))])
+    return step
+
+
 def run_plan(args):
     provider, source, window, draft, _ = prepare(args, "mcp")
     connector = provider["mcp"]["connectors"][args.place]
@@ -609,7 +646,11 @@ def run_plan(args):
     except OSError as error:
         raise state.InputError(f"responses: cannot create {args.responses}: {error.strerror}") from error
     known = state.load(calls_path, "calls", check_calls) if os.path.exists(calls_path) else {"calls": {}}
-    step = ended() if draft.skipped is not None else plan_step(providers.load(provider["adapter"]), source, window, draft, args.responses, connector)
+    if draft.skipped is not None:
+        step = ended()
+    else:
+        adapter = providers.load(provider["adapter"])
+        step = relay_loop(args.responses, connector, lambda: plan_step(adapter, source, window, draft, args.responses, connector))
     step = {**step, "partial": clean_reason(step["partial"])}
     recorded = {
         "calls": {**known["calls"], **{call["id"]: call["digest"] for call in step["calls"]}},

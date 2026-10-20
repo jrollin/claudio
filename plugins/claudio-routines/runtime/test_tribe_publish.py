@@ -2,8 +2,10 @@ import json
 import os
 import unittest
 
+import relay_capture
 import tribe_publish
-from state import InputError
+from state import InputError, dump
+from support import RELAY_START_NS
 from tribe_support import (
     CONNECTOR, NEW_PAGE, NOW, PARENT, PublishCase, RUN_WEEK, TZ, fixture,
 )
@@ -295,6 +297,132 @@ class PlanTests(PublishCase):
         plan = self.planned()
         self.assertEqual((plan["done"], plan["calls"]), (True, []))
         self.assertIn("cancelled", plan["partial"])
+
+
+class RelayCaptureTests(PublishCase):
+    def plan_at(self, offset):
+        self.relay_clock.now_ns = RELAY_START_NS + offset
+        return self.planned()
+
+    def capture(self, call, text, offset, tool=None, arguments=None):
+        at = RELAY_START_NS + offset
+        document = {
+            "tool_name": tool or f"mcp__{call['connector']}__{call['tool']}",
+            "arguments": call["arguments"] if arguments is None else arguments,
+            "text": text,
+            "captured_at_ns": at,
+        }
+        relay_capture.write_capture(self.relay_dir, f"{at}-toolu_{call['id']}.json", document)
+
+    def saved(self, number):
+        with open(os.path.join(self.responses, f"publish-{number}.txt"), "rb") as handle:
+            return handle.read()
+
+    def planned_doc(self):
+        with open(os.path.join(self.responses, "planned.json"), encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def test_a_captured_create_is_saved_and_the_poll_is_asked(self):
+        (create,) = self.plan_at(0)["calls"]
+        self.capture(create, CREATED, 1)
+        plan = self.plan_at(2)
+        self.assertEqual((self.saved(1), plan["calls"][0]["id"], plan["calls"][0]["arguments"]), (CREATED.encode(), "publish-2", {"task": TASK}))
+
+    def test_walks_to_done_through_captures_only(self):
+        for offset, text in ((0, CREATED), (10, RUNNING), (20, FINISHED)):
+            (call,) = self.plan_at(offset)["calls"]
+            self.capture(call, text, offset + 1)
+        self.assertEqual(self.plan_at(30), {"done": True, "partial": None, "calls": []})
+
+    def test_chains_the_pick_ups_of_calls_planned_in_earlier_runs(self):
+        (create,) = self.plan_at(0)["calls"]
+        poll = {"id": "publish-2", "connector": CONNECTOR, "tool": "task_poll", "arguments": {"task": TASK}}
+        with open(os.path.join(self.responses, "planned.json"), "wb") as handle:
+            handle.write(dump({"planned": {"publish-1": RELAY_START_NS, "publish-2": RELAY_START_NS}}))
+        self.capture(create, CREATED, 1)
+        self.capture(poll, FINISHED, 1)
+        self.assertEqual(self.plan_at(2), {"done": True, "partial": None, "calls": []})
+
+    def test_the_results_walked_through_captures_give_a_created_page(self):
+        for offset, text in ((0, CREATED), (10, FINISHED)):
+            (call,) = self.plan_at(offset)["calls"]
+            self.capture(call, text, offset + 1)
+        self.plan_at(20)
+        _, result = self.parsed()
+        self.assertEqual((result["status"], result["page"] is not None), ("created", True))
+
+    def test_a_captured_heading_is_saved_and_the_create_is_asked(self):
+        self.due_heading()
+        (heading,) = self.plan_at(0)["calls"]
+        self.capture(heading, APPENDED, 1)
+        plan = self.plan_at(2)
+        self.assertEqual((self.saved(1), plan["calls"][0]["tool"]), (APPENDED.encode(), "page_create"))
+
+    def test_the_captured_text_is_saved_unchanged(self):
+        text = json.dumps({"task": {"id": TASK, "status": "pending", "note": "caf\u00e9 " + chr(0x1F600)}}, ensure_ascii=False) + "\r\n"
+        (create,) = self.plan_at(0)["calls"]
+        self.capture(create, text, 1)
+        self.plan_at(2)
+        self.assertEqual(self.saved(1), text.encode("utf-8"))
+
+    def test_records_the_time_each_call_was_first_planned(self):
+        (create,) = self.plan_at(0)["calls"]
+        self.capture(create, CREATED, 1)
+        self.plan_at(5)
+        self.assertEqual(self.planned_doc(), {"planned": {"publish-1": RELAY_START_NS, "publish-2": RELAY_START_NS + 5}})
+
+    def test_ignores_a_capture_taken_before_the_call_was_planned(self):
+        (create,) = self.plan_at(0)["calls"]
+        self.capture(create, CREATED, -1)
+        plan = self.plan_at(5)
+        self.assertEqual((plan["calls"][0]["id"], os.path.exists(os.path.join(self.responses, "publish-1.txt"))), ("publish-1", False))
+
+    def test_lists_the_same_call_again_without_a_capture(self):
+        first = self.plan_at(0)
+        self.assertEqual(self.plan_at(5), first)
+
+    def test_keeps_the_first_planned_time_when_a_call_is_listed_again(self):
+        self.plan_at(0)
+        self.plan_at(5)
+        self.assertEqual(self.planned_doc(), {"planned": {"publish-1": RELAY_START_NS}})
+
+    def test_a_result_saved_by_hand_still_moves_the_plan_on(self):
+        self.plan_at(0)
+        self.plan_at(5)
+        self.save(1, CREATED)
+        self.assertEqual(self.plan_at(6)["calls"][0]["id"], "publish-2")
+
+    def test_ignores_a_capture_with_other_arguments(self):
+        (create,) = self.plan_at(0)["calls"]
+        self.capture(create, CREATED, 1, arguments={**create["arguments"], "title": "another"})
+        self.assertEqual(self.plan_at(2)["calls"][0]["id"], "publish-1")
+
+    def test_ignores_a_capture_of_another_connector(self):
+        (create,) = self.plan_at(0)["calls"]
+        self.capture(create, CREATED, 1, tool="mcp__other__page_create")
+        self.assertEqual(self.plan_at(2)["calls"][0]["id"], "publish-1")
+
+    def test_ignores_a_capture_of_another_tool(self):
+        (create,) = self.plan_at(0)["calls"]
+        self.capture(create, CREATED, 1, tool=f"mcp__{CONNECTOR}__task_poll")
+        self.assertEqual(self.plan_at(2)["calls"][0]["id"], "publish-1")
+
+    def test_a_poll_is_matched_by_its_task(self):
+        self.save(1, CREATED)
+        (poll,) = self.plan_at(0)["calls"]
+        self.capture(poll, RUNNING, 1, arguments={"task": "task-8"})
+        self.assertEqual(self.plan_at(2)["calls"][0]["id"], "publish-2")
+
+    def test_a_report_only_run_writes_no_planned_file(self):
+        self.use_summary(report_only=True)
+        self.plan_at(0)
+        self.assertEqual(os.listdir(self.responses), [])
+
+    def test_the_planned_file_is_canonical_json(self):
+        self.plan_at(0)
+        with open(os.path.join(self.responses, "planned.json"), "rb") as handle:
+            raw = handle.read()
+        self.assertEqual(raw, dump(json.loads(raw)))
 
 
 class ParseTests(PublishCase):
