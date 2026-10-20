@@ -202,7 +202,8 @@ Paths are under `plugins/claudio-routines/` unless they start with `docs/` or `s
 - **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime -p 'test_collect.py'`
 - **Blocked by**: T-13
 - **Rules**: BR-13
-- **Status**: Not Started
+- **Status**: Complete
+- **Result**: fetch, parse and replay add `reads` from the session counts when `max_age` reuses some kind; no key otherwise; reused reads spend no call: 6 new tests, collect (497) and runtime suites passing
 
 ### T-15: Carry the reuse counts into run records
 - **Scope**:

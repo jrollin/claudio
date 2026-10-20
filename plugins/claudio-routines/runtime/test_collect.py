@@ -2217,22 +2217,57 @@ class StoreReplayTest(StoreRelayTest):
             "--window", self.write("window.json", self.window), "--state", self.write("state.json", self.state), "--run", self.path(run), "--out", out,
         )
 
-    def reuse_another_runs_read(self):
+    def relay_run(self, run, out):
+        plan = self.path(f"{run}-plan.json")
+        self.reuse_run("plan", plan, run)
+        with open(plan, encoding="utf-8") as handle:
+            planned = json.load(handle)
+        if planned["calls"]:
+            answer_planned(planned, CHAT_LISTING)
+            self.reuse_run("plan", plan, run)
+        self.reuse_run("parse", out, run)
+
+    def reuse_another_runs_read(self, max_age=60, first_end=WINDOW_END):
         self.config["places"]["cloud"]["store_dir"] = self.path("shared")
-        self.config["routines"][ROUTINE]["sources"]["team-chat"]["max_age"] = 60
+        self.config["routines"][ROUTINE]["sources"]["team-chat"]["max_age"] = max_age
         fetched = datetime.fromtimestamp(WINDOW_END - 60, timezone.utc).strftime(store.UTC_FORMAT)
+        window = self.window
         with mock.patch.object(store, "utc_now", return_value=fetched):
-            self.reuse_run("plan", self.path("first-plan.json"), "first")
-            with open(self.path("first-plan.json"), encoding="utf-8") as handle:
-                answer_planned(json.load(handle), CHAT_LISTING)
-            self.reuse_run("plan", self.path("first-plan.json"), "first")
-            self.reuse_run("parse", self.path("first.json"), "first")
+            self.window = {**window, "to_ts": first_end}
+            self.relay_run("first", self.path("first.json"))
+            self.window = window
             self.reuse_run("plan", self.path("plan.json"), RUN)
-            self.reuse_run("parse", self.path("collection.json"), RUN)
+            self.relay_run(RUN, self.path("collection.json"))
 
     def test_a_later_run_reuses_the_read_of_an_earlier_run(self):
         self.reuse_another_runs_read()
         self.assertEqual((self.plan_doc()["calls"], self.manifest()["sources"]["team-chat"]["fetched"], self.manifest()["sources"]["team-chat"]["reused"]), ([], 0, 1))
+
+    def test_counts_a_full_reuse_in_the_collection(self):
+        self.reuse_another_runs_read()
+        self.assertEqual(self.collection()["reads"], {"fetched": 0, "reused": 1})
+
+    def test_counts_a_partial_reuse_in_the_collection(self):
+        self.reuse_another_runs_read(first_end=WINDOW_END - 1800)
+        self.assertEqual(self.collection()["reads"], {"fetched": 1, "reused": 1})
+
+    def test_counts_reads_without_reuse_when_max_age_is_set(self):
+        self.config["routines"][ROUTINE]["sources"]["team-chat"]["max_age"] = {"history": 60}
+        self.relay_run(RUN, self.path("collection.json"))
+        self.assertEqual(self.collection()["reads"], {"fetched": 1, "reused": 0})
+
+    def test_writes_no_read_counts_without_max_age(self):
+        self.relay_run(RUN, self.path("collection.json"))
+        self.assertNotIn("reads", self.collection())
+
+    def test_writes_no_read_counts_with_a_max_age_of_zero(self):
+        self.reuse_another_runs_read(max_age={"default": 0, "history": 0})
+        self.assertNotIn("reads", self.collection())
+
+    def test_a_reused_read_spends_no_call_of_the_cap(self):
+        self.config["routines"][ROUTINE]["sources"]["team-chat"]["call_cap"] = 1
+        self.reuse_another_runs_read(first_end=WINDOW_END - 1800)
+        self.assertEqual((self.collection()["read"], self.collection()["reads"]), (True, {"fetched": 1, "reused": 1}))
 
     def test_replays_a_source_that_reused_a_read_byte_for_byte(self):
         self.reuse_another_runs_read()

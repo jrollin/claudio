@@ -37,6 +37,7 @@ PLANNED_FILE = "planned.json"
 RAW_DIR = "raw"
 RELAY_DIR = "relay"
 STORE_DIR = "store"
+REUSE_KINDS = tuple(kind for kind in roles.MAX_AGE_KINDS if kind != "default")
 STORE_CALL_ID = re.compile(r"kind=[a-z][a-z0-9_]*(?:/[a-z][a-z0-9_]*=[^/]+)+/page-[0-9]{3}")
 MISMATCH_PATHS = 5
 DAY_SECONDS = 86400
@@ -523,6 +524,16 @@ def replay_session(args, provider, source, transport, reads):
     return store.ReplaySession(root, source["provider"], run, args.source, provider["adapter"], transport, reads, runtime=store.runtime_commit())
 
 
+def reuses_reads(max_age):
+    if isinstance(max_age, dict):
+        return any(max_age.get(kind, max_age.get("default", 0)) > 0 for kind in REUSE_KINDS)
+    return state.is_integer(max_age) and max_age > 0
+
+
+def counted(collection, source, session):
+    return {**collection, "reads": session.counts()} if reuses_reads(source.get("max_age")) else collection
+
+
 def write_manifest(args, session):
     if not getattr(args, "replaying", False):
         store.write_manifest(args.run, args.source, session)
@@ -540,7 +551,8 @@ def run_fetch(args):
     provider, source, window, draft, injected, store_dir = prepare(args, "api")
     if is_store_backed(providers.load(provider["adapter"])):
         session = read_session(args, provider, source, "api", store_dir)
-        write_collection(args, fetch_collection(provider, source, window, draft, lambda adapter: with_http(session, api_client_for(adapter, provider, injected))))
+        collection = fetch_collection(provider, source, window, draft, lambda adapter: with_http(session, api_client_for(adapter, provider, injected)))
+        write_collection(args, counted(collection, source, session))
         write_manifest(args, session)
         return 0
     directory = raw_directory(args.run, draft.base["role"], args.source)
@@ -814,7 +826,7 @@ def run_parse(args):
     provider, source, window, draft, _, store_dir = prepare(args, "mcp")
     if is_store_backed(providers.load(provider["adapter"])):
         session = read_session(args, provider, source, "mcp", store_dir)
-        write_collection(args, store_parse_collection(args, provider, source, window, draft, session))
+        write_collection(args, counted(store_parse_collection(args, provider, source, window, draft, session), source, session))
         write_manifest(args, session)
         return 0
     directory = getattr(args, "responses", None) or raw_directory(args.run, draft.base["role"], args.source)
@@ -865,7 +877,7 @@ def replay_store_source(args, transport, reads):
         collection = fetch_collection(provider, source, window, draft, lambda adapter: with_http(session, None))
     else:
         collection = store_parse_collection(args, provider, source, window, draft, session)
-    write_collection(args, collection)
+    write_collection(args, counted(collection, source, session))
 
 
 def run_replay(args):
