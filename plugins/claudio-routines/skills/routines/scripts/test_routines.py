@@ -4384,6 +4384,17 @@ class WeeklyTemplateTest(RenderedTemplate, unittest.TestCase):
         )
         self.assertEqual([limit for limit in limits if limit not in step], [])
 
+    def test_an_open_item_owner_follows_the_waiting_on_of_the_item(self):
+        step = self.step("Judge")
+        self.assertEqual(
+            (
+                "An open item's `owner` is the item's `waiting_on` when it names another person." in step,
+                "When `waiting_on` is `owner`, the owner of the status waits on nobody and `owner` stays null." in step,
+                "When `waiting_on` is `team`, the item is a team ask and `owner` stays null." in step,
+            ),
+            (True, True, True),
+        )
+
     def test_the_judgment_shape_names_the_sections_the_checker_reads(self):
         weekly = runtime_module("weekly")
         shape = next(line for line in self.step("Judge").splitlines() if line.startswith('{"schema"'))

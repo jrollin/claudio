@@ -1172,7 +1172,7 @@ Owner-gated: needs the release tag, the tokens per place and an approved sync.
 - **Refs**: US-57, TD-71
 - **Files**: `plugins/claudio-routines/runtime/weekly_features.py` (modify), `plugins/claudio-routines/runtime/test_weekly.py` (modify), `plugins/claudio-routines/skills/routines/templates/weekly-status.md` (modify), `plugins/claudio-routines/skills/routines/scripts/test_routines.py` (modify), `plugins/claudio-routines/README.md` (modify)
 - **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
-- **Status**: Not Started
+- **Status**: Complete
 
 ### T-108: Pages created by the owner
 - The document store adapter's `created_by` follows TD-72; `roles.py` validates `created_by` and `exclude_paths` and refuses `api` for it.

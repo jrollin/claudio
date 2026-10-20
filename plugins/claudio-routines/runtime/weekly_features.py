@@ -20,13 +20,15 @@ PULL_REQUEST_EXCERPTS = 10
 MESSAGE_EXCERPTS = 15
 PAGE_EXCERPT_CAP = 1000
 CHAT_TITLE_CAP = 80
+OWNER = "owner"
+TEAM = "team"
 RECORD_SPEC = {"run_at": recap_state.UTC_TIME, "new": [state.TEXT], "resolved": [state.TEXT], "handled": [state.TEXT]}
 COUNTED = ("new", "resolved", "handled")
 KINDS = ("issue", "pull_request", "thread", "dm", "page")
 ROLE_OF_PREFIX = {"issue": "issue_tracker", "pr": "code_host", "chat": "chat", "page": "document_store"}
 SCHEMA = state.leaf(lambda value: state.is_integer(value) and value == SCHEMA_VERSION, f"schema {SCHEMA_VERSION}")
 ITEM_KEY = state.leaf(lambda value: isinstance(value, str) and value.partition(":")[0] in ROLE_OF_PREFIX and ":" in value, "an item key like issue:<key>, pr:<repo>#<number>, chat:<unit key> or page:<id>")
-ITEM_SPEC = {"source": state.TEXT, "role": state.TEXT, "kind": recap_state.one_of(KINDS), "title": state.TEXT, "link": state.TEXT}
+ITEM_SPEC = {"source": state.TEXT, "role": state.TEXT, "kind": recap_state.one_of(KINDS), "title": state.TEXT, "link": state.TEXT, "waiting_on": state.Nullable(state.TEXT)}
 SOURCE_SPEC = {"source": state.TEXT, "role": state.TEXT, "read": state.BOOLEAN, "reason": state.Nullable(state.TEXT)}
 CONTEXT_SPEC = {
     "schema": SCHEMA,
@@ -63,7 +65,7 @@ def in_window(window, moment):
     return window["from_ts"] <= moment <= window["to_ts"]
 
 
-def make_item(source, role, kind, title, status, link, when, people=(), excerpts=(), channel_name=None):
+def make_item(source, role, kind, title, status, link, when, people=(), excerpts=(), channel_name=None, waiting_on=None):
     return {
         "source": source,
         "role": role,
@@ -75,6 +77,7 @@ def make_item(source, role, kind, title, status, link, when, people=(), excerpts
         "people": list(people),
         "excerpts": list(excerpts),
         "channel_name": channel_name,
+        "waiting_on": waiting_on,
     }
 
 
@@ -134,6 +137,14 @@ def recap_link(host, channel, root):
     return chat_link(host, channel, root, None)
 
 
+def waiting_on(unit):
+    if unit["status"] in recap_state.HELD_STATUSES:
+        return OWNER
+    if unit["status"] == "waiting_on_others":
+        return None if unit["person"] is None else unit["person"]["name"]
+    return TEAM if unit["status"] == "team_ask" else None
+
+
 def recap_unit_items(stored, window, routine, excluded, items):
     for key, unit in sorted(stored["units"].items()):
         last = stamp_seconds(unit["last_ts"], f"recap state: units.{key}.last_ts")
@@ -144,7 +155,7 @@ def recap_unit_items(stored, window, routine, excluded, items):
         people = [] if unit["person"] is None else [unit["person"]["name"]]
         link = recap_link(routine["workspace"], unit["channel"], thread_root(key))
         when = last if in_window(window, last) else first
-        items[f"chat:{key}"] = make_item(RECAP_SOURCE, "chat", kind, unit["title"], unit["status"], link, when, people, channel_name=unit["channel_name"])
+        items[f"chat:{key}"] = make_item(RECAP_SOURCE, "chat", kind, unit["title"], unit["status"], link, when, people, channel_name=unit["channel_name"], waiting_on=waiting_on(unit))
 
 
 def recap_counts(records, window, excluded):
