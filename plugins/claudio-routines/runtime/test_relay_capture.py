@@ -64,6 +64,10 @@ class RelayCase(unittest.TestCase):
     def taken(self, arguments=ARGUMENTS, tool_name=TOOL, not_before=NS, now=NS):
         return relay_capture.take(self.dir, tool_name, arguments, not_before, now_ns=now)
 
+    def mismatched(self, arguments=ARGUMENTS, tool_name=TOOL, not_before=NS, now=NS):
+        found = relay_capture.mismatch(self.dir, tool_name, arguments, not_before, now_ns=now)
+        return None if found is None else [relay_capture.difference_text(item) for item in found]
+
     def put(self, text, arguments=ARGUMENTS, tool_name=TOOL, at=NS, use_id="toolu_01"):
         os.makedirs(self.dir, mode=0o700, exist_ok=True)
         document = {"tool_name": tool_name, "arguments": arguments, "text": text, "captured_at_ns": at}
@@ -629,6 +633,235 @@ class TakeSkipTest(RelayCase):
         self.plant(f"{NS}-bad.json", b"{not json")
         self.taken()
         self.assertEqual(self.capture_files(), [f"{NS}-bad.json"])
+
+
+class MismatchDifferenceTest(RelayCase):
+    def test_reports_the_first_differing_character_and_both_lengths_of_a_changed_string(self):
+        self.put("body", arguments={"content": "abXdefg"})
+        self.assertEqual(self.mismatched({"content": "abcdef"}), ["content changed at char 2 (planned 6, called 7)"])
+
+    def test_reports_the_difference_as_a_path_a_kind_and_a_detail(self):
+        self.put("body", arguments={"content": "abXdef"})
+        found = relay_capture.mismatch(self.dir, TOOL, {"content": "abcdef"}, NS, now_ns=NS)
+        self.assertEqual(found, [relay_capture.Difference("content", "changed", "at char 2 (planned 6, called 6)")])
+
+    def test_reports_the_shorter_length_when_the_called_string_is_a_prefix(self):
+        self.put("body", arguments={"content": "abc"})
+        self.assertEqual(self.mismatched({"content": "abcde"}), ["content changed at char 3 (planned 5, called 3)"])
+
+    def test_reports_the_shorter_length_when_the_planned_string_is_a_prefix(self):
+        self.put("body", arguments={"content": "abcde"})
+        self.assertEqual(self.mismatched({"content": "abc"}), ["content changed at char 3 (planned 3, called 5)"])
+
+    def test_counts_characters_not_bytes(self):
+        self.put("body", arguments={"content": EMOJI + "b"})
+        self.assertEqual(self.mismatched({"content": EMOJI + "a"}), ["content changed at char 1 (planned 2, called 2)"])
+
+    def test_reports_a_key_the_call_lacks_as_missing(self):
+        self.put("body", arguments={"page": 1})
+        self.assertEqual(self.mismatched({"page": 1, "size": 10}), ["size missing"])
+
+    def test_reports_a_key_the_plan_lacks_as_extra(self):
+        self.put("body", arguments={"page": 1, "size": 10})
+        self.assertEqual(self.mismatched({"page": 1}), ["size extra"])
+
+    def test_reports_a_missing_list_item_by_its_index(self):
+        self.put("body", arguments={"ids": [1]})
+        self.assertEqual(self.mismatched({"ids": [1, 2, 3]}), ["ids[1] missing", "ids[2] missing"])
+
+    def test_reports_an_extra_list_item_by_its_index(self):
+        self.put("body", arguments={"ids": [1, 2, 3]})
+        self.assertEqual(self.mismatched({"ids": [1]}), ["ids[1] extra", "ids[2] extra"])
+
+    def test_reports_a_changed_type_by_its_type_names(self):
+        self.put("body", arguments={"page": "1"})
+        self.assertEqual(self.mismatched({"page": 1}), ["page changed (planned int, called str)"])
+
+    def test_reports_a_boolean_where_a_number_is_planned_by_its_type_names(self):
+        self.put("body", arguments={"page": True})
+        self.assertEqual(self.mismatched({"page": 1}), ["page changed (planned int, called bool)"])
+
+    def test_reports_a_null_by_its_type_name(self):
+        self.put("body", arguments={"page": None})
+        self.assertEqual(self.mismatched({"page": 1}), ["page changed (planned int, called NoneType)"])
+
+    def test_reports_a_changed_container_by_its_type_names(self):
+        self.put("body", arguments={"filters": [1]})
+        self.assertEqual(self.mismatched({"filters": {"id": 1}}), ["filters changed (planned dict, called list)"])
+
+    def test_reports_a_changed_value_of_the_same_type_without_detail(self):
+        self.put("body", arguments={"page": 2})
+        self.assertEqual(self.mismatched({"page": 1}), ["page changed"])
+
+    def test_joins_object_keys_with_dots_and_list_indexes_in_brackets(self):
+        called = {"pages": [{"title": "t", "content": "abXd"}]}
+        self.put("body", arguments=called)
+        planned = {"pages": [{"title": "t", "content": "abcd"}]}
+        self.assertEqual(self.mismatched(planned), ["pages[0].content changed at char 2 (planned 4, called 4)"])
+
+    def test_reports_the_nested_lists_of_a_list(self):
+        self.put("body", arguments={"grid": [[1, 2], [3, 5]]})
+        self.assertEqual(self.mismatched({"grid": [[1, 2], [3, 4]]}), ["grid[1][1] changed"])
+
+    def test_lists_the_differences_in_key_order(self):
+        self.put("body", arguments={"b": 2, "a": 2, "c": 2})
+        self.assertEqual(self.mismatched({"c": 1, "b": 1, "a": 1}), ["a changed", "b changed", "c changed"])
+
+    def test_reports_every_kind_of_difference_of_one_capture(self):
+        self.put("body", arguments={"b": "x", "c": 1})
+        self.assertEqual(self.mismatched({"a": 1, "b": "y"}), ["a missing", "b changed at char 0 (planned 1, called 1)", "c extra"])
+
+
+class MismatchSelectionTest(RelayCase):
+    def test_returns_none_for_an_exact_match(self):
+        self.put("body")
+        self.assertIsNone(self.mismatched())
+
+    def test_returns_none_for_an_exact_match_whatever_the_key_order(self):
+        self.put("body", arguments={"b": 2, "a": 1})
+        self.assertIsNone(self.mismatched({"a": 1, "b": 2}))
+
+    def test_returns_none_without_a_capture(self):
+        os.makedirs(self.dir, mode=0o700)
+        self.assertIsNone(self.mismatched())
+
+    def test_ignores_another_tool_name(self):
+        self.put("body", arguments={"page": 2}, tool_name="mcp__docs__list-pages")
+        self.assertIsNone(self.mismatched())
+
+    def test_ignores_another_connector(self):
+        self.put("body", arguments={"page": 2}, tool_name="mcp__other__read-page")
+        self.assertIsNone(self.mismatched())
+
+    def test_ignores_a_capture_older_than_the_planned_time(self):
+        self.put("body", arguments={"page": 2}, at=NS - 1)
+        self.assertIsNone(self.mismatched(not_before=NS))
+
+    def test_reports_a_capture_made_at_the_planned_time(self):
+        self.put("body", arguments={"page": 2}, at=NS)
+        self.assertEqual(self.mismatched(not_before=NS), ["page changed"])
+
+    def test_ignores_a_capture_older_than_a_day(self):
+        self.put("body", arguments={"page": 2}, at=NS - 25 * HOUR_NS)
+        self.assertIsNone(self.mismatched(not_before=0))
+
+    def test_the_closest_of_two_captures_wins(self):
+        self.put("far", arguments={"a": 2, "b": 2}, at=NS + 1, use_id="a")
+        self.put("near", arguments={"a": 2, "b": 1}, at=NS, use_id="b")
+        self.assertEqual(self.mismatched({"a": 1, "b": 1}, now=NS + 1), ["a changed"])
+
+    def test_the_closest_wins_even_when_it_is_the_older_one(self):
+        self.put("near", arguments={"a": 2, "b": 1}, at=NS, use_id="a")
+        self.put("far", arguments={"a": 2, "b": 2}, at=NS + 1, use_id="b")
+        self.assertEqual(self.mismatched({"a": 1, "b": 1}, now=NS + 1), ["a changed"])
+
+    def test_a_tie_goes_to_the_newest(self):
+        self.put("older", arguments={"a": 2, "b": 1}, at=NS, use_id="a")
+        self.put("newer", arguments={"a": 1, "b": 2}, at=NS + 1, use_id="b")
+        self.assertEqual(self.mismatched({"a": 1, "b": 1}, now=NS + 1), ["b changed"])
+
+    def test_a_tie_goes_to_the_newest_whatever_the_order_of_the_identifiers(self):
+        self.put("newer", arguments={"a": 1, "b": 2}, at=NS + 1, use_id="a")
+        self.put("older", arguments={"a": 2, "b": 1}, at=NS, use_id="z")
+        self.assertEqual(self.mismatched({"a": 1, "b": 1}, now=NS + 1), ["b changed"])
+
+    def test_counts_one_difference_per_path_not_per_character(self):
+        self.put("whole string", arguments={"a": "yyyyyyyy", "b": 1, "c": 1}, at=NS, use_id="a")
+        self.put("two paths", arguments={"a": "xxxxxxxx", "b": 2, "c": 2}, at=NS + 1, use_id="b")
+        self.assertEqual(self.mismatched({"a": "xxxxxxxx", "b": 1, "c": 1}, now=NS + 1), ["a changed at char 0 (planned 8, called 8)"])
+
+    def test_an_exact_capture_does_not_hide_a_near_one(self):
+        self.put("exact", at=NS, use_id="a")
+        self.put("near", arguments={"page": 2}, at=NS + 1, use_id="b")
+        self.assertEqual(self.mismatched(now=NS + 1), ["page changed"])
+
+    def test_skips_a_malformed_capture(self):
+        self.plant(f"{NS}-bad.json", b"{not json")
+        self.put("body", arguments={"page": 2}, use_id="good")
+        self.assertEqual(self.mismatched(), ["page changed"])
+
+    def test_returns_none_without_a_folder_and_creates_none(self):
+        self.assertEqual((self.mismatched(), self.listing()), (None, None))
+
+    def test_returns_none_for_a_folder_that_is_a_link(self):
+        target = os.path.join(self.tmp, "target")
+        os.mkdir(target)
+        os.symlink(target, self.dir)
+        relay_capture.write_capture(target, f"{NS}-toolu_01.json", {"tool_name": TOOL, "arguments": {"page": 2}, "text": "body", "captured_at_ns": NS})
+        self.assertIsNone(self.mismatched())
+
+    def test_returns_none_when_another_user_owns_the_folder(self):
+        self.put("body", arguments={"page": 2})
+        with mock.patch.object(relay_capture.os, "getuid", return_value=os.getuid() + 1):
+            self.assertIsNone(self.mismatched())
+
+    def test_returns_none_for_a_folder_it_cannot_list(self):
+        self.put("body", arguments={"page": 2})
+        with mock.patch.object(relay_capture.os, "listdir", side_effect=PermissionError):
+            self.assertIsNone(self.mismatched())
+
+
+class MismatchReadOnlyTest(RelayCase):
+    def test_deletes_no_capture_it_read(self):
+        self.put("near", arguments={"page": 2}, at=NS, use_id="a")
+        self.put("far", arguments={"page": 3, "size": 1}, at=NS + 1, use_id="b")
+        self.put("exact", at=NS + 2, use_id="c")
+        self.put("other", arguments={"page": 2}, tool_name="mcp__other__read-page", at=NS + 3, use_id="d")
+        before = self.capture_files()
+        self.mismatched(now=NS + 3)
+        self.assertEqual((self.capture_files(), len(before)), (before, 4))
+
+    def test_leaves_a_capture_it_reported_for_a_later_take(self):
+        self.put("body", arguments={"page": 2})
+        self.mismatched()
+        self.assertEqual(self.taken({"page": 2}), "body")
+
+    def test_removes_a_capture_older_than_a_day_like_take(self):
+        self.put("stale", arguments={"page": 2}, at=NS - 25 * HOUR_NS)
+        self.mismatched()
+        self.assertEqual(self.capture_files(), [])
+
+    def test_keeps_a_capture_exactly_a_day_old(self):
+        self.put("body", arguments={"page": 2}, at=NS - 24 * HOUR_NS)
+        self.mismatched(not_before=0)
+        self.assertEqual(self.capture_files(), [f"{NS - 24 * HOUR_NS}-toolu_01.json"])
+
+
+class MismatchValueFreeTest(RelayCase):
+    PLANNED_VALUE = "planned-secret-value-91"
+    CALLED_VALUE = "called-secret-value-47"
+
+    def output(self, planned, called):
+        self.put("result text of the call", arguments=called)
+        found = relay_capture.mismatch(self.dir, TOOL, planned, NS, now_ns=NS)
+        return repr(found) + " ".join(relay_capture.difference_text(item) for item in found)
+
+    def test_a_changed_string_shows_neither_value(self):
+        shown = self.output({"content": self.PLANNED_VALUE}, {"content": self.CALLED_VALUE})
+        self.assertEqual([value in shown for value in (self.PLANNED_VALUE, self.CALLED_VALUE, "secret")], [False, False, False])
+
+    def test_a_changed_nested_value_shows_no_value(self):
+        shown = self.output({"pages": [{"content": self.PLANNED_VALUE}]}, {"pages": [{"content": self.CALLED_VALUE}]})
+        self.assertEqual([value in shown for value in (self.PLANNED_VALUE, self.CALLED_VALUE)], [False, False])
+
+    def test_an_extra_key_shows_its_name_but_not_its_value(self):
+        shown = self.output({"page": 1}, {"page": 1, "note": self.CALLED_VALUE})
+        self.assertEqual((self.CALLED_VALUE in shown, "note extra" in shown), (False, True))
+
+    def test_a_missing_key_shows_its_name_but_not_its_value(self):
+        shown = self.output({"page": 1, "note": self.PLANNED_VALUE}, {"page": 1})
+        self.assertEqual((self.PLANNED_VALUE in shown, "note missing" in shown), (False, True))
+
+    def test_a_changed_type_shows_no_value(self):
+        shown = self.output({"note": self.PLANNED_VALUE}, {"note": [self.CALLED_VALUE]})
+        self.assertEqual([value in shown for value in (self.PLANNED_VALUE, self.CALLED_VALUE)], [False, False])
+
+    def test_list_items_show_no_value(self):
+        shown = self.output({"ids": [self.PLANNED_VALUE]}, {"ids": [self.CALLED_VALUE, self.CALLED_VALUE]})
+        self.assertEqual([value in shown for value in (self.PLANNED_VALUE, self.CALLED_VALUE)], [False, False])
+
+    def test_the_result_text_is_not_shown(self):
+        self.assertNotIn("result text", self.output({"page": 1}, {"page": 2}))
 
 
 class HookScriptTest(RelayCase):

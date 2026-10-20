@@ -6,6 +6,7 @@ One module per vendor reads one role through `_http.py`. This file lists, per ve
 
 - A `PostToolUse` hook captures each connector result byte-exact, and `collect.py plan` saves it as `<responses>/<call id>.txt` (see Relay capture in the plugin README). A run keeps `<responses>` at `<run>/raw/<role>/<source>`.
 - The model saves a result by hand, unchanged, only for a call the plan prints again: it copies the file when the harness saved the result to one, else it writes the text with the Write tool.
+- A `relay capture mismatch` line in the error output of `plan` names the paths where the call the model made differs from the printed one, never a value. It is a diagnostic: the model still saves that call's result by hand.
 - A harness-saved file holds a JSON list of `{"type": "text", "text": ...}` blocks. `collect.py` joins those texts before the adapter reads the response, so code-script checksums and digests apply to the result itself. Any other content reaches the adapter unchanged.
 
 ## Recorded HTTP calls

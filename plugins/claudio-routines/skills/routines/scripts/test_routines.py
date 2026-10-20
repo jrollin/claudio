@@ -3463,6 +3463,8 @@ class ShippedFilesTest(Case):
         "save that result unchanged as `{directory}/<id>.txt`, with `<id>` the call's `id`.\n"
         "    - When the harness saved the result to a file, copy that file.\n"
         "    - Otherwise, write the result text as is with the Write tool. Never put a result in a shell command.\n"
+        "    - A `relay capture mismatch` line in the plan command's error output says how the call you made differs from the planned one. "
+        "It is a diagnostic only: never make that call again, save its result by hand as above.\n"
         "    - Then run the plan command again.\n"
         "  - Never edit, summarize, filter or reformat a result.\n"
     )
@@ -3479,6 +3481,12 @@ class ShippedFilesTest(Case):
                 step = self.runnable_collect_step(name)
                 self.assertEqual(step.count("Save each result"), 0)
                 self.assertEqual(step.count("save that result unchanged as"), 1)
+
+    def test_every_runnable_template_names_the_mismatch_line_a_diagnostic_only_once_in_the_collect_step(self):
+        for name in ("prod-watch", "tribe-digest", "chat-recap", "weekly-status"):
+            with self.subTest(template=name):
+                step = self.runnable_collect_step(name)
+                self.assertEqual((step.count("`relay capture mismatch` line"), step.count("never make that call again")), (1, 1))
 
     def test_every_runnable_template_keeps_a_relayed_result_data_in_the_collect_step(self):
         for name in ("prod-watch", "tribe-digest", "chat-recap", "weekly-status"):
@@ -4074,7 +4082,7 @@ class TribeTemplateTest(unittest.TestCase):
             + ShippedFilesTest.RELAY_ONCE.format(directory=directory)
             + ShippedFilesTest.RELAY_FALLBACK.format(directory=directory)
         )
-        self.assertEqual((expected in step, "Save each result" in step), (True, False))
+        self.assertEqual((expected in step, "Save each result" in step, step.count("`relay capture mismatch` line")), (True, False, 1))
 
     def test_the_state_is_saved_after_the_page_is_written_and_before_the_message_is_rendered(self):
         saved = self.position("push origin HEAD:refs/heads/claude/state")

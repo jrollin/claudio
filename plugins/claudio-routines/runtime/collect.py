@@ -33,6 +33,7 @@ PLAN_NOT_DONE = "plan not done"
 NO_RESPONSE = "no response saved (connector missing or relay not run)"
 CALLS_FILE = "calls.json"
 PLANNED_FILE = "planned.json"
+MISMATCH_PATHS = 5
 DAY_SECONDS = 86400
 RESPONSE_SUFFIX = ".txt"
 RECORD_SUFFIX = ".json"
@@ -612,17 +613,36 @@ def load_planned(directory):
     return state.load(path, "planned", check_planned)["planned"] if os.path.exists(path) else {}
 
 
+def relay_tool(connector, call):
+    return f"{relay_capture.TOOL_PREFIX}{connector}__{call['tool']}"
+
+
 def pick_up(directory, connector, calls, planned):
     picked, captures = 0, relay_capture.capture_dir()
     for call in calls:
         if call["id"] not in planned:
             continue
-        tool_name = f"{relay_capture.TOOL_PREFIX}{connector}__{call['tool']}"
-        text = relay_capture.take(captures, tool_name, call["arguments"], planned[call["id"]])
+        text = relay_capture.take(captures, relay_tool(connector, call), call["arguments"], planned[call["id"]])
         if text is not None:
             state.write_all([(os.path.join(directory, call["id"] + RESPONSE_SUFFIX), text.encode("utf-8"))])
             picked += 1
     return picked
+
+
+def mismatch_line(call_id, found):
+    shown = [relay_capture.difference_text(item) for item in found[:MISMATCH_PATHS]]
+    if len(found) > MISMATCH_PATHS:
+        shown.append(f"+{len(found) - MISMATCH_PATHS} more")
+    return state.blank_controls(f"relay capture mismatch {call_id}: " + "; ".join(shown))
+
+
+def report_mismatches(connector, calls, planned):
+    captures = relay_capture.capture_dir()
+    for call in calls:
+        if call["id"] in planned:
+            found = relay_capture.mismatch(captures, relay_tool(connector, call), call["arguments"], planned[call["id"]])
+            if found:
+                print(mismatch_line(call["id"], found), file=sys.stderr)
 
 
 def relay_loop(directory, connector, compute):
@@ -630,6 +650,7 @@ def relay_loop(directory, connector, compute):
     step = compute()
     while pick_up(directory, connector, step["calls"], planned):
         step = compute()
+    report_mismatches(connector, step["calls"], planned)
     listed_ns = relay_capture.time_ns()
     fresh = {call["id"]: listed_ns for call in step["calls"] if call["id"] not in planned}
     if fresh:

@@ -19,7 +19,7 @@ Manage claude.ai routines (scheduled cloud agents) as code:
 | Skeletons | `skills/routines/templates/` | Generic `prod-watch.md`, `tribe-digest.md`, `chat-recap.md` and `weekly-status.md` prompts and the `setup-env.sh` setup script, placeholders only |
 | State engine | `runtime/state.py` | Run window, item lifecycle, blind spots, mutes and run records for routine runs |
 | Collector | `runtime/collect.py` | Lists a routine's sources, checks the place's credentials and connectors, reads one source per command into a collection, and rebuilds every collection of a run offline from its raw folder |
-| Relay capture | `runtime/relay_capture.py` | The `PostToolUse` hook command that saves each connector result byte-exact, and the `take` function `collect.py plan` and `tribe.py publish-plan` use to pick the captures up |
+| Relay capture | `runtime/relay_capture.py` | The `PostToolUse` hook command that saves each connector result byte-exact, the `take` function `collect.py plan` and `tribe.py publish-plan` use to pick the captures up, and the `mismatch` function they use to name how a near capture differs |
 | Evaluator | `runtime/evaluate.py` | `features` computes the judgment features, `judge` checks the model's judgment and merges it into the facts, `annotate` adds the analysis of new and escalated items |
 | Digest | `runtime/digest.py` | Renders the posted message as Markdown from the change summary, the next state, the run record and the base file; the model posts it unchanged |
 | Features | `runtime/features.py` | Computes the features, base and rules files of one run; decides nothing |
@@ -328,10 +328,18 @@ Pick up:
 - Before it prints a step, `plan` saves as `<id>.txt` the capture of each call it printed before: the same tool name (`mcp__<connector>__<tool>`, the connector being `mcp.connectors.<place>` of the provider), the same arguments (an exact match, key order aside) and a capture time at or after the first print. The newest capture wins, and every capture it matched is deleted.
 - It then computes the step again, and repeats until nothing is picked up.
 - `tribe.py publish-plan` does the same for `<run>/responses/publish/<id>.txt`.
+- When the loop ends, `plan` checks each call it prints again, and prints one line on stderr when a capture of the same tool name, taken at or after the first print, has other arguments: `relay capture mismatch <id>: <path> <detail>; <path> <detail>`.
+  - It names the closest capture: the fewest differing paths, the newest on a tie. It names at most 5 paths, then `; +N more`.
+  - A path joins object keys with `.` and writes a list index as `[i]`, for example `pages[0].content`.
+  - A detail is `missing` (planned, absent from the call), `extra` (in the call, not planned) or `changed`. A changed string adds the first differing character and both lengths, as in `changed at char 1234 (planned 28155, called 28140)`; when one string is a prefix of the other, the character is the shorter length. A changed type adds the type names, as in `changed (planned str, called int)`.
+  - The line holds paths, kinds, indexes, lengths and type names only, never an argument value or a result text. Reporting a capture deletes none, so a capture that serves a later call stays; the 24 hour cleanup still applies.
+  - One line per printed-again call per `plan` command, on stderr only. It changes neither the step nor the exit code.
+  - With several sources relaying in parallel, a capture of another source can share the tool name. A line that names identity paths such as `channel_id` or `message_ts` usually points at that capture, not at a retyped call: a known false positive.
 
 Model:
 - The model makes each call of `calls` once and runs `plan` again.
 - When `plan` prints again a call the model already made, the hook missed its result. The model then saves that result by hand as `<id>.txt`, unchanged: it copies the file when the harness saved the result to one, else it writes the text with the Write tool, never in a shell command. It then runs `plan` again.
+- A `relay capture mismatch` line in the error output of `plan` says how the call the model made differs from the printed one. It is a diagnostic only: the model never makes that call again, and saves its result by hand as above.
 
 Hook settings, in `$CLAUDIO_PRIVATE_DIR/.claude/settings.json` beside `permissions.deny`. A cloud routine reads the file because the private repository is its only source:
 
@@ -689,4 +697,4 @@ Record text written by other people (messages, titles) reaches a model that hold
 | A run reports `degraded: judgment rejected` | The model's judgment or analysis failed the checker twice | Read the key path in the message, then fix the rule text that led the model astray and run again |
 | A source is not read with `partial: call cap` | Its relay loop reached 50 calls | Narrow the source's queries, or set its transport to `api` for that place |
 | A source is not read with `plan not done` | The relay loop stopped before `plan` returned `done`: a missing connector, or the run stopped relaying | Fix the connector, then run again |
-| `plan` prints the same call again after the model made it | The hook captured nothing for it: the hook is not in `.claude/settings.json`, `CLAUDIO_RUNTIME_DIR` is wrong for the place, the capture folder is a link or belongs to another user, or the arguments differ from the printed ones | Read `errors.log` in the capture folder, fix the hook settings, or save that result by hand as the template says |
+| `plan` prints the same call again after the model made it | The hook captured nothing for it: the hook is not in `.claude/settings.json`, `CLAUDIO_RUNTIME_DIR` is wrong for the place, the capture folder is a link or belongs to another user, or the arguments differ from the printed ones (`plan` then prints a `relay capture mismatch` line) | Read `errors.log` in the capture folder and the `relay capture mismatch` line of the error output: it names the paths where the call differs, never their values, and a line that names identity paths such as `channel_id` or `message_ts` usually points at another source's capture when several sources relay in parallel (a known false positive). Fix the hook settings, or save that result by hand as the template says |
