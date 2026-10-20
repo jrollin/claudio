@@ -4,15 +4,18 @@ One module per vendor reads one role through `_http.py`. This file lists, per ve
 
 ## Saved connector responses
 
-- A `PostToolUse` hook captures each connector result byte-exact, and `collect.py plan` saves it as `<responses>/<call id>.txt` (see Relay capture in the plugin README). A run keeps `<responses>` at `<run>/raw/<role>/<source>`.
-- The model saves a result by hand, unchanged, only for a call the plan prints again: it copies the file when the harness saved the result to one, else it writes the text with the Write tool.
+- A `PostToolUse` hook captures each connector result byte-exact, and `collect.py plan` saves it at the planned call's `path` (see Relay capture in the plugin README).
+- For a store-backed adapter (`STORE = True`), the `path` is a page of the read the call belongs to, in the run store (see Read store in the plugin README).
+- For any other adapter, the `path` is `<run>/raw/<role>/<source>/<call id>.txt`.
+- The model saves a result by hand, unchanged, only for a call the plan prints again: it copies the file to the call's `path` when the harness saved the result to one, else it writes the text there with the Write tool.
 - A `relay capture mismatch` line in the error output of `plan` names the paths where the call the model made differs from the printed one, never a value. It is a diagnostic: the model still saves that call's result by hand.
-- A harness-saved file holds a JSON list of `{"type": "text", "text": ...}` blocks. `collect.py` joins those texts before the adapter reads the response, so code-script checksums and digests apply to the result itself. Any other content reaches the adapter unchanged.
+- A harness-saved file holds a JSON list of `{"type": "text", "text": ...}` blocks. `collect.py`, or the page reader of a store-backed adapter, joins those texts before the adapter reads the response, so code-script checksums and digests apply to the result itself. Any other content reaches the adapter unchanged.
 
 ## Recorded HTTP calls
 
 - `HttpClient` has a `recorder` attribute, `None` by default. When set, it is called once per `get`, `post` or `get_url` call with the record of that call, after the call ends.
-- `collect.py fetch --responses <dir>` sets it. `<dir>` is created when absent and must be empty; a folder that holds any entry is refused with exit 2, naming it.
+- `collect.py fetch --run <run>` sets it for an adapter that is not store-backed, with `<dir>` the source's raw folder, `<run>/raw/<role>/<source>`. `<dir>` is created when absent and must be empty; a folder that holds any entry is refused with exit 2, naming it.
+- A store-backed adapter saves each record as a page of its read, `page-<NNN>.json` in the read's folder, and the read's `read.json` lists the request of each page.
 - Each record is written as its call ends, to `<dir>/<source>-<n>.json` as canonical JSON, with `n` from 1 in call order. A fetch that fails midway keeps the records so far.
 - A record holds exactly these keys:
   - `method`: `GET` or `POST`.
@@ -31,7 +34,8 @@ One module per vendor reads one role through `_http.py`. This file lists, per ve
 
 ## Replayed HTTP calls
 
-- `providers/_replay.py` holds `ReplayClient`, an `HttpClient` that serves the records of a source instead of calling the network. `collect.py replay` gives it the records of `<raw>/<role>/<source>/`, read in call order.
+- `providers/_replay.py` holds `ReplayClient`, an `HttpClient` that serves the records of a source instead of calling the network. `collect.py replay` gives it the records of `<run>/raw/<role>/<source>/`, read in call order.
+- A store-backed source replays without it: its replay session serves each read's saved pages and compares each asked request with `read.json` (see Offline replay in the plugin README).
 - Call `n` is checked against record `n` on method, path, query and body. Request headers are never compared.
 - A request that differs, or a call past the last record, raises `ReplayMismatch`, a rejection with exit 3. The message names the source, the call number, the method and the path, and the differing parts (`method`, `path`, `query`, `body`), never a value.
 - A record whose `error` is set raises that error again with its recorded message and status. The class is `SourceUnreadable`, `PartialRead` or `CredentialsMissing`; another class is a `ReplayMismatch`.
@@ -326,6 +330,10 @@ The connector transport calls the tool `notion-fetch` once per page of the sourc
 ## slack
 
 - Role: chat.
+- Read store: the adapter is store-backed (`STORE = True`) and files each read in the run store, one folder per read (see Read store in the plugin README).
+- Read kinds: `history` (one channel span), `thread` (one thread, whole or after an `oldest`), `search` (one search over its span), `reactions` (one message), `members` (one conversation, `api` only) and `users` (one user lookup, `api` only).
+- `parse_read` and `to_rows` rebuild the records of a read from its saved pages, for `store.py reparse`.
+- Reuse: with the place's `store_dir` and the source's `max_age` (minutes, default 0), `history` and `thread` reads fetch only the gaps that fresh stored reads leave, a thread from the end of its covered part; `reactions`, `members` and `users` reuse the newest fresh read whole (`max_age.people` covers the last two); `search` reads are never reused. Messages merge by ts, the newest fetch winning, and a reused read spends no call. See Shared store in the plugin README.
 - Calls: `GET /api/conversations.history` for each page of each channel listed in the source's `channels`, then `GET /api/conversations.replies` for each page of each thread root of the window. Both reads send `oldest` and `latest` and no `inclusive` parameter, so both bounds are exclusive.
 - Connector: `slack_read_channel` once per history page, then `slack_read_thread` once per page of each thread root of the window, both in the `detailed` response format.
 - Page sizes: over the connector, a channel read asks for 30 messages a page (`limit` 30) and a thread read, whether of a window root, a cited thread, a search unit or a reread, for 20 replies a page (`limit` 20). The model copies each result into a file, and a result of a few KB passes its safeguard where a 60-reply thread in one page did not. A longer channel or thread takes more pages through the cursor, within the page and call caps: the 20-page cap stops a channel read at 600 messages and a thread read at 400 replies (`partial: page cap`). The `api` transport never goes through the model and keeps its own page size.

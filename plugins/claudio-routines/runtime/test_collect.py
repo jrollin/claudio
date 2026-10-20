@@ -8,12 +8,15 @@ import sys
 import tempfile
 import types
 import unittest
+from datetime import datetime, timezone
 from unittest import mock
 
 import collect
+import providers
 import relay_capture
 import roles
 import state
+import store
 from support import RELAY_START_NS, isolate_relay, publication_values
 from providers._http import PAGE_CAP, PartialRead, SourceUnreadable
 from providers import _common
@@ -62,10 +65,11 @@ TRACKED_KEY = "monitor-" + TRACKED_MONITOR_ID
 EVENT_TS_MS = (WINDOW_END - 60) * 1000
 STORED_TS_MS = (WINDOW_END - 7200) * 1000
 UTC_EDIT = "2026-10-01T08:00:00.000Z"
-CLIENT = object()
+CLIENT = types.SimpleNamespace(recorder=None)
 SENTINEL = "-".join(["sentinel", "response", "text"])
 OK = {"status": "ok", "reason": None}
-RESPONSES = "responses"
+RUN = "run"
+RESPONSES = "run/raw/document_store/sources-page"
 ADAPTER_CONNECTOR = "adapter-connector"
 
 
@@ -293,6 +297,7 @@ class CollectTestCase(unittest.TestCase):
         return os.path.join(self.tmp.name, name)
 
     def write(self, name, document):
+        os.makedirs(os.path.dirname(self.path(name)), exist_ok=True)
         with open(self.path(name), "w", encoding="utf-8") as handle:
             json.dump(document, handle)
         return self.path(name)
@@ -307,14 +312,18 @@ class CollectTestCase(unittest.TestCase):
         config = self.write("config.json", self.config)
         return self.run_main(command, "--config", config, "--routine", ROUTINE, "--place", place)
 
-    def fetch(self, source="monitors", place="cloud", out=None, responses=None):
+    def raw_path(self, source):
+        provider = self.config["routines"][ROUTINE]["sources"][source]["provider"]
+        role = providers.load(self.config["providers"][provider]["adapter"]).ROLE
+        return self.path(os.path.join(RUN, "raw", role, source))
+
+    def fetch(self, source="monitors", place="cloud", out=None):
         config = self.write("config.json", self.config)
         window = self.write("window.json", self.window)
         stored = self.write("state.json", self.state)
         return self.run_main(
             "fetch", "--config", config, "--routine", ROUTINE, "--source", source, "--place", place,
-            "--window", window, "--state", stored, "--out", out or self.path("collection.json"),
-            *([] if responses is None else ["--responses", responses]),
+            "--window", window, "--state", stored, "--out", out or self.path("collection.json"), "--run", self.path(RUN),
         )
 
     def collection(self):
@@ -349,9 +358,9 @@ class ParserTest(unittest.TestCase):
         return collect.build_parser().parse_args(list(argv))
 
     def test_parses_the_six_commands(self):
-        fetch = ["--source", "s", "--window", "w", "--state", "s", "--out", "o"]
-        relay = [*fetch, "--responses", "d"]
-        replay = ["--window", "w", "--state", "s", "--raw", "r", "--out", "o"]
+        fetch = ["--source", "s", "--window", "w", "--state", "s", "--out", "o", "--run", "r"]
+        relay = fetch
+        replay = ["--window", "w", "--state", "s", "--run", "r", "--out", "o"]
         parsed = [
             self.parse("sources", *self.COMMON).command,
             self.parse("check-env", *self.COMMON).command,
@@ -367,15 +376,15 @@ class ParserTest(unittest.TestCase):
             self.parse("relay", *self.COMMON)
         self.assertEqual(raised.exception.code, 2)
 
-    def test_plan_requires_the_responses_directory(self):
+    def test_plan_requires_the_run_folder(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
             self.parse("plan", *self.COMMON, "--source", "s", "--window", "w", "--state", "s", "--out", "o")
         self.assertEqual(raised.exception.code, 2)
 
-    def test_fetch_takes_an_optional_responses_directory(self):
-        fetch = ["--source", "s", "--window", "w", "--state", "s", "--out", "o"]
-        parsed = [self.parse("fetch", *self.COMMON, *fetch).responses, self.parse("fetch", *self.COMMON, *fetch, "--responses", "d").responses]
-        self.assertEqual(parsed, [None, "d"])
+    def test_fetch_requires_the_run_folder(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+            self.parse("fetch", *self.COMMON, "--source", "s", "--window", "w", "--state", "s", "--out", "o")
+        self.assertEqual(raised.exception.code, 2)
 
     def test_fetch_requires_the_output_path(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
@@ -513,6 +522,44 @@ class SourcesTest(CollectTestCase):
         self.assertEqual(self.run_command("sources")[0], 0)
 
 
+class SourcesStoreDirTest(CollectTestCase):
+    def sources_with(self, store_dir, place="local"):
+        self.config["places"][place]["store_dir"] = store_dir
+        return self.run_command("sources", place=place)
+
+    def test_accepts_a_store_dir_outside_every_repository(self):
+        self.assertEqual(self.sources_with(self.path("store"))[0], 0)
+
+    def test_refuses_a_store_dir_inside_a_git_working_tree(self):
+        subprocess.run(["git", "init", "--quiet", self.path("repository")], check=True)
+
+        code, _, err = self.sources_with(self.path("repository/store"))
+
+        self.assertEqual((code, "places.local.store_dir" in err), (2, True))
+
+    def test_refuses_a_store_dir_that_is_a_link(self):
+        os.mkdir(self.path("store"), 0o700)
+        os.symlink(self.path("store"), self.path("linked"))
+
+        code, _, err = self.sources_with(self.path("linked"))
+
+        self.assertEqual((code, "places.local.store_dir" in err), (2, True))
+
+    def test_refuses_a_store_dir_of_another_user(self):
+        os.mkdir(self.path("store"), 0o700)
+
+        with mock.patch.object(store.os, "getuid", return_value=os.getuid() + 1):
+            code, _, err = self.sources_with(self.path("store"))
+
+        self.assertEqual((code, "places.local.store_dir" in err), (2, True))
+
+    def test_checks_only_the_store_dir_of_the_requested_place(self):
+        os.symlink(self.tmp.name, self.path("linked"))
+        self.config["places"]["cloud"]["store_dir"] = self.path("linked")
+
+        self.assertEqual(self.run_command("sources", place="local")[0], 0)
+
+
 class CheckEnvTest(CollectTestCase):
     def check_env(self, environ, place="cloud"):
         with mock.patch.dict(os.environ, environ, clear=True):
@@ -565,13 +612,11 @@ class PreferenceCase(CollectTestCase):
         config = self.write("config.json", self.config)
         window = self.write("window.json", self.window)
         stored = self.write("state.json", self.state)
-        responses = self.path("responses")
         argv = [
             command, "--config", config, "--routine", ROUTINE, "--source", source, "--place", place,
             "--window", window, "--state", stored, "--out", self.path("collection.json"),
         ]
-        if command != "fetch":
-            argv += ["--responses", responses]
+        argv += ["--run", self.path(RUN)]
         with mock.patch.dict(os.environ, CREDENTIALS if environ is None else environ, clear=True):
             return self.run_main(*argv, *extra)
 
@@ -1141,7 +1186,7 @@ class TrackedMonitorTest(CollectTestCase):
         common = [
             "--config", config, "--routine", ROUTINE, "--source", "monitors", "--place", "cloud",
             "--window", self.write("window.json", self.window), "--state", self.write("state.json", self.state),
-            "--responses", self.path(RESPONSES),
+            "--run", self.path(RUN),
         ]
         self.run_main("plan", *common, "--out", self.path("plan.json"))
         self.run_main("parse", *common, "--out", self.path("collection.json"))
@@ -1432,7 +1477,7 @@ class RecordedFetchTest(CollectTestCase):
         super().setUp()
         self.opener = FakeOpener()
         self.obs.api_client = lambda provider, opener=None, environ=None, sleep=None: make_client(self.opener, sleeps=[])
-        self.raw = self.path("raw/observability/monitors")
+        self.raw = self.path("run/raw/observability/monitors")
 
     def reads(self, *calls):
         original = self.obs.fetch
@@ -1455,7 +1500,7 @@ class RecordedFetchTest(CollectTestCase):
     def test_writes_one_file_per_call_in_call_order(self):
         self.opener.outcomes = [FakeResponse(b'{"n": 1}'), FakeResponse(b'{"n": 2}')]
         self.reads(lambda http: http.get(HTTP_PATH, {"page": 1}), lambda http: http.post(HTTP_PATH, {"q": "x"}))
-        self.assertEqual(self.fetch(responses=self.raw)[0], 0)
+        self.assertEqual(self.fetch()[0], 0)
         expected = [
             {"method": "GET", "path": HTTP_PATH, "query": "page=1", "body": None, "status": 200, "link": None, "response": {"n": 1}, "error": None},
             {"method": "POST", "path": HTTP_PATH, "query": "", "body": {"q": "x"}, "status": 200, "link": None, "response": {"n": 2}, "error": None},
@@ -1465,24 +1510,24 @@ class RecordedFetchTest(CollectTestCase):
     def test_writes_canonical_json(self):
         self.opener.outcomes = [FakeResponse(b'{"b": 1, "a": "\\u00e9"}')]
         self.reads(lambda http: http.get(HTTP_PATH))
-        self.fetch(responses=self.raw)
+        self.fetch()
         raw = self.read_raw("monitors-1.json")
         self.assertEqual(raw, state.dump(json.loads(raw)))
 
     def test_creates_the_folder_and_its_parents(self):
-        self.assertEqual((self.fetch(responses=self.raw)[0], os.listdir(self.raw)), (0, []))
+        self.assertEqual((self.fetch()[0], os.listdir(self.raw)), (0, []))
 
     def test_a_record_holds_no_request_header_and_no_credential_value(self):
         self.opener.outcomes = [FakeResponse(b'{"n": 1}')]
         self.reads(lambda http: http.post(HTTP_PATH, {"q": "x"}))
-        self.fetch(responses=self.raw)
+        self.fetch()
         text = "".join(self.read_raw(name).decode("utf-8") for name in os.listdir(self.raw))
         self.assertEqual((HTTP_SECRET in text, "Authorization" in text, "Bearer" in text), (False, False, False))
 
     def test_a_failed_call_is_recorded_with_its_status_and_error(self):
         self.opener.outcomes = [http_error(404)]
         self.reads(lambda http: http.get(HTTP_PATH))
-        self.fetch(responses=self.raw)
+        self.fetch()
         error = {"class": "SourceUnreadable", "message": "HTTP 404 GET " + HTTP_PATH, "status": 404}
         record = self.recorded()[1][0]
         self.assertEqual((record["status"], record["response"], record["error"]), (404, None, error))
@@ -1490,35 +1535,35 @@ class RecordedFetchTest(CollectTestCase):
     def test_a_failed_call_still_fails_the_read(self):
         self.opener.outcomes = [http_error(404)]
         self.reads(lambda http: http.get(HTTP_PATH))
-        code, _, _ = self.fetch(responses=self.raw)
+        code, _, _ = self.fetch()
         collection = self.collection()
         self.assertEqual((code, collection["read"], collection["reason"]), (0, False, f"{OBS_HOST}: HTTP 404 GET {HTTP_PATH}"))
 
     def test_a_fetch_that_fails_midway_keeps_the_records_so_far(self):
         self.opener.outcomes = [FakeResponse(b'{"n": 1}'), http_error(403)]
         self.reads(lambda http: http.get(HTTP_PATH), lambda http: http.get(HTTP_PATH), lambda http: http.get(HTTP_PATH))
-        self.fetch(responses=self.raw)
+        self.fetch()
         names, records = self.recorded()
         self.assertEqual((names, [record["status"] for record in records]), (["monitors-1.json", "monitors-2.json"], [200, 403]))
 
     def test_a_retried_call_is_one_record_with_its_final_outcome(self):
         self.opener.outcomes = [http_error(503), FakeResponse(b'{"n": 1}')]
         self.reads(lambda http: http.get(HTTP_PATH))
-        self.fetch(responses=self.raw)
+        self.fetch()
         names, records = self.recorded()
         self.assertEqual((names, records[0]["status"], records[0]["response"]), (["monitors-1.json"], 200, {"n": 1}))
 
     def test_a_lone_surrogate_of_a_response_is_recorded_as_a_replacement_character(self):
         self.opener.outcomes = [FakeResponse(b'{"text": "a\\ud800b"}')]
         self.reads(lambda http: http.get(HTTP_PATH))
-        code, _, _ = self.fetch(responses=self.raw)
+        code, _, _ = self.fetch()
         self.assertEqual((code, self.recorded()[1][0]["response"]), (0, {"text": "a\ufffdb"}))
 
     def test_a_folder_that_holds_a_file_is_refused_with_exit_2_naming_it(self):
         os.makedirs(self.raw)
         with open(os.path.join(self.raw, "monitors-1.json"), "w", encoding="utf-8") as handle:
             handle.write("{}")
-        code, _, stderr = self.fetch(responses=self.raw)
+        code, _, stderr = self.fetch()
         self.assertEqual((code, self.raw in stderr, self.obs.calls, os.path.exists(self.path("collection.json"))), (2, True, [], False))
 
     def test_a_record_that_cannot_be_written_exits_2_naming_the_file(self):
@@ -1532,7 +1577,7 @@ class RecordedFetchTest(CollectTestCase):
             return write_all(documents)
 
         with mock.patch.object(state, "write_all", failing):
-            code, _, stderr = self.fetch(responses=self.raw)
+            code, _, stderr = self.fetch()
         self.assertEqual((code, stderr, os.path.exists(self.path("collection.json"))), (2, "collect.py: cannot write monitors-1.json: disk full\n", False))
 
 
@@ -1633,7 +1678,7 @@ class RelayTestCase(CollectTestCase):
         stored = self.write("state.json", self.state)
         return self.run_main(
             command, "--config", config, "--routine", ROUTINE, "--source", source, "--place", place,
-            "--window", window, "--state", stored, "--responses", self.path(RESPONSES), "--out", out, *extra,
+            "--window", window, "--state", stored, "--run", self.path(RUN), "--out", out, *extra,
         )
 
     def plan(self, source="sources-page", place="cloud"):
@@ -1645,19 +1690,21 @@ class RelayTestCase(CollectTestCase):
     def parse_in_subprocess(self):
         argv = [
             "parse", "--config", self.path("config.json"), "--routine", ROUTINE, "--source", "sources-page", "--place", "cloud",
-            "--window", self.path("window.json"), "--state", self.path("state.json"), "--responses", self.path(RESPONSES),
+            "--window", self.path("window.json"), "--state", self.path("state.json"), "--run", self.path(RUN),
             "--out", self.path("collection.json"),
         ]
         subprocess.run([sys.executable, "-c", FAKE_ADAPTERS_MAIN, HERE, *argv], capture_output=True, timeout=10, check=True)
 
     def response_path(self, call_id):
-        return os.path.join(self.path(RESPONSES), call_id + ".txt")
+        source = call_id.rsplit("-", 1)[0]
+        directory = self.raw_path(source) if source in self.config["routines"][ROUTINE]["sources"] else self.path(RESPONSES)
+        return os.path.join(directory, call_id + ".txt")
 
     def respond(self, call_id, text="{}"):
         self.respond_bytes(call_id, text.encode("utf-8"))
 
     def respond_bytes(self, call_id, data):
-        os.makedirs(self.path(RESPONSES), exist_ok=True)
+        os.makedirs(os.path.dirname(self.response_path(call_id)), exist_ok=True)
         with open(self.response_path(call_id), "wb") as handle:
             handle.write(data)
 
@@ -1682,8 +1729,8 @@ class RelayTestCase(CollectTestCase):
         with open(self.path("plan.json"), encoding="utf-8") as handle:
             return json.load(handle)
 
-    def calls_doc(self):
-        with open(os.path.join(self.path(RESPONSES), "calls.json"), encoding="utf-8") as handle:
+    def calls_doc(self, source="sources-page"):
+        with open(os.path.join(self.raw_path(source), "calls.json"), encoding="utf-8") as handle:
             return json.load(handle)
 
     def call_ids(self):
@@ -1728,6 +1775,7 @@ class RelayParsePreferenceTest(RelayTestCase):
 
 
 CHAT_CHANNEL = "CHAN1"
+CHAT_LISTING = json.dumps({"messages": f"Channel: #room ({CHAT_CHANNEL})\n", "pagination_info": "There are no more messages available."})
 CITED_ROOT = "1791990000.000100"
 CITED_THREADS = [{"channel": CHAT_CHANNEL, "root_ts": CITED_ROOT}]
 CONFIG_THREADS = [{"channel": "CHAN9", "root_ts": "junk"}]
@@ -1740,7 +1788,7 @@ class ReplayTest(RelayTestCase):
         super().setUp()
         self.opener = FakeOpener()
         self.obs.api_client = lambda provider, opener=None, environ=None, sleep=None: make_client(self.opener, sleeps=[])
-        self.raw = self.path("raw")
+        self.raw = self.path("run/raw")
         os.mkdir(self.path("run"))
         self.adapter_fetch = self.obs.fetch
         self.reads(lambda http: http.get(HTTP_PATH, {"page": 1}))
@@ -1756,7 +1804,7 @@ class ReplayTest(RelayTestCase):
     def record_api_sources(self):
         self.opener.outcomes = [FakeResponse(b'{"n": 1}'), FakeResponse(b'{"n": 2}')]
         for name in ("metrics", "monitors"):
-            self.fetch(source=name, out=self.path(f"run/{name}.json"), responses=os.path.join(self.raw, "observability", name))
+            self.fetch(source=name, out=self.path(f"run/{name}.json"))
 
     def record_run(self):
         self.record_api_sources()
@@ -1765,7 +1813,6 @@ class ReplayTest(RelayTestCase):
     def record_mcp_source(self):
         self.loop()
         self.parse()
-        shutil.copytree(self.path(RESPONSES), os.path.join(self.raw, "document_store", "sources-page"))
         os.rename(self.path("collection.json"), self.path("run/sources-page.json"))
 
     def replay(self, place="cloud", extra=()):
@@ -1774,7 +1821,7 @@ class ReplayTest(RelayTestCase):
         stored = self.write("state.json", self.state)
         return self.run_main(
             "replay", "--config", config, "--routine", ROUTINE, "--place", place,
-            "--window", window, "--state", stored, "--raw", self.raw, "--out", self.path("replayed"), *extra,
+            "--window", window, "--state", stored, "--run", self.path(RUN), "--out", self.path("replayed"), *extra,
         )
 
     def bytes_of(self, name, folder="replayed"):
@@ -1821,16 +1868,16 @@ class ReplayTest(RelayTestCase):
             raise SourceUnreadable("api.credentials: must name api_key")
 
         self.obs.api_client = refuse
-        self.fetch(source="monitors", out=self.path("run/monitors.json"), responses=os.path.join(self.raw, "observability", "monitors"))
+        self.fetch(source="monitors", out=self.path("run/monitors.json"))
         self.record_mcp_source()
         self.replay()
         self.assertEqual((self.bytes_of("monitors"), json.loads(self.bytes_of("monitors"))["read"]), (self.bytes_of("monitors", "run"), False))
 
     def test_rebuilds_a_recorded_http_error_as_the_same_not_read_collection(self):
         self.opener.outcomes = [http_error(404)]
-        self.fetch(source="metrics", out=self.path("run/metrics.json"), responses=os.path.join(self.raw, "observability", "metrics"))
+        self.fetch(source="metrics", out=self.path("run/metrics.json"))
         self.opener.outcomes = [http_error(404)]
-        self.fetch(source="monitors", out=self.path("run/monitors.json"), responses=os.path.join(self.raw, "observability", "monitors"))
+        self.fetch(source="monitors", out=self.path("run/monitors.json"))
         self.record_mcp_source()
         self.replay()
         self.assertEqual((self.bytes_of("metrics"), json.loads(self.bytes_of("metrics"))["read"]), (self.bytes_of("metrics", "run"), False))
@@ -1981,12 +2028,273 @@ class TribeChatCallCapTest(TribeChatCase):
         self.state["threads"] = {"team-chat": [{**STORED_THREADS[0], "root_ts": f"{1791990000 + n}.000100"} for n in range(60)]}
 
     def test_cited_thread_reads_reaching_the_response_cap_end_the_plan_partial(self):
-        listing = json.dumps({"messages": f"Channel: #room ({CHAT_CHANNEL})\n", "pagination_info": "There are no more messages available."})
-        self.respond("team-chat-1", listing)
-        for number in range(2, collect.CALL_CAP + 1):
-            self.respond(f"team-chat-{number}", json.dumps({"ok": False, "error": "thread_not_found"}))
+        self.plan(source="team-chat")
+        answer_planned(self.plan_doc(), CHAT_LISTING)
+        for _ in range(2, collect.CALL_CAP + 1):
+            self.plan(source="team-chat")
+            answer_planned(self.plan_doc(), json.dumps({"ok": False, "error": "thread_not_found"}))
         self.plan(source="team-chat")
         self.assertEqual(self.plan_doc(), {"done": True, "partial": "call cap", "calls": []})
+
+
+class StoreRelayTest(TribeChatCase):
+    TOOL = "mcp__chat-cloud__slack_read_channel"
+
+    def setUp(self):
+        super().setUp()
+        self.config["providers"]["chat"]["adapter"] = "slack"
+        self.state["threads"] = {}
+
+    def first_call(self):
+        self.plan(source="team-chat")
+        return self.plan_doc()["calls"][0]
+
+    def manifest(self):
+        with open(self.path("run/manifest.json"), encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def capture_at(self, call, offset, arguments=None):
+        document = {"tool_name": self.TOOL, "arguments": call["arguments"] if arguments is None else arguments, "text": CHAT_LISTING, "captured_at_ns": RELAY_START_NS + offset}
+        os.makedirs(self.relay_dir, mode=0o700, exist_ok=True)
+        relay_capture.write_capture(self.relay_dir, f"{RELAY_START_NS + offset}-toolu_1.json", document)
+
+    def test_names_the_call_by_its_read(self):
+        call = self.first_call()
+        self.assertEqual((call["id"].split("/")[:2], call["id"].endswith(".team-chat/page-001")), (["kind=history", f"channel={CHAT_CHANNEL}"], True))
+
+    def test_plans_the_call_at_its_read_page(self):
+        call = self.first_call()
+        self.assertEqual(call["path"], os.path.join(self.path(RUN), "store", "provider=chat", call["id"] + ".txt"))
+
+    def test_keeps_the_relay_files_in_the_relay_folder(self):
+        self.first_call()
+        self.assertEqual(
+            (os.path.exists(self.path("run/relay/team-chat/calls.json")), os.path.exists(self.path("run/raw/chat/team-chat"))), (True, False)
+        )
+
+    def test_reads_a_page_saved_by_hand_at_its_path(self):
+        answer_planned({"calls": [self.first_call()]}, CHAT_LISTING)
+        self.plan(source="team-chat")
+        self.parse(source="team-chat")
+        self.assertEqual((self.collection()["read"], self.collection()["records"]["messages"]), (True, []))
+
+    def test_writes_the_reads_of_the_source_in_the_manifest(self):
+        call = self.first_call()
+        answer_planned({"calls": [call]}, CHAT_LISTING)
+        self.plan(source="team-chat")
+        self.parse(source="team-chat")
+        read = "provider=chat/" + call["id"].rsplit("/", 1)[0]
+        self.assertEqual(self.manifest()["sources"]["team-chat"], {"fetched": 1, "reads": [read], "reused": 0})
+
+    def test_picks_up_a_captured_result_at_the_read_path(self):
+        self.relay_clock.now_ns = RELAY_START_NS
+        call = self.first_call()
+        self.capture_at(call, 1)
+        self.relay_clock.now_ns = RELAY_START_NS + 2
+        self.plan(source="team-chat")
+        with open(call["path"], encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), CHAT_LISTING)
+
+    def test_names_how_a_capture_of_a_store_backed_call_differs(self):
+        self.relay_clock.now_ns = RELAY_START_NS
+        call = self.first_call()
+        self.capture_at(call, 1, {**call["arguments"], "limit": 99})
+        self.relay_clock.now_ns = RELAY_START_NS + 2
+        _, _, err = self.plan(source="team-chat")
+        self.assertIn(f"relay capture mismatch {call['id']}", err)
+
+    def test_reports_no_response_before_any_page_is_saved(self):
+        self.first_call()
+        self.parse(source="team-chat")
+        self.assertEqual(self.collection()["reason"], f"chat-cloud: {collect.NO_RESPONSE}")
+
+    def test_reports_a_plan_not_done_after_a_saved_page(self):
+        more = json.dumps({"messages": f"Channel: #room ({CHAT_CHANNEL})\n", "pagination_info": "There are more messages available. To view the next page, use cursor: `c2`"})
+        answer_planned({"calls": [self.first_call()]}, more)
+        self.plan(source="team-chat")
+        self.parse(source="team-chat")
+        self.assertEqual(self.collection()["reason"], collect.PLAN_NOT_DONE)
+
+    def shared_read(self, call):
+        return self.path(os.path.join("shared", "provider=chat", call["id"].rsplit("/", 1)[0], store.READ_FILE))
+
+    def test_publishes_a_read_to_the_store_dir_of_the_place(self):
+        self.config["places"]["cloud"]["store_dir"] = self.path("shared")
+        call = self.first_call()
+        answer_planned({"calls": [call]}, CHAT_LISTING)
+        self.plan(source="team-chat")
+        self.parse(source="team-chat")
+        self.assertTrue(os.path.isfile(self.shared_read(call)))
+
+    def test_keeps_the_reads_in_the_run_store_without_a_store_dir(self):
+        call = self.first_call()
+        answer_planned({"calls": [call]}, CHAT_LISTING)
+        self.plan(source="team-chat")
+        self.parse(source="team-chat")
+        self.assertFalse(os.path.exists(self.path("shared")))
+
+    def test_plan_refuses_a_store_dir_inside_a_git_working_tree(self):
+        subprocess.run(["git", "init", "--quiet", self.path("repository")], check=True)
+        self.config["places"]["cloud"]["store_dir"] = self.path("repository/store")
+        code, _, err = self.plan(source="team-chat")
+        self.assertEqual((code, "places.cloud.store_dir" in err), (2, True))
+
+    def test_fetches_a_store_backed_source_into_its_reads(self):
+        opener = FakeOpener()
+        opener.outcomes = [FakeResponse(json.dumps({"ok": True, "messages": [], "has_more": False}).encode("utf-8"))]
+        slack = providers.load("slack")
+        client = make_client(opener, sleeps=[])
+        with mock.patch.dict(os.environ, {"CHAT_TOKEN": "set"}), mock.patch.object(slack, "api_client", lambda provider, opener=None, environ=None, sleep=None: client):
+            self.fetch(source="team-chat", place="local")
+        pages = [name for _, _, files in os.walk(self.path("run/store/provider=chat/kind=history")) for name in files if name.startswith("page-")]
+        self.assertEqual((pages, self.manifest()["sources"]["team-chat"]["fetched"]), (["page-001.json"], 1))
+
+
+class StoreReplayTest(StoreRelayTest):
+    def setUp(self):
+        super().setUp()
+        routine = self.config["routines"][ROUTINE]
+        routine["sources"] = {"team-chat": routine["sources"]["team-chat"]}
+        routine["query_pack"] = []
+
+    def record_relay(self):
+        call = self.first_call()
+        answer_planned({"calls": [call]}, CHAT_LISTING)
+        self.plan(source="team-chat")
+        self.parse(source="team-chat")
+        return call
+
+    def replay(self):
+        config = self.write("config.json", self.config)
+        return self.run_main(
+            "replay", "--config", config, "--routine", ROUTINE, "--place", "cloud", "--window", self.write("window.json", self.window),
+            "--state", self.write("state.json", self.state), "--run", self.path(RUN), "--out", self.path("replayed"),
+        )
+
+    def read_document_path(self, call):
+        return os.path.join(os.path.dirname(call["path"]), store.READ_FILE)
+
+    def test_replays_a_relayed_source_byte_for_byte(self):
+        self.record_relay()
+        self.assertEqual(self.replay()[0], 0)
+        with open(self.path("collection.json"), "rb") as run, open(self.path("replayed/team-chat.json"), "rb") as replayed:
+            self.assertEqual(replayed.read(), run.read())
+
+    def test_writes_nothing_into_the_run_folder(self):
+        self.record_relay()
+        before = sorted(os.path.relpath(os.path.join(folder, name), self.path(RUN)) for folder, _, files in os.walk(self.path(RUN)) for name in files)
+        self.replay()
+        after = sorted(os.path.relpath(os.path.join(folder, name), self.path(RUN)) for folder, _, files in os.walk(self.path(RUN)) for name in files)
+        self.assertEqual(after, before)
+
+    def test_exits_3_on_a_read_the_run_did_not_make(self):
+        self.record_relay()
+        manifest = self.manifest()
+        manifest["sources"]["team-chat"]["reads"] = []
+        self.write("run/manifest.json", manifest)
+        code, _, err = self.replay()
+        self.assertEqual((code, "a read the run did not make" in err, "kind=history/channel=CHAN1/" in err), (3, True, True))
+
+    def test_exits_3_on_a_request_that_differs_from_its_record(self):
+        call = self.record_relay()
+        with open(self.read_document_path(call), encoding="utf-8") as handle:
+            document = json.load(handle)
+        document["pages"][0]["request"]["arguments"]["limit"] = 99
+        with open(self.read_document_path(call), "w", encoding="utf-8") as handle:
+            json.dump(document, handle)
+        code, _, err = self.replay()
+        self.assertEqual((code, "call 1 slack_read_channel: request differs from its record in arguments" in err), (3, True))
+
+    def test_exits_2_without_a_manifest(self):
+        self.record_relay()
+        os.remove(self.path("run/manifest.json"))
+        code, _, err = self.replay()
+        self.assertEqual((code, "holds no manifest.json" in err), (2, True))
+
+    def reuse_run(self, command, out, run):
+        return self.run_main(
+            command, "--config", self.write("config.json", self.config), "--routine", ROUTINE, "--source", "team-chat", "--place", "cloud",
+            "--window", self.write("window.json", self.window), "--state", self.write("state.json", self.state), "--run", self.path(run), "--out", out,
+        )
+
+    def relay_run(self, run, out):
+        plan = self.path(f"{run}-plan.json")
+        self.reuse_run("plan", plan, run)
+        with open(plan, encoding="utf-8") as handle:
+            planned = json.load(handle)
+        if planned["calls"]:
+            answer_planned(planned, CHAT_LISTING)
+            self.reuse_run("plan", plan, run)
+        self.reuse_run("parse", out, run)
+
+    def reuse_another_runs_read(self, max_age=60, first_end=WINDOW_END):
+        self.config["places"]["cloud"]["store_dir"] = self.path("shared")
+        self.config["routines"][ROUTINE]["sources"]["team-chat"]["max_age"] = max_age
+        fetched = datetime.fromtimestamp(WINDOW_END - 60, timezone.utc).strftime(store.UTC_FORMAT)
+        window = self.window
+        with mock.patch.object(store, "utc_now", return_value=fetched):
+            self.window = {**window, "to_ts": first_end}
+            self.relay_run("first", self.path("first.json"))
+            self.window = window
+            self.reuse_run("plan", self.path("plan.json"), RUN)
+            self.relay_run(RUN, self.path("collection.json"))
+
+    def test_a_later_run_reuses_the_read_of_an_earlier_run(self):
+        self.reuse_another_runs_read()
+        self.assertEqual((self.plan_doc()["calls"], self.manifest()["sources"]["team-chat"]["fetched"], self.manifest()["sources"]["team-chat"]["reused"]), ([], 0, 1))
+
+    def test_counts_a_full_reuse_in_the_collection(self):
+        self.reuse_another_runs_read()
+        self.assertEqual(self.collection()["reads"], {"fetched": 0, "reused": 1})
+
+    def test_counts_a_partial_reuse_in_the_collection(self):
+        self.reuse_another_runs_read(first_end=WINDOW_END - 1800)
+        self.assertEqual(self.collection()["reads"], {"fetched": 1, "reused": 1})
+
+    def test_counts_reads_without_reuse_when_max_age_is_set(self):
+        self.config["routines"][ROUTINE]["sources"]["team-chat"]["max_age"] = {"history": 60}
+        self.relay_run(RUN, self.path("collection.json"))
+        self.assertEqual(self.collection()["reads"], {"fetched": 1, "reused": 0})
+
+    def test_writes_no_read_counts_without_max_age(self):
+        self.relay_run(RUN, self.path("collection.json"))
+        self.assertNotIn("reads", self.collection())
+
+    def test_writes_no_read_counts_with_a_max_age_of_zero(self):
+        self.reuse_another_runs_read(max_age={"default": 0, "history": 0})
+        self.assertNotIn("reads", self.collection())
+
+    def test_a_reused_read_spends_no_call_of_the_cap(self):
+        self.config["routines"][ROUTINE]["sources"]["team-chat"]["call_cap"] = 1
+        self.reuse_another_runs_read(first_end=WINDOW_END - 1800)
+        self.assertEqual((self.collection()["read"], self.collection()["reads"]), (True, {"fetched": 1, "reused": 1}))
+
+    def test_replays_a_source_that_reused_a_read_byte_for_byte(self):
+        self.reuse_another_runs_read()
+        self.assertEqual(self.replay()[0], 0)
+        with open(self.path("collection.json"), "rb") as run, open(self.path("replayed/team-chat.json"), "rb") as replayed:
+            self.assertEqual(replayed.read(), run.read())
+
+    def test_replays_a_fetched_source_from_its_records(self):
+        opener = FakeOpener()
+        opener.outcomes = [FakeResponse(json.dumps({"ok": True, "messages": [{"type": "message", "user": "U1", "text": "hi", "ts": "1780000100.000100"}], "has_more": False}).encode("utf-8"))]
+        client = make_client(opener, sleeps=[])
+        with mock.patch.dict(os.environ, {"CHAT_TOKEN": "set"}), mock.patch.object(providers.load("slack"), "api_client", lambda provider, opener=None, environ=None, sleep=None: client):
+            self.fetch(source="team-chat", place="local")
+            config = self.write("config.json", self.config)
+            code, _, _ = self.run_main(
+                "replay", "--config", config, "--routine", ROUTINE, "--place", "local", "--window", self.path("window.json"),
+                "--state", self.path("state.json"), "--run", self.path(RUN), "--out", self.path("replayed"),
+            )
+        with open(self.path("collection.json"), "rb") as run, open(self.path("replayed/team-chat.json"), "rb") as replayed:
+            self.assertEqual((code, replayed.read()), (0, run.read()))
+
+
+def answer_planned(plan, text):
+    call = plan["calls"][0]
+    store.make_folders(os.path.dirname(call["path"]))
+    with open(call["path"], "w", encoding="utf-8") as handle:
+        handle.write(text)
 
 
 RECAP_SEARCHES = [{"name": "dms", "filters": "is:dm", "since": "window"}]
@@ -2363,7 +2671,7 @@ class WrappedResponseParityTest(RelayTestCase):
 
     def script_result(self):
         self.plan(self.METRICS_SOURCE)
-        digest = self.calls_doc()["calls"][f"{self.METRICS_SOURCE}-1"]
+        digest = self.calls_doc(self.METRICS_SOURCE)["calls"][f"{self.METRICS_SOURCE}-1"]
         with open(os.path.join(HERE, "providers", "fixtures", "datadog", "relay_scalar.json"), encoding="utf-8") as handle:
             payload = handle.read()
         value = {"payload": payload, "checksum": roles.fnv1a32(payload), "digest": digest}
@@ -2412,7 +2720,9 @@ class PlanLoopTest(RelayTestCase):
         expected = {
             "done": False,
             "partial": None,
-            "calls": [{"id": "sources-page-1", "connector": "docs-cloud", "tool": "read-page", "arguments": {"page": 1}}],
+            "calls": [
+                {"id": "sources-page-1", "connector": "docs-cloud", "tool": "read-page", "arguments": {"page": 1}, "path": self.response_path("sources-page-1")}
+            ],
         }
         self.assertEqual(self.plan_doc(), expected)
 

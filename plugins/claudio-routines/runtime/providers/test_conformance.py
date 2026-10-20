@@ -38,6 +38,19 @@ class ConformanceTest(unittest.TestCase):
 
         self.assertEqual(missing, [])
 
+    def test_every_store_adapter_exposes_parse_read_and_to_rows(self):
+        missing = [
+            (name, entry)
+            for name, module in adapters().items()
+            for entry in ("parse_read", "to_rows")
+            if getattr(module, "STORE", False) and not callable(getattr(module, entry, None))
+        ]
+
+        self.assertEqual(missing, [])
+
+    def test_slack_files_its_reads_in_the_store(self):
+        self.assertIs(adapters()["slack"].STORE, True)
+
     def test_every_adapter_declares_its_static_headers(self):
         self.assertEqual([name for name, module in adapters().items() if not isinstance(getattr(module, "STATIC_HEADERS", None), dict)], [])
 

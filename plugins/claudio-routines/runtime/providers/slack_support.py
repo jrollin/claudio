@@ -1,9 +1,11 @@
 import email.message
 import io
 import json
+import os
 import pathlib
 import urllib.parse
 
+import store
 from providers import slack
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "slack"
@@ -29,6 +31,8 @@ TOOL = "slack_read_channel"
 THREAD_TOOL = "slack_read_thread"
 ROOT_TS = "1760002000.000200"
 NO_MORE = "There are no more messages available."
+RUN = "20261020T073004Z-z1x7pc"
+FETCHED_AT = "2026-10-20T07:30:09Z"
 
 
 class FakeResponse:
@@ -120,7 +124,7 @@ def relay_page(channel, *blocks, pagination=NO_MORE):
 
 
 def relay(responses, source=SOURCE, cursor=STORED):
-    return slack.parse(source, WINDOW, cursor, [], responses, {call_id: None for call_id in responses})
+    return slack.parse(source, WINDOW, cursor, [], ordered(responses, source["name"]), {call_id: None for call_id in responses})
 
 
 def relay_one(*blocks):
@@ -159,3 +163,81 @@ def thread_page(*replies, root=ROOT_TS, total=2, pagination=NO_MORE, parent_text
 
 def failed(code):
     return {"status": "failed", "reason": code}
+
+
+class _OrderedHandle:
+    def __init__(self, session):
+        self.session = session
+        self.last_id = None
+
+    def page(self, request, fetch=None):
+        self.last_id = self.session.next_id()
+        if self.last_id in self.session.responses:
+            return self.session.responses[self.last_id]
+        raise store.PagePending(self.last_id, None, request)
+
+    def finish(self, status, reason=None, records=None):
+        return None
+
+
+class CallOrderSession:
+    def __init__(self, name, responses):
+        self.name = name
+        self.responses = responses
+        self.number = 0
+
+    def next_id(self):
+        self.number += 1
+        return f"{self.name}-{self.number}"
+
+    def open(self, kind, entity, span=None):
+        return _OrderedHandle(self)
+
+
+class _LiveHandle:
+    last_id = None
+
+    def page(self, request, fetch=None):
+        return fetch()
+
+    def finish(self, status, reason=None, records=None):
+        return None
+
+
+class LiveSession:
+    def __init__(self, http):
+        self.http = http
+
+    def open(self, kind, entity, span=None):
+        return _LiveHandle()
+
+
+def ordered(responses, name=SOURCE["name"]):
+    return CallOrderSession(name, responses)
+
+
+def live(http):
+    return LiveSession(http)
+
+
+def store_session(root, transport="mcp", name=SOURCE["name"]):
+    return store.ReadSession(root, "chat", RUN, name, "slack", transport, clock=lambda: FETCHED_AT)
+
+
+def save_planned(session, call, text):
+    path = os.path.join(session.base, call["id"] + session.suffix)
+    store.make_folders(os.path.dirname(path))
+    with open(path, "w", encoding="utf-8") as stream:
+        stream.write(text)
+
+
+def relay_through(session, responses, source=SOURCE, cursor=STORED, window=WINDOW):
+    answers = [responses[call_id] for call_id in sorted(responses, key=lambda call_id: int(call_id.rsplit("-", 1)[1]))]
+    planned = []
+    while answers:
+        step = slack.plan(source, window, cursor, [], session, CONNECTOR)
+        if step["done"]:
+            break
+        planned.append(step["calls"][0]["id"])
+        save_planned(session, step["calls"][0], answers.pop(0))
+    return planned, slack.parse(source, window, cursor, [], session, {})

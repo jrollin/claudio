@@ -29,7 +29,8 @@ ROLE_OF_PREFIX = {"issue": "issue_tracker", "pr": "code_host", "chat": "chat", "
 SCHEMA = state.leaf(lambda value: state.is_integer(value) and value == SCHEMA_VERSION, f"schema {SCHEMA_VERSION}")
 ITEM_KEY = state.leaf(lambda value: isinstance(value, str) and value.partition(":")[0] in ROLE_OF_PREFIX and ":" in value, "an item key like issue:<key>, pr:<repo>#<number>, chat:<unit key> or page:<id>")
 ITEM_SPEC = {"source": state.TEXT, "role": state.TEXT, "kind": recap_state.one_of(KINDS), "title": state.TEXT, "link": state.TEXT, "waiting_on": state.Nullable(state.TEXT)}
-SOURCE_SPEC = {"source": state.TEXT, "role": state.TEXT, "read": state.BOOLEAN, "reason": state.Nullable(state.TEXT)}
+READS_SPEC = state.Omittable({"fetched": state.COUNT, "reused": state.COUNT})
+SOURCE_SPEC = {"source": state.TEXT, "role": state.TEXT, "read": state.BOOLEAN, "reason": state.Nullable(state.TEXT), "reads": READS_SPEC}
 CONTEXT_SPEC = {
     "schema": SCHEMA,
     "window": weekly_window.WINDOW_SPEC,
@@ -235,7 +236,10 @@ def source_rows(sources, collections):
     for name, source in sorted(sources.items()):
         collection = collections[name]
         read, reason = (False, evaluate.NO_COLLECTION) if collection is None else (collection["read"], collection["reason"])
-        rows.append({"source": name, "role": source["role"], "read": read, "reason": reason})
+        row = {"source": name, "role": source["role"], "read": read, "reason": reason}
+        if collection is not None and "reads" in collection:
+            row["reads"] = collection["reads"]
+        rows.append(row)
     return rows
 
 

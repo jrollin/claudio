@@ -18,8 +18,9 @@ Manage claude.ai routines (scheduled cloud agents) as code:
 | Example | `example/` | A private directory to copy: `config.json` and one routine file per routine, placeholders only |
 | Skeletons | `skills/routines/templates/` | Generic `prod-watch.md`, `tribe-digest.md`, `chat-recap.md` and `weekly-status.md` prompts and the `setup-env.sh` setup script, placeholders only |
 | State engine | `runtime/state.py` | Run window, item lifecycle, blind spots, mutes and run records for routine runs |
-| Collector | `runtime/collect.py` | Lists a routine's sources, checks the place's credentials and connectors, reads one source per command into a collection, and rebuilds every collection of a run offline from its raw folder |
+| Collector | `runtime/collect.py` | Lists a routine's sources, checks the place's credentials and connectors, reads one source per command into a collection, and rebuilds every collection of a run offline from its run folder |
 | Relay capture | `runtime/relay_capture.py` | The `PostToolUse` hook command that saves each connector result byte-exact, the `take` function `collect.py plan` and `tribe.py publish-plan` use to pick the captures up, and the `mismatch` function they use to name how a near capture differs |
+| Read store | `runtime/store.py` | Files each read of a store-backed source with its pages, records and `read.json`, writes the run manifest, serves the replay session and holds the `reparse` command (see Read store) |
 | Evaluator | `runtime/evaluate.py` | `features` computes the judgment features, `judge` checks the model's judgment and merges it into the facts, `annotate` adds the analysis of new and escalated items |
 | Digest | `runtime/digest.py` | Renders the posted message as Markdown from the change summary, the next state, the run record and the base file; the model posts it unchanged |
 | Features | `runtime/features.py` | Computes the features, base and rules files of one run; decides nothing |
@@ -95,7 +96,7 @@ A private `<name>-runtime.md` template is a byte copy of the public runnable tem
 
 Each flow is described step by step in [SKILL.md](skills/routines/SKILL.md).
 
-Exit codes of `routines.py`, `state.py`, `collect.py`, `evaluate.py`, `digest.py`, `tribe.py`, `recap.py` and `weekly.py`:
+Exit codes of `routines.py`, `state.py`, `collect.py`, `store.py`, `evaluate.py`, `digest.py`, `tribe.py`, `recap.py` and `weekly.py`:
 - 0: ok or in sync.
 - 1: findings or drift; for `collect.py check-env`, a source with no usable transport and a missing credential variable.
 - 2: usage or input error, including an unreadable or invalid features, base, facts, preview, summary, record or state file; `digest.py` exits 2 for every refused input, naming the file.
@@ -103,6 +104,8 @@ Exit codes of `routines.py`, `state.py`, `collect.py`, `evaluate.py`, `digest.py
   - `tribe.py`: a rejected judgment, state, window or cursor (`judge`, `apply`), a page that fails its structure check (`render`, `publish-plan`), and a Run state field outside its allowed values (`seed`).
   - `recap.py`: a rejected judgment, state, window or stored unit (`judge`, `apply`, `window`, `seed`), naming its key path.
   - `weekly.py`: a rejected state, window, collection or recap file (`window`, `features`, `apply`) and a rejected judgment (`judge`), naming the file and key path.
+  - `collect.py replay`: a read the run did not make, or a request that differs from its record.
+  - `store.py reparse`: a read the parser rejects.
 
 ## Config reference
 
@@ -136,6 +139,7 @@ Routine files and routines inline under `routines` in `config.json` are both acc
 | `places.<place>.runtime_dir` | Where the setup script installs the runtime in that place: absolute, at least two levels below the root, no `.` or `..` component, last component starting with `claudio-runtime` (for example `/opt/claudio-runtime`) |
 | `places.<place>.state_dir` | Absolute path of the private repository checkout in that place |
 | `places.<place>.runs_dir` | Optional. Absolute folder where a run of that place creates its run folder, `<runs_dir>/<slug>/<UTC start time>-<random>`; `/tmp` without it. Raw results hold source content, so keep it in a folder git ignores (for example `/srv/claudio-runs`) |
+| `places.<place>.store_dir` | Optional. Absolute folder of the shared read store of that place, outside every git working tree (for example `/srv/claudio-store`): the runs of the place file their chat reads under `<store_dir>/provider=<key>/` and reuse the fresh ones (see Shared store). Leave it unset on the cloud place |
 | `places.<place>.injected_hosts` | Optional. List of plain host names (such as `api.example.test`) whose credentials the place's proxy adds, for example the cloud environment's network secrets. An `api` provider whose `api.base_url` host is listed is usable there without its credential variables, and the client sends no credential header. The code host's host is refused |
 | `providers.<name>` | One provider; sources point at it by `<name>` |
 | `providers.<name>.adapter` | Module name of its adapter under `runtime/providers/` |
@@ -190,6 +194,7 @@ A source also holds the options of its provider's role:
 | Document store | `edited_by` | A user id, in place of `page_id` and `pages`: over `api`, the pages that user last edited in the window, newest first, up to `edited_cap` (1 to 20, default 10) |
 | Document store | `created_by` | A user id (`me` for the connected user), in place of `page_id` and `pages`: over `mcp` only, the pages that user created in the window, without their blocks; `exclude_paths` drops pages whose path starts with one of its prefixes |
 | Chat channel | `channels` | A non-empty list of channels; the replies of each thread whose root lies in the window are read too |
+| Chat channel | `max_age` | Optional, 0 by default: the minutes before the window end within which a stored read is reused instead of fetched (see Shared store). An integer for every read kind, or an object with `default`, `history`, `thread`, `reactions` and `people` (members and user names), a missing kind taking `default`. Searches are always fetched |
 | Code host | `repos` | A non-empty list of `owner/name` repositories |
 | Code host | `query` | Optional search query; a source with a non-empty one is not read, since neither transport takes a search query |
 | Issue tracker | `filter` | The saved filter id, digits only; a source sets `filter` or `jql`, not both |
@@ -220,8 +225,11 @@ Entries match this schema exactly: `severity`, `urgency` and `threshold` are rej
 
 Config checks:
 - `places.cloud` and `places.local` are both required.
-- `places.<place>.runtime_dir`, `places.<place>.state_dir` and, when present, `places.<place>.runs_dir` match `^(/[A-Za-z0-9._-]+)+/?$`, with no `.` or `..` component, since the template uses them unquoted in shell commands.
-- `places.<place>.runs_dir` is a string: a relative path or another type fails the config check, naming `places.<place>.runs_dir`.
+- `places.<place>.runtime_dir`, `places.<place>.state_dir` and, when present, `places.<place>.runs_dir` and `places.<place>.store_dir` match `^(/[A-Za-z0-9._-]+)+/?$`, with no `.` or `..` component, since the template uses them unquoted in shell commands.
+- `places.<place>.runs_dir` and `places.<place>.store_dir` are strings: a relative path or another type fails the config check, naming the key.
+- `collect.py sources` exits 2 naming `places.<place>.store_dir` when that folder is a link, belongs to another user or lies inside a git working tree.
+- A chat source's `max_age` is a non-negative integer, or an object of the keys above with such values: anything else, or an unknown key, fails the load, naming the key path and never the value.
+- A search named `.` or `..` fails the load, since its name becomes a store folder.
 - `places.<place>.injected_hosts` is a list of plain host names matching `^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*$`: another type, a URL or a host with a port fails the config check, naming `places.<place>.injected_hosts`. A code host provider read over `api` at that place whose host is listed fails it too.
 - `timezone` matches `^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+)*$`, since the template uses it unquoted in shell commands.
 - `runtime.dir`, a shared `values.state.dir` and a routine `values.state.dir` are refused; their values belong in `places.<place>.runtime_dir` and `places.<place>.state_dir`.
@@ -238,7 +246,7 @@ Templates use `{{dotted.key}}` placeholders; `\{{` renders a literal `{{`. Rende
 ## Collectors
 
 Each source has an ordered list of transports per place, from its own `transport` or its provider's default. The first usable one reads the source:
-- `api`: `collect.py fetch` calls the provider's HTTPS API from the place that runs the routine, and `--responses` records each HTTP call.
+- `api`: `collect.py fetch` calls the provider's HTTPS API from the place that runs the routine, and records each HTTP call in the run folder.
 - `mcp`: a relay loop.
   - `collect.py plan` saves the results a hook captured, then writes the next connector calls.
   - The model makes each call once; the hook captures the result byte-exact (see Relay capture).
@@ -256,10 +264,12 @@ Transport choice:
 
 Reads:
 - Each source writes one collection, `<run>/collections/<source>.json`, in the record schema of its role.
-- Each source keeps its raw results in `<run>/raw/<role>/<source>/`, with `<role>` the role `collect.py sources` prints:
+- `fetch`, `plan` and `parse` take `--run <run>`, the run folder, and keep the raw results of each source in it:
+  - A store-backed chat source files each read in the run store, `<run>/store`, one folder per read (see Read store), and keeps its relay files, `calls.json` and `planned.json`, in `<run>/relay/<source>/`.
+  - Any other source keeps them in `<run>/raw/<role>/<source>/`, with `<role>` the role `collect.py sources` prints.
   - `mcp`: `calls.json` and one `<call id>.txt` per saved connector result.
   - `api`: one `<source>-<n>.json` per HTTP call, in call order, with the method, path, query, request body, status, `Link` header, decoded response and error. It holds no request header and no credential.
-  - The folder holds source content and is never pushed to `claude/state`.
+  - These folders hold source content and are never pushed to `claude/state`.
   - [The providers README](runtime/providers/README.md) gives the record format.
 - A source that cannot be read is marked not read, with a reason, and the other sources are still collected.
 - A failed read never switches to the other transport.
@@ -282,10 +292,10 @@ Credentials:
 ```text
 python3 runtime/collect.py sources   --config C --routine R --place P [--out FILE]
 python3 runtime/collect.py check-env --config C --routine R --place P
-python3 runtime/collect.py fetch     --config C --routine R --source NAME --place P --window W --state S [--responses DIR] [--sources FILE] --out COLLECTION
-python3 runtime/collect.py plan      --config C --routine R --source NAME --place P [--sources FILE] --window W --state S --responses DIR --out PLAN
-python3 runtime/collect.py parse     --config C --routine R --source NAME --place P [--sources FILE] --window W --state S --responses DIR --out COLLECTION
-python3 runtime/collect.py replay    --config C --routine R --place P [--sources FILE] --window W --state S --raw RAW --out DIR
+python3 runtime/collect.py fetch     --config C --routine R --source NAME --place P --window W --state S --run RUN [--sources FILE] --out COLLECTION
+python3 runtime/collect.py plan      --config C --routine R --source NAME --place P [--sources FILE] --window W --state S --run RUN --out PLAN
+python3 runtime/collect.py parse     --config C --routine R --source NAME --place P [--sources FILE] --window W --state S --run RUN --out COLLECTION
+python3 runtime/collect.py replay    --config C --routine R --place P [--sources FILE] --window W --state S --run RUN --out DIR
 python3 runtime/evaluate.py features --config C --routine R --state S --window W --collections DIR --place P --runtime SHA --out FEATURES --base-out BASE --rules-out RULES
 python3 runtime/evaluate.py judge    --features FEATURES --base BASE --judgment J --out F
 python3 runtime/evaluate.py annotate --features FEATURES --facts F --analysis A --preview SUMMARY --out F
@@ -295,8 +305,9 @@ python3 runtime/evaluate.py annotate --features FEATURES --facts F --analysis A 
 
 `collect.py replay` rebuilds every source's collection of the run's place offline (see Offline replay):
 - It writes `DIR/<source>.json` for each source of the routine.
-- An `mcp` source goes through `parse` of `<RAW>/<role>/<source>`.
-- An `api` source goes through the adapter's `fetch` against a replay client that serves the records of `<RAW>/<role>/<source>`.
+- A store-backed source replays read by read from the run store, bound to `<run>/manifest.json`.
+- Any other `mcp` source goes through `parse` of `<run>/raw/<role>/<source>`.
+- Any other `api` source goes through the adapter's `fetch` against a replay client that serves the records of `<run>/raw/<role>/<source>`.
 - A source the run skipped, or an `api` config the adapter refuses, gives the same not-read collection as the run.
 
 Discovery:
@@ -324,8 +335,9 @@ Capture folder:
 - A capture is deleted when `plan` takes it, and every capture is deleted after 24 hours.
 
 Pick up:
-- `plan` records, per call id it printed, the time it first printed it, in `planned.json` of the responses folder.
-- Before it prints a step, `plan` saves as `<id>.txt` the capture of each call it printed before: the same tool name (`mcp__<connector>__<tool>`, the connector being `mcp.connectors.<place>` of the provider), the same arguments (an exact match, key order aside) and a capture time at or after the first print. The newest capture wins, and every capture it matched is deleted.
+- Each call `plan` prints carries `path`, the absolute file its result goes to: a page of its read in the run store for a store-backed source, `<id>.txt` in `<run>/raw/<role>/<source>/` for any other.
+- `plan` records, per call id it printed, the time it first printed it, in `planned.json` of the source's relay folder: `<run>/relay/<source>/` for a store-backed source, `<run>/raw/<role>/<source>/` for any other.
+- Before it prints a step, `plan` saves at its `path` the capture of each call it printed before: the same tool name (`mcp__<connector>__<tool>`, the connector being `mcp.connectors.<place>` of the provider), the same arguments (an exact match, key order aside) and a capture time at or after the first print. The newest capture wins, and every capture it matched is deleted.
 - It then computes the step again, and repeats until nothing is picked up.
 - `tribe.py publish-plan` does the same for `<run>/responses/publish/<id>.txt`.
 - When the loop ends, `plan` checks each call it prints again, and prints one line on stderr when a capture of the same tool name, taken at or after the first print, has other arguments: `relay capture mismatch <id>: <path> <detail>; <path> <detail>`.
@@ -338,7 +350,7 @@ Pick up:
 
 Model:
 - The model makes each call of `calls` once and runs `plan` again.
-- When `plan` prints again a call the model already made, the hook missed its result. The model then saves that result by hand as `<id>.txt`, unchanged: it copies the file when the harness saved the result to one, else it writes the text with the Write tool, never in a shell command. It then runs `plan` again.
+- When `plan` prints again a call the model already made, the hook missed its result. The model then saves that result by hand at the call's `path`, unchanged, after creating its folder: it copies the file when the harness saved the result to one, else it writes the text with the Write tool, never in a shell command. It then runs `plan` again.
 - A `relay capture mismatch` line in the error output of `plan` says how the call the model made differs from the printed one. It is a diagnostic only: the model never makes that call again, and saves its result by hand as above.
 
 Hook settings, in `$CLAUDIO_PRIVATE_DIR/.claude/settings.json` beside `permissions.deny`. A cloud routine reads the file because the private repository is its only source:
@@ -530,7 +542,7 @@ python3 runtime/weekly.py message  --summary SUMMARY --features FEATURES --out M
   - Excerpts: pull request activity up to 10 and chat messages up to 15, each text cut to 500 characters, newest first; a page gives its first 1000 characters as one excerpt.
   - `--recap` is the folder of the recap routine's `state.json` and `runs/` records. A recap unit first seen or last written in the week makes a chat item with its title, status and link (a thread's root message, or the conversation); the week's records give `recap_counts` (`new`, `resolved`, `handled`). A direct chat source adds its messages to the item of the same key, or makes its own.
   - Chat units in `exclude.channels` are dropped from the items and the counts.
-  - `sources` lists each source with `read` and `reason`; a source with no collection file is not read, with the reason `no collection`.
+  - `sources` lists each source with `read` and `reason`, and `reads` when its collection holds them; a source with no collection file is not read, with the reason `no collection`.
 - `judge` checks the model's judgment, `{"schema": 1, "accomplishments": [{"text", "cites"}], "decisions": [{"text", "cites"}], "open": [{"text", "owner", "cites"}]}`, and writes the summary: the judgment with the features' `window`, `week_start`, `recap_counts` and `sources`.
   - Counts: accomplishments 1 to 6, or none when the features hold no item; decisions 0 to 6; open 0 to 8.
   - `text`: 1 to 200 characters, with no URL (`http://`, `https://`, `www.`), no line break and no other control character; all texts hold at most 220 words together.
@@ -539,7 +551,7 @@ python3 runtime/weekly.py message  --summary SUMMARY --features FEATURES --out M
   - An unknown key, a missing key or another schema is rejected too; the rejection names the key path, such as `open[0].cites[1]`.
 - `apply` writes the next state and the run record.
   - The next state keeps the digest and sets `last_run` to the window's end (`run_at`) and its `week_start`; a `report_only` window leaves the state as it was.
-  - The record holds `schema`, `run_at`, `window`, `week_start`, `report_only`, `counts` (cited items per role, bullets per section), `cited` (the sorted item keys) and `sources` (`source`, `read`, `reason`). It holds no bullet text, title or owner name.
+  - The record holds `schema`, `run_at`, `window`, `week_start`, `report_only`, `counts` (cited items per role, bullets per section), `cited` (the sorted item keys) and `sources` (`source`, `read`, `reason`, and `reads` when present). It holds no bullet text, title or owner name.
 - `message` renders the summary as the chat message, with the links of each bullet taken from its cited items:
   - Title `**Weekly status, week of Mon 12 Oct**`, then `**Key accomplishments**`, `**Decisions**` and `**Still open / next week**`; an empty section shows `- None`, or `- None recorded` for decisions.
   - A bullet reads `- <text> (owner: <name>) ([<label>](<link>), ...)`; the owner shows on open bullets that have one.
@@ -566,7 +578,7 @@ The `weekly-status` template needs the routine values `digest.slug` (the state f
 2. Load the state from the `claude/state` branch, or `weekly.py init` on a baseline run. Then read the recap routine's `state/<recap>.json` and `runs/<recap>/` records into `<run>/recap/` with `git show` and `git archive | tar -x --strip-components=2`, so the records land in `<run>/recap/runs/*.json`. When that fails, the run goes on without `--recap` and the report names the recap as not read.
 3. `weekly.py window`, with `--report-only` when the post setting is `no`.
 4. `collect.py check-env`: a missing variable or connector ends that source not read, named in the report.
-5. `collect.py sources`, then one `fetch`, or one `plan` and `parse` relay loop, per source, with the raw results under `<run>/raw/<role>/<source>`.
+5. `collect.py sources`, then one `fetch`, or one `plan` and `parse` relay loop, per source, with the raw results in the run folder (see Collectors).
 6. `weekly.py features`, with `--recap <run>/recap` when step 2 read it.
 7. The model reads `features.json` only and writes `judgment.json`; `weekly.py judge` checks it. One correction is allowed, a second rejection is the degraded run `degraded: judgment rejected, no weekly status this run`, reported like the message (posted when the post setting is `yes`), with no state written.
 8. `weekly.py apply` writes `next.json` and `record.json`.
@@ -581,7 +593,7 @@ The `weekly-status` template needs the routine values `digest.slug` (the state f
 - The run uses the pinned runtime at `places.local.runtime_dir`; a missing or stale runtime stops it before it renders.
 - The relay capture hook finds the runtime through `CLAUDIO_RUNTIME_DIR` (see Relay capture). Without it no result is captured, `plan` prints each call again and the model saves each result by hand.
 - The run creates its folder at `<runs_dir>/<slug>/<UTC start time>-<random>`, with `runs_dir` from `places.local.runs_dir`, or `/tmp` without it.
-- The run folder keeps the raw results of every source and stays after the run.
+- The run folder keeps the raw results of every source, its run store and its manifest, and stays after the run.
 - Before collecting, it names every missing credential variable and every missing connector.
 - It starts from the remote `claude/state` branch and saves through a work tree under its run directory, so the checked-out branch and the working tree of the private repository never change.
 - Without `--post`, the run reports only:
@@ -593,14 +605,104 @@ The `weekly-status` template needs the routine values `digest.slug` (the state f
 - `config_dirty` in the run record covers both files: it is true when either holds uncommitted changes, an untracked routine file included.
 - A local run with `--post` and a cloud run at the same time both post; the second save finds the routine's state file changed since it started, stops and reports `state not saved`, and the next run collects the window again.
 
+## Read store
+
+A store-backed adapter (the chat adapter) files every read of a run in the run store, `<run>/store`, so a run selects, reparses and replays one read at a time. The [provider-store spec](../../docs/features/provider-store/) holds the rules.
+
+Layout, in hive-style `key=value` folders:
+
+```text
+<run>/store/provider=<key>/
+  kind=history/channel=<channel>/read=<from>_<to>-<fetch id>/
+  kind=thread/channel=<channel>/root=<root ts>/read=<from>_<to>-<fetch id>/
+  kind=reactions/channel=<channel>/message=<message ts>/read=<fetch id>/
+  kind=members/channel=<channel>/read=<fetch id>/
+  kind=users/user=<user id>/read=<fetch id>/
+  kind=search/search=<search name>/read=<from>_<to>-<fetch id>/
+```
+
+- `<key>` is the provider's config key.
+- `<from>` and `<to>` are the read's span: its `oldest` argument (the root ts for a whole thread) and its `latest` argument, or the window end of the run for a connector thread read.
+- `<fetch id>` is `<run id>.<source>`, so two sources of one run never share a read.
+- A search name is percent-encoded, and an id from tool text that is not a chat id or ts fails its read with `invalid entity id`.
+
+Each read folder:
+- `page-001.txt`, `page-002.txt`, and so on: the connector pages, byte-exact.
+- `page-001.json`, and so on: the HTTP records of an `api` read, in the format of [the providers README](runtime/providers/README.md).
+- `records.jsonl`: the parsed records, one compact JSON object per line, without the values the path holds.
+- `read.json`: the kind, entity, span, transport, run, source, fetch time, page requests, outcome (`complete`, `failed` or `partial`, with its reason) and the runtime commit that parsed the records.
+- `read.json` is written last: a folder without it is an unfinished read, which no listing shows.
+- Folders are created with mode 0700 and files with 0600.
+
+`<run>/manifest.json` lists, per store-backed source, the reads its collection used and how many the run fetched.
+
+### Shared store
+
+With `places.<place>.store_dir` set, the runs of that place share their reads:
+- A run still writes each read in `<run>/store`, then publishes it under `<store_dir>/provider=<key>/`. Its files are linked into `.incoming/`, then the folder is renamed into place, so no reader sees a partial read. A link falls back to a copy across file systems.
+- A source with `max_age` above 0 reuses a stored read when all of these hold:
+  - same provider key
+  - outcome `complete`
+  - kind other than `search`
+  - fetched at most `max_age` minutes before the window end
+  - fetched before the window end, unless by another source of the same run
+  - not one of the source's own reads in this run
+  - trust rule: an `api` source reuses `api` reads only, an `mcp` source reuses both
+- A channel history fetches only the gaps of its span that the reused reads leave, one read per gap. A thread is read from the end of its covered part.
+- Messages merge by ts, the newest fetch winning, then keep the needed span.
+- Reactions, members and user names reuse the newest fresh read whole.
+- A reused read is linked into `<run>/store` and listed in the manifest, so the run folder replays alone.
+- A reused read spends no call of `call_cap` or of the page caps.
+- Records that another runtime commit parsed are reparsed from their pages before use, with no network.
+- With `max_age` above 0 for some kind, the collection, the run record (`collected.<source>.reads`) and the weekly record's source rows hold `reads`: `{"fetched": N, "reused": M}`. Without it they are unchanged.
+
+Reparse:
+
+```text
+python3 runtime/store.py reparse --root ROOT [--provider P] [--channel C] [--thread C:TS] [--kind K] [--from UTC_TIME] [--to UTC_TIME]
+```
+
+- `ROOT` is a store root, such as `<run>/store`.
+- Each filter repeats, and the filters combine with AND; `--from` and `--to` select the reads whose span overlaps.
+- Only complete reads are reparsed, from their saved pages, with no network and no environment variable.
+- It rewrites `records.jsonl`, then `read.json` when the records or the runtime commit changed.
+- It prints `same`, `changed` or `rejected <read>: <reason>` per read, then the counts.
+- A read the parser rejects stays as it was, and the command exits 3.
+- Filters that match no read exit 2, naming them.
+
+Prune:
+
+```text
+python3 runtime/store.py prune --root STORE_DIR --older-than-days N [--dry-run]
+```
+
+- It deletes, whole, each read folder fetched more than N days ago.
+- A folder without `read.json`, and a `.incoming/` leftover, go by their modification time.
+- It prints `<provider> deleted <N> kept <M>` per provider key; `--dry-run` prints the same and deletes nothing.
+- Nothing else deletes a read. A run folder keeps the reads it linked, so it still replays after a prune.
+- An age that is not a positive whole number exits 2, and so does a root that is not a folder.
+
+Query the store with an outside tool, with no runtime code. DuckDB example:
+
+```sql
+SELECT channel, root, ts, author, text
+FROM read_json('<run>/store/provider=chat/kind=thread/*/*/*/records.jsonl',
+               format = 'newline_delimited',
+               hive_partitioning = true,
+               hive_types_autocast = false)
+WHERE channel = 'C0123';
+```
+
+`hive_types_autocast = false` keeps the chat ts values as text.
+
 ## Offline replay
 
-A run folder holds its window, its state, its raw results and its judgment, so the run's result can be rebuilt offline to test a change to a parser, an evaluator or the digest.
+A run folder holds its window, its state, its raw results, its run store, its manifest and its judgment, so the run's result can be rebuilt offline to test a change to a parser, an evaluator or the digest.
 
 A watch routine replays in this order, `RUN` being the run folder and `OUT` a separate output folder:
 
 ```text
-python3 runtime/collect.py replay    --config C --routine R --place P --sources RUN/sources.json --window RUN/window.json --state RUN/state.json --raw RUN/raw --out OUT/collections
+python3 runtime/collect.py replay    --config C --routine R --place P --sources RUN/sources.json --window RUN/window.json --state RUN/state.json --run RUN --out OUT/collections
 python3 runtime/evaluate.py features --config C --routine R --state RUN/state.json --window RUN/window.json --collections OUT/collections --place P --runtime SHA --out OUT/features.json --base-out OUT/base.json --rules-out OUT/rules.json
 python3 runtime/evaluate.py judge    --features OUT/features.json --base OUT/base.json --judgment RUN/judgment.json --out OUT/facts.json
 python3 runtime/state.py apply       --state RUN/state.json --facts OUT/facts.json --window RUN/window.json --tz Z --out OUT/next.json --summary OUT/summary.json --record OUT/record.json
@@ -612,6 +714,8 @@ python3 runtime/digest.py            --summary OUT/summary.json --state OUT/next
 - Without `--sources`, each source replays through its first listed transport.
 - `replay` makes no network call and reads no environment variable.
 - A request that differs from its record, or one past the last record, exits 3 naming the source, the call number, the method and the path.
+- A store-backed source replays only the reads `<run>/manifest.json` lists: a read the run did not make exits 3 naming it, and each asked request is compared with the one `read.json` recorded, a difference exiting 3 with the read, the call number and the differing fields, never a value.
+- A run with a store-backed source and no `manifest.json` exits 2.
 - A recorded error replays as the same not-read collection.
 - A record that is not valid JSON exits 2 naming its file, and a record of the wrong shape exits 3 naming its file; an `mcp` source with no saved responses exits 2.
 - `judge` checks the run's stored judgment against the replayed features, so a feature change that the judgment no longer fits exits 3 with the key path.
@@ -696,5 +800,10 @@ Record text written by other people (messages, titles) reaches a model that hold
 | The digest names a missing connector | The session lists no tool from the connector `check-env` named | Connect it in the session (`local`) or attach it to the routine (`cloud`), under the name `mcp.connectors.<place>` sets |
 | A run reports `degraded: judgment rejected` | The model's judgment or analysis failed the checker twice | Read the key path in the message, then fix the rule text that led the model astray and run again |
 | A source is not read with `partial: call cap` | Its relay loop reached 50 calls | Narrow the source's queries, or set its transport to `api` for that place |
+| `replay` exits 3 with `a read the run did not make` | The walk asks a read the run's manifest does not list: the config, the window or the walk changed since the run | Replay with the config and the runtime of the run; to check a parser change alone, use `store.py reparse` |
+| `replay` exits 2 with `holds no manifest.json` | The run folder holds a store-backed source but no manifest: it was written by a runtime without the read store, or the run stopped before its collections | Replay it with the runtime tag that wrote it |
+| `collect.py sources` exits 2 naming `places.<place>.store_dir` | The folder is a link, belongs to another user, or lies inside a git working tree | Point `store_dir` at a folder you own, outside every repository |
+| A source with `max_age` still fetches its whole span | No stored read is eligible: older than `max_age`, fetched after the window end by another run, not complete, a connector read for an `api` source, or another provider key | Read the `read.json` of the stored reads, or raise `max_age` for that kind |
+| `store_dir` keeps growing | Only `prune` deletes reads | Run `store.py prune --root <store_dir> --older-than-days N` |
 | A source is not read with `plan not done` | The relay loop stopped before `plan` returned `done`: a missing connector, or the run stopped relaying | Fix the connector, then run again |
 | `plan` prints the same call again after the model made it | The hook captured nothing for it: the hook is not in `.claude/settings.json`, `CLAUDIO_RUNTIME_DIR` is wrong for the place, the capture folder is a link or belongs to another user, or the arguments differ from the printed ones (`plan` then prints a `relay capture mismatch` line) | Read `errors.log` in the capture folder and the `relay capture mismatch` line of the error output: it names the paths where the call differs, never their values, and a line that names identity paths such as `channel_id` or `message_ts` usually points at another source's capture when several sources relay in parallel (a known false positive). Fix the hook settings, or save that result by hand as the template says |

@@ -160,6 +160,13 @@ def page_facts(sources, collections):
     return {"source": name, "last_edited": page["last_edited"], "mutes": mutes_table(page["blocks"])}
 
 
+def collected(collection):
+    kept = {**{key: collection[key] for key in ("role", "transport", "read", "reason")}, "skipped": collection.get("skipped", [])}
+    if "reads" in collection:
+        kept["reads"] = collection["reads"]
+    return kept
+
+
 def run_context(args, collections, git):
     directory = config_directory(args.config)
     commit = git(directory, ["rev-parse", "HEAD"])
@@ -170,10 +177,7 @@ def run_context(args, collections, git):
         "runtime": args.runtime,
         "config": None if commit is None else commit.strip(),
         "config_dirty": None if status is None else status.strip() != "",
-        "collected": {
-            name: {**{key: collection[key] for key in ("role", "transport", "read", "reason")}, "skipped": collection.get("skipped", [])}
-            for name, collection in collections.items()
-        },
+        "collected": {name: collected(collection) for name, collection in collections.items()},
     }
 
 

@@ -717,6 +717,23 @@ class SourcesFeaturesTest(FeaturesCase):
             ],
         )
 
+    def test_a_source_row_keeps_the_read_counts_of_its_collection(self):
+        chat = {**make_collection("chat", make_window()), "reads": {"fetched": 1, "reused": 2}}
+
+        rows = self.computed(collections={"chat": chat})["sources"]
+
+        self.assertEqual(rows[0], {"source": "chat", "role": "chat", "read": True, "reason": None, "reads": {"fetched": 1, "reused": 2}})
+
+    def test_a_source_row_has_no_read_counts_without_them(self):
+        rows = self.computed(collections={"chat": make_collection("chat", make_window())})["sources"]
+
+        self.assertNotIn("reads", rows[0])
+
+    def test_a_source_without_a_collection_has_no_read_counts(self):
+        rows = self.computed(collections={})["sources"]
+
+        self.assertEqual([row for row in rows if "reads" in row], [])
+
     def test_a_missing_collection_makes_no_item_and_does_not_stop_the_others(self):
         items = self.items(collections=self.collection("issues", issues=[make_issue()]))
 
@@ -1149,6 +1166,18 @@ class ApplyRecordTest(ApplyCase):
         self.applied(summary=make_summary(features=features))
 
         self.assertIn({"source": "code", "read": False, "reason": "http 503"}, self.read("record.json")["sources"])
+
+    def test_the_record_keeps_the_read_counts_of_a_source(self):
+        features = make_features_document(sources=make_source_rows(chat={"reads": {"fetched": 1, "reused": 2}}))
+
+        self.applied(summary=make_summary(features=features))
+
+        self.assertIn({"source": "chat", "read": True, "reason": None, "reads": {"fetched": 1, "reused": 2}}, self.read("record.json")["sources"])
+
+    def test_the_record_has_no_read_counts_for_a_source_without_them(self):
+        self.applied()
+
+        self.assertEqual([row for row in self.read("record.json")["sources"] if "reads" in row], [])
 
     def test_the_record_of_a_report_only_run_is_marked(self):
         self.applied(window=make_window(report_only=True))

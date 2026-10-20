@@ -4,19 +4,24 @@ import urllib.parse
 
 from state import clean_text
 
-from . import _common
+from . import _common, _slack_reads
 from ._common import dig
 from ._errors import CALL_CAP, PartialRead, SourceUnreadable
-from ._slack_read import KEY_PART_CAP, LINE_BREAK, _Calls, _Pending, _Relay, _api_read, _relay_read, _stored_ts, _thread_key
+from ._slack_read import KEY_PART_CAP, LINE_BREAK, _Calls, _channel_read, _Pending, _stored_ts, _thread_key
+from ._slack_reads import ApiReads, Freshness, RelayReads
 from ._slack_search import _ApiReader, _RelayReader, _search_units
 
 ROLE = "chat"
 CREDENTIAL = "token"
 STATIC_HEADERS = {}
+STORE = True
 NOT_LISTED = "channel not listed"
 INVALID_ROOT = "invalid root ts"
 LINKS_BASE = "https://slack.com"
 ROOT_TS = re.compile(r"[0-9]{1,16}\.[0-9]{1,9}")
+
+parse_read = _slack_reads.parse_read
+to_rows = _slack_reads.to_rows
 
 
 def api_client(provider, opener=None, environ=None, sleep=None):
@@ -27,21 +32,26 @@ def _auth(values):
     return {"Authorization": "Bearer " + values[CREDENTIAL]}
 
 
-def fetch(source, window, cursor, entries, http):
+def fetch(source, window, cursor, entries, session):
     stored, calls = _stored(cursor), _Calls(source.get("call_cap", CALL_CAP))
+    reads = ApiReads(session, session.http, calls, _freshness(source, window))
     cited, refused = _cited(source)
-    reads = [_api_read(channel, window, stored, http, calls, cited[channel]) for channel in _channels(source)]
-    found = _search_units(source, window, _ApiReader(http, calls, window, source["owner"])) if source.get("searches") else None
-    return _result(source, window, stored, reads, refused, found)
+    channel_reads = [_channel_read(reads, channel, window, stored, cited[channel]) for channel in _channels(source)]
+    found = _search_units(source, window, _ApiReader(reads, window, source["owner"])) if source.get("searches") else None
+    return _result(source, window, stored, channel_reads, refused, found)
+
+
+def _freshness(source, window):
+    return Freshness(source.get("max_age"), window["to_ts"])
 
 
 def _channels(source):
     return source.get("channels") or []
 
 
-def plan(source, window, cursor, entries, responses, connector):
+def plan(source, window, cursor, entries, session, connector):
     try:
-        _walk(source, window, _stored(cursor), responses)
+        _walk(source, window, _stored(cursor), session)
     except _Pending as pending:
         call = {"id": pending.call_id, "connector": connector, "tool": pending.tool, "arguments": pending.arguments, "digest": None}
         return {"done": False, "partial": None, "calls": [call]}
@@ -52,10 +62,10 @@ def plan(source, window, cursor, entries, responses, connector):
     return _common.ended()
 
 
-def parse(source, window, cursor, entries, responses, digests):
+def parse(source, window, cursor, entries, session, digests):
     stored = _stored(cursor)
     try:
-        reads, refused, found = _walk(source, window, stored, responses)
+        reads, refused, found = _walk(source, window, stored, session)
     except _Pending as pending:
         raise SourceUnreadable(f"{pending.tool}: no response {pending.call_id}") from None
     return _result(source, window, stored, reads, refused, found)
@@ -78,12 +88,12 @@ def _refused_key(channel, root):
     return _thread_key(clean_text(channel, KEY_PART_CAP), clean_text(root, KEY_PART_CAP))
 
 
-def _walk(source, window, stored, responses):
-    relay = _Relay(source["name"], responses)
+def _walk(source, window, stored, session):
+    reads = RelayReads(session, _freshness(source, window))
     cited, refused = _cited(source)
-    reads = [_relay_read(relay, channel, window, stored, cited[channel]) for channel in _channels(source)]
-    found = _search_units(source, window, _RelayReader(relay, window)) if source.get("searches") else None
-    return reads, refused, found
+    channel_reads = [_channel_read(reads, channel, window, stored, cited[channel]) for channel in _channels(source)]
+    found = _search_units(source, window, _RelayReader(reads, window)) if source.get("searches") else None
+    return channel_reads, refused, found
 
 
 def _result(source, window, stored, reads, refused, found=None):

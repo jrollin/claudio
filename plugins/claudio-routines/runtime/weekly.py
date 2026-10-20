@@ -19,7 +19,7 @@ OWNER_CHARS = 60
 TOTAL_WORDS = 220
 URL = re.compile(r"https?://|www\.", re.IGNORECASE)
 SUMMARY_CONTEXT = ("window", "week_start", "recap_counts", "sources")
-SOURCE_FIELDS = ("source", "read", "reason")
+SOURCE_FIELDS = ("source", "read", "reason", "reads")
 
 
 def run_init(args):
@@ -130,7 +130,7 @@ def build_record(summary, window):
             "sections": {section: len(summary[section]) for section in SECTIONS},
         },
         "cited": cited,
-        "sources": [{name: row[name] for name in SOURCE_FIELDS} for row in summary["sources"]],
+        "sources": [{name: row[name] for name in SOURCE_FIELDS if name in row} for row in summary["sources"]],
     }
 
 

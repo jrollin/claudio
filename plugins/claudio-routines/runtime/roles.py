@@ -31,6 +31,8 @@ WEEKLY_ENGINE = ENGINES[3]
 WEEKLY_ROLES = ("issue_tracker", "code_host", "chat", "document_store")
 RECAP_LANDINGS = ("waiting", "good_to_know")
 THREAD_READS = ("full", "since")
+MAX_AGE_KINDS = ("default", "history", "thread", "reactions", "people")
+DOT_PARTS = (".", "..")
 RECAP_LOOKBACK_CAP = 365
 PAGE_FROM_STATE = ("previous_page",)
 PAGE_OPTIONS = ("page_id", "pages", "page_from_state", "edited_by", "created_by")
@@ -53,6 +55,7 @@ TITLE_VALUES = ("date",)
 DIGITS = re.compile(r"[0-9]+")
 DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 PLAIN_HOST = re.compile(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*")
+PLAIN_DIR = re.compile(r"(/[A-Za-z0-9._-]+)+/?")
 ROUTINE_SLUG = re.compile(r"[a-z0-9-]+")
 UTC_Z = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z")
 
@@ -111,6 +114,10 @@ def _matches(pattern):
     return lambda value: isinstance(value, str) and pattern.fullmatch(value) is not None
 
 
+def _is_plain_dir(value):
+    return _matches(PLAIN_DIR)(value) and not any(part in DOT_PARTS for part in value.strip("/").split("/"))
+
+
 def _is_day(value):
     return _matches(DAY)(value) and parses(date.fromisoformat, value)
 
@@ -136,6 +143,8 @@ ABSOLUTE = Rule(lambda value: isinstance(value, str) and value.startswith("/"), 
 UTC_TIME = Rule(_matches(UTC_Z), "must be a UTC timestamp ending in Z")
 DAY_TEXT = Rule(_is_day, "must be a day like 2026-01-31")
 PAGE_ID_TEXT = Rule(_matches(PAGE_ID), "must match ^[A-Za-z0-9-]+$")
+PLAIN_DIR_TEXT = Rule(_is_plain_dir, "must match ^(/[A-Za-z0-9._-]+)+/?$ without . or .. parts")
+COUNT = Rule(lambda value: is_integer(value) and value >= 0, "must be an integer of at least 0")
 
 CHANNEL_TYPES_TEXT = Rule(
     lambda value: isinstance(value, str) and all(part in CHANNEL_TYPES for part in value.split(",")),
@@ -143,7 +152,7 @@ CHANNEL_TYPES_TEXT = Rule(
 )
 
 HOST = Rule(_matches(PLAIN_HOST), "must be a plain host name such as api.example.test")
-PLACE = {"runtime_dir": ABSOLUTE, "state_dir": ABSOLUTE, "injected_hosts": Omittable(ListOf(HOST))}
+PLACE = {"runtime_dir": ABSOLUTE, "state_dir": ABSOLUTE, "injected_hosts": Omittable(ListOf(HOST)), "store_dir": Omittable(PLAIN_DIR_TEXT)}
 TRANSPORT_PREFERENCE = Rule(_is_transport_preference, "must be api, mcp or a non-empty list of them without repeats")
 SOURCE = {"provider": TEXT, "transport": {"cloud": TRANSPORT_PREFERENCE, "local": TRANSPORT_PREFERENCE}}
 PINNED_URL = Rule(_is_pinned_url, "must be an https URL with a host, a valid port and no user info, query or fragment")
@@ -174,6 +183,12 @@ ROLE_OPTIONS = {
         "reactions": Omittable(BOOLEAN),
         "search_page_cap": Omittable(Rule(lambda value: is_integer(value) and value >= 1, "must be an integer of at least 1")),
         "call_cap": Omittable(Rule(lambda value: is_integer(value) and 1 <= value <= CALL_CAP_MAX, f"must be an integer from 1 to {CALL_CAP_MAX}")),
+        "max_age": Omittable(
+            Rule(
+                lambda value: isinstance(value, dict) or COUNT.test(value),
+                "must be an integer of minutes of at least 0 or a mapping of " + ", ".join(MAX_AGE_KINDS),
+            )
+        ),
     },
     "code_host": {
         "repos": Omittable(ListOf(Rule(_matches(REPO), "must be an owner/name repository"), non_empty=True)),
@@ -201,8 +216,10 @@ LABEL = Rule(
     lambda value: is_label(value) and value != "",
     f"must be a non-empty string of at most {LABEL_CAP} characters without control characters",
 )
+SEARCH_NAME = Rule(lambda value: LABEL.test(value) and value not in DOT_PARTS, LABEL.why + ", . or ..")
+MAX_AGE = {kind: Omittable(COUNT) for kind in MAX_AGE_KINDS}
 SEARCH = {
-    "name": LABEL,
+    "name": SEARCH_NAME,
     "filters": TEXT,
     "channel_types": Omittable(CHANNEL_TYPES_TEXT),
     "keywords": Omittable(ListOf(TEXT, non_empty=True)),
@@ -313,6 +330,7 @@ COLLECTION = {
     "cursor": ANY,
     "records": ANY,
     "entries": MapOf({"status": Choice(STATUSES), "reason": Nullable(STRING)}),
+    "reads": Omittable({"fetched": COUNT, "reused": COUNT}),
 }
 MONITOR = {"id": STRING, "name": STRING, "state": STRING, "priority": Nullable(INTEGER), "link": STRING}
 BUCKET = {"ts": INTEGER, "value": Nullable(NUMBER)}
@@ -640,6 +658,8 @@ def _validate_chat_options(source, path):
         raise ConfigError(f"{path}: a chat source sets channels or searches")
     if ("searches" in source or source.get("reactions") is True) and "owner" not in source:
         raise ConfigError(f"{path}.owner: missing, a chat source with searches or reactions names its owner")
+    if isinstance(source.get("max_age"), dict):
+        _conform(source["max_age"], MAX_AGE, f"{path}.max_age", ConfigError, exact=True)
     seen = {}
     for index, search in enumerate(source.get("searches", [])):
         search_path = f"{path}.searches[{index}]"

@@ -998,6 +998,32 @@ class RunContextTest(ApplyCase):
         fields = ("place", "runtime", "config", "config_dirty", "collected")
         self.assertEqual({name: record[name] for name in fields}, make_run_context())
 
+    def test_record_copies_the_read_counts_of_a_source(self):
+        run_context = make_run_context()
+        run_context["collected"]["monitors"]["reads"] = {"fetched": 1, "reused": 4}
+        self.apply(make_state(), make_facts(run_context=run_context))
+        self.assertEqual(self.read("record.json")["collected"]["monitors"]["reads"], {"fetched": 1, "reused": 4})
+
+    def test_next_state_never_stores_the_read_counts(self):
+        self.apply(make_state(), make_facts())
+        without_context = self.read_bytes("next.json")
+        run_context = make_run_context()
+        run_context["collected"]["monitors"]["reads"] = {"fetched": 1, "reused": 4}
+        self.apply(make_state(), make_facts(run_context=run_context))
+        self.assertEqual(self.read_bytes("next.json"), without_context)
+
+    def test_negative_read_counts_are_rejected_with_their_key_path(self):
+        run_context = make_run_context()
+        run_context["collected"]["monitors"]["reads"] = {"fetched": -1, "reused": 0}
+        code, err = self.run_apply(make_state(), make_facts(run_context=run_context))
+        self.assert_rejected_without_output(code, err, "run_context.collected.monitors.reads.fetched")
+
+    def test_read_counts_without_reused_are_rejected(self):
+        run_context = make_run_context()
+        run_context["collected"]["monitors"]["reads"] = {"fetched": 1}
+        code, err = self.run_apply(make_state(), make_facts(run_context=run_context))
+        self.assert_rejected_without_output(code, err, "missing key run_context.collected.monitors.reads.reused")
+
     def test_record_without_run_context_has_no_run_context_fields(self):
         self.apply(make_state(), make_facts())
         record = self.read("record.json")

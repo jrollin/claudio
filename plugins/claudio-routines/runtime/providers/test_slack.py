@@ -1,13 +1,21 @@
 import email.message
 import io
 import json
+import os
+import tempfile
 import unittest
 import urllib.parse
 
 import roles
 import state
+import store
 from providers import _http, slack
 from providers.slack_support import (
+    RUN,
+    live,
+    ordered,
+    relay_through,
+    store_session,
     BASE,
     CONNECTOR,
     HISTORY_PATH,
@@ -106,7 +114,7 @@ def status(code):
 
 def run(*outcomes, source=SOURCE, cursor=STORED, environ=None, window=WINDOW):
     opener = FakeOpener(outcomes)
-    return opener, slack.fetch(source, window, cursor, [], client(opener, environ))
+    return opener, slack.fetch(source, window, cursor, [], live(client(opener, environ)))
 
 
 def read_shared():
@@ -128,7 +136,7 @@ def shared_responses():
 
 
 def relay_plan(responses, cursor=STORED):
-    return slack.plan(SOURCE, WINDOW, cursor, [], responses, CONNECTOR)
+    return slack.plan(SOURCE, WINDOW, cursor, [], ordered(responses), CONNECTOR)
 
 
 def relay_texts(*blocks):
@@ -374,7 +382,7 @@ class FetchErrorsTest(unittest.TestCase):
         opener = FakeOpener([history(more=f"c{n}") for n in range(_http.PAGE_CAP + 1)])
 
         with self.assertRaises(_http.PartialRead):
-            slack.fetch(one_channel(), WINDOW, STORED, [], client(opener))
+            slack.fetch(one_channel(), WINDOW, STORED, [], live(client(opener)))
         self.assertEqual(len(opener.requests), _http.PAGE_CAP)
 
     def test_http_error_names_the_status_and_the_path(self):
@@ -437,7 +445,7 @@ class ThreadFetchTest(unittest.TestCase):
         shown = reply_item("1760002300.000230", text="history copy", root="1759000000.000001")
         opener = FakeOpener([history(root_item(), shown), history(root_item(), reply_item("1760002300.000230", text="thread copy"))])
 
-        result = slack.fetch(one_channel(), WINDOW, STORED, [], client(opener))
+        result = slack.fetch(one_channel(), WINDOW, STORED, [], live(client(opener)))
 
         self.assertEqual([item["text"] for item in result["records"]["messages"]], ["Release notes", "thread copy"])
 
@@ -486,7 +494,7 @@ class ThreadFetchTest(unittest.TestCase):
         parent = {**root_item(), "text": "parent copy"}
         opener = FakeOpener([history(root_item()), history(parent, reply_item("1760002300.000230"))])
 
-        result = slack.fetch(one_channel(), WINDOW, STORED, [], client(opener))
+        result = slack.fetch(one_channel(), WINDOW, STORED, [], live(client(opener)))
 
         self.assertEqual([item["text"] for item in result["records"]["messages"]], ["Release notes", "Thanks"])
 
@@ -528,20 +536,20 @@ class CallCapTest(unittest.TestCase):
         opener = FakeOpener([history(*self.roots(60)), *(history() for _ in range(60))])
 
         with self.assertRaises(_http.PartialRead):
-            slack.fetch(one_channel(), WINDOW, STORED, [], client(opener))
+            slack.fetch(one_channel(), WINDOW, STORED, [], live(client(opener)))
         self.assertEqual(len(opener.requests), 50)
 
     def test_reaching_the_budget_makes_the_read_partial(self):
         opener = FakeOpener([history(*self.roots(60)), *(history() for _ in range(60))])
 
         with self.assertRaises(_http.PartialRead) as caught:
-            slack.fetch(one_channel(), WINDOW, STORED, [], client(opener))
+            slack.fetch(one_channel(), WINDOW, STORED, [], live(client(opener)))
         self.assertEqual(str(caught.exception), "partial: call cap")
 
     def test_exactly_the_budget_is_not_partial(self):
         opener = FakeOpener([history(*self.roots(49)), *(history() for _ in range(49))])
 
-        result = slack.fetch(one_channel(), WINDOW, STORED, [], client(opener))
+        result = slack.fetch(one_channel(), WINDOW, STORED, [], live(client(opener)))
 
         self.assertEqual((len(opener.requests), len(result["records"]["messages"])), (50, 49))
 
@@ -653,17 +661,17 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(relay_plan(responses)["calls"], [call("team-chat-5", "CHAN2", "1760000000")])
 
     def test_thread_read_asks_the_replies_after_the_stored_ts_of_its_channel(self):
-        plan = slack.plan(one_channel(), WINDOW, STORED, [], {"team-chat-1": root_page()}, CONNECTOR)
+        plan = slack.plan(one_channel(), WINDOW, STORED, [], ordered({"team-chat-1": root_page()}), CONNECTOR)
 
         self.assertEqual(plan["calls"][0]["arguments"]["oldest"], STORED_TS)
 
     def test_thread_read_asks_the_replies_after_the_window_start_for_a_channel_without_stored_ts(self):
-        plan = slack.plan(one_channel(), WINDOW, None, [], {"team-chat-1": root_page()}, CONNECTOR)
+        plan = slack.plan(one_channel(), WINDOW, None, [], ordered({"team-chat-1": root_page()}), CONNECTOR)
 
         self.assertEqual(plan["calls"], [thread_call("team-chat-2", "CHAN1", ROOT_TS, "1760000000")])
 
     def test_thread_read_asks_the_replies_after_the_first_read_start_when_it_precedes_the_window(self):
-        plan = slack.plan(one_channel(), window_from(1759000000), None, [], {"team-chat-1": root_page()}, CONNECTOR)
+        plan = slack.plan(one_channel(), window_from(1759000000), None, [], ordered({"team-chat-1": root_page()}), CONNECTOR)
 
         self.assertEqual(plan["calls"][0]["arguments"]["oldest"], "1759000000")
 
@@ -673,12 +681,12 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(relay_plan(responses)["calls"], [call("team-chat-2", "CHAN2", "1760000000")])
 
     def test_first_read_start_is_the_oldest_of_a_channel_without_stored_ts(self):
-        plan = slack.plan(SOURCE, window_from(1759000000), None, [], {}, CONNECTOR)
+        plan = slack.plan(SOURCE, window_from(1759000000), None, [], ordered({}), CONNECTOR)
 
         self.assertEqual(plan["calls"], [call("team-chat-1", "CHAN1", "1759000000")])
 
     def test_later_stored_ts_is_the_oldest_of_a_channel(self):
-        plan = slack.plan(SOURCE, window_from(1759000000), STORED, [], {}, CONNECTOR)
+        plan = slack.plan(SOURCE, window_from(1759000000), STORED, [], ordered({}), CONNECTOR)
 
         self.assertEqual(plan["calls"], [call("team-chat-1", "CHAN1", "1760000500.000050")])
 
@@ -726,7 +734,7 @@ class TransportEqualityTest(unittest.TestCase):
     def test_both_transports_read_a_broadcast_reply_shown_in_the_history_the_same(self):
         shown = reply_item("1760002300.000230", text="history copy")
         opener = FakeOpener([history(root_item(), shown), history(root_item(), reply_item("1760002300.000230", text="thread copy"))])
-        over_api = slack.fetch(one_channel(), WINDOW, STORED, [], client(opener))
+        over_api = slack.fetch(one_channel(), WINDOW, STORED, [], live(client(opener)))
         shown_in_history = relay_message("U2", "1760002300.000230", "history copy")
         responses = {"team-chat-1": root_page(newer=(shown_in_history, "")), "team-chat-2": thread_page(thread_reply("U2", "1760002300.000230", "thread copy"))}
 
@@ -916,7 +924,7 @@ class CitedThreadFetchTest(unittest.TestCase):
         source = cited_source(*(f"{1759900000 + 100 * n}.000100" for n in range(60)))
 
         with self.assertRaises(_http.PartialRead) as caught:
-            slack.fetch(source, WINDOW, STORED, [], client(opener))
+            slack.fetch(source, WINDOW, STORED, [], live(client(opener)))
 
         self.assertEqual((len(opener.requests), str(caught.exception)), (50, "partial: call cap"))
 
@@ -935,23 +943,23 @@ class CitedThreadRelayTest(unittest.TestCase):
     def test_plans_no_second_call_for_a_response_holding_only_the_replies_after_oldest(self):
         responses = {"team-chat-1": relay_page("CHAN1"), "team-chat-2": cited_relay_thread(replies=CITED_REPLIES[1:3])}
 
-        self.assertEqual(slack.plan(cited_source(CITED_ROOT), WINDOW, STORED, [], responses, CONNECTOR)["done"], True)
+        self.assertEqual(slack.plan(cited_source(CITED_ROOT), WINDOW, STORED, [], ordered(responses), CONNECTOR)["done"], True)
 
     def test_plan_reads_the_cited_thread_after_its_channel(self):
-        step = slack.plan(cited_source(CITED_ROOT), WINDOW, STORED, [], {"team-chat-1": relay_page("CHAN1")}, CONNECTOR)
+        step = slack.plan(cited_source(CITED_ROOT), WINDOW, STORED, [], ordered({"team-chat-1": relay_page("CHAN1")}), CONNECTOR)
 
         self.assertEqual(step, {"done": False, "partial": None, "calls": [thread_call("team-chat-2", "CHAN1", CITED_ROOT, "1760000000")]})
 
     def test_plan_of_a_complete_read_with_a_cited_thread_is_done(self):
         responses = {"team-chat-1": relay_page("CHAN1"), "team-chat-2": cited_relay_thread()}
 
-        self.assertEqual(slack.plan(cited_source(CITED_ROOT), WINDOW, STORED, [], responses, CONNECTOR), {"done": True, "partial": None, "calls": []})
+        self.assertEqual(slack.plan(cited_source(CITED_ROOT), WINDOW, STORED, [], ordered(responses), CONNECTOR), {"done": True, "partial": None, "calls": []})
 
     def test_plan_asks_the_next_page_while_every_reply_is_newer_than_the_previous_window_end(self):
         newest = cited_relay_thread(replies=CITED_REPLIES[1:3], pagination=THREAD_MORE.format(THREAD_CURSOR))
         responses = {"team-chat-1": relay_page("CHAN1"), "team-chat-2": newest}
 
-        step = slack.plan(cited_source(CITED_ROOT), WINDOW, STORED, [], responses, CONNECTOR)
+        step = slack.plan(cited_source(CITED_ROOT), WINDOW, STORED, [], ordered(responses), CONNECTOR)
 
         self.assertEqual(step["calls"], [thread_call("team-chat-3", "CHAN1", CITED_ROOT, "1760000000", THREAD_CURSOR)])
 
@@ -960,7 +968,7 @@ class CitedThreadRelayTest(unittest.TestCase):
         older = cited_relay_thread(replies=CITED_REPLIES[:1], pagination=THREAD_MORE.format("older-cursor"))
         responses = {"team-chat-1": relay_page("CHAN1"), "team-chat-2": newest, "team-chat-3": older}
 
-        step = slack.plan(cited_source(CITED_ROOT), WINDOW, STORED, [], responses, CONNECTOR)
+        step = slack.plan(cited_source(CITED_ROOT), WINDOW, STORED, [], ordered(responses), CONNECTOR)
 
         self.assertEqual((step["done"], relay(responses, source=cited_source(CITED_ROOT))["records"]["messages"]), (True, CITED_MESSAGES))
 
@@ -998,7 +1006,7 @@ class CitedThreadRelayTest(unittest.TestCase):
     def test_cited_thread_of_a_failed_channel_is_not_read(self):
         responses = {"team-chat-1": error_body("not_in_channel")}
 
-        step = slack.plan(cited_source(CITED_ROOT), WINDOW, STORED, [], responses, CONNECTOR)
+        step = slack.plan(cited_source(CITED_ROOT), WINDOW, STORED, [], ordered(responses), CONNECTOR)
 
         self.assertEqual((step["done"], relay(responses, source=cited_source(CITED_ROOT))["entries"]), (True, {"CHAN1": failed("not_in_channel")}))
 
@@ -1006,18 +1014,18 @@ class CitedThreadRelayTest(unittest.TestCase):
         responses = {"team-chat-1": relay_page("CHAN1")}
         source = cited_source(CITED_ROOT, channel="CHAN7")
 
-        self.assertEqual((slack.plan(source, WINDOW, STORED, [], responses, CONNECTOR)["done"], relay(responses, source=source)["entries"]), (True, {f"CHAN7:{CITED_ROOT}": failed("channel not listed")}))
+        self.assertEqual((slack.plan(source, WINDOW, STORED, [], ordered(responses), CONNECTOR)["done"], relay(responses, source=source)["entries"]), (True, {f"CHAN7:{CITED_ROOT}": failed("channel not listed")}))
 
     def test_cited_thread_with_an_invalid_root_ts_is_a_failed_entry_without_a_call(self):
         responses = {"team-chat-1": relay_page("CHAN1")}
         source = cited_source("not-a-ts")
 
-        self.assertEqual((slack.plan(source, WINDOW, STORED, [], responses, CONNECTOR)["done"], relay(responses, source=source)["entries"]), (True, {"CHAN1:not-a-ts": failed("invalid root ts")}))
+        self.assertEqual((slack.plan(source, WINDOW, STORED, [], ordered(responses), CONNECTOR)["done"], relay(responses, source=source)["entries"]), (True, {"CHAN1:not-a-ts": failed("invalid root ts")}))
 
     def test_cited_thread_with_its_root_in_the_history_is_read_once(self):
         responses = {"team-chat-1": root_page(), "team-chat-2": thread_page(thread_reply("U2", "1760002300.000230", "Thanks"))}
 
-        step = slack.plan(cited_source(ROOT_TS), WINDOW, STORED, [], responses, CONNECTOR)
+        step = slack.plan(cited_source(ROOT_TS), WINDOW, STORED, [], ordered(responses), CONNECTOR)
 
         self.assertEqual(step["done"], True)
 
@@ -1047,7 +1055,7 @@ class CitedThreadTransportEqualityTest(unittest.TestCase):
         }
 
         self.assertEqual(state.dump(relay(responses, source=cited_source(CITED_ROOT))), state.dump(over_api))
-        self.assertEqual(slack.plan(cited_source(CITED_ROOT), WINDOW, STORED, [], responses, CONNECTOR)["done"], True)
+        self.assertEqual(slack.plan(cited_source(CITED_ROOT), WINDOW, STORED, [], ordered(responses), CONNECTOR)["done"], True)
 
     def test_both_transports_give_the_cited_cursor(self):
         _, over_api = api_cited(cited_api_thread())
@@ -1515,7 +1523,7 @@ class RelayThreadTest(unittest.TestCase):
         self.assertEqual(str(caught.exception), "partial: cursor repeated")
 
     def test_plan_reads_the_thread_of_a_root_with_the_message_ts(self):
-        plan = slack.plan(one_channel(), WINDOW, STORED, [], {"team-chat-1": root_page()}, CONNECTOR)
+        plan = slack.plan(one_channel(), WINDOW, STORED, [], ordered({"team-chat-1": root_page()}), CONNECTOR)
 
         self.assertEqual(plan["calls"], [thread_call("team-chat-2", "CHAN1", ROOT_TS, STORED_TS)])
 
@@ -1648,6 +1656,166 @@ class RelayFailureTest(unittest.TestCase):
         with self.assertRaises(_http.PartialRead) as caught:
             relay(responses)
         self.assertEqual(str(caught.exception), "partial: cursor repeated")
+
+
+class StoreCase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def session(self, transport="mcp"):
+        return store_session(self.tmp.name, transport)
+
+    def api_session(self, *outcomes):
+        session = self.session("api")
+        session.http = client(FakeOpener(outcomes))
+        return session
+
+    def listed(self, session, kind):
+        base = os.path.join(session.base, f"kind={kind}")
+        return sorted(os.path.relpath(folder, session.base) for folder, _, files in os.walk(base) if store.READ_FILE in files)
+
+    def document(self, session, relative):
+        with open(os.path.join(session.base, relative, store.READ_FILE), encoding="utf-8") as stream:
+            return json.load(stream)
+
+
+class RelayStoreTest(StoreCase):
+    def test_names_the_first_call_by_its_read(self):
+        step = slack.plan(SOURCE, WINDOW, STORED, [], self.session(), CONNECTOR)
+
+        self.assertEqual(step["calls"][0]["id"], f"kind=history/channel=CHAN1/read=1760000500.000050_1760010800-{RUN}.team-chat/page-001")
+
+    def test_keeps_the_arguments_of_the_first_call(self):
+        step = slack.plan(SOURCE, WINDOW, STORED, [], self.session(), CONNECTOR)
+
+        self.assertEqual(step["calls"], [call(step["calls"][0]["id"], "CHAN1", "1760000500.000050")])
+
+    def test_gives_the_collection_of_the_same_responses_by_call_order(self):
+        _, result = relay_through(self.session(), shared_responses())
+
+        self.assertEqual(state.dump(result), state.dump(relay(shared_responses())))
+
+    def test_files_each_channel_read_under_its_entity(self):
+        session = self.session()
+        relay_through(session, shared_responses())
+
+        self.assertEqual(
+            self.listed(session, "history") + self.listed(session, "thread"),
+            [
+                f"kind=history/channel=CHAN1/read=1760000500.000050_1760010800-{RUN}.team-chat",
+                f"kind=history/channel=CHAN2/read=1760000000_1760010800-{RUN}.team-chat",
+                f"kind=thread/channel=CHAN1/root={ROOT_TS}/read=1760000500.000050_1760010800-{RUN}.team-chat",
+            ],
+        )
+
+    def test_writes_the_records_of_a_complete_read(self):
+        session = self.session()
+        relay_through(session, shared_responses())
+
+        records = session.open("history", (("channel", "CHAN2"),), ("1760000000", "1760010800")).records()
+
+        self.assertEqual(sorted(record["ts"] for record in records), ["1760004000.000400", "1760004500.000450"])
+
+    def test_keeps_the_root_in_the_records_of_a_thread_read(self):
+        session = self.session()
+        relay_through(session, shared_responses())
+
+        records = session.open("thread", (("channel", "CHAN1"), ("root", ROOT_TS)), ("1760000500.000050", "1760010800")).records()
+
+        self.assertIn(ROOT_TS, [record["ts"] for record in records])
+
+    def test_marks_a_channel_the_token_cannot_read_failed(self):
+        session = self.session()
+        relay_through(session, {"team-chat-1": error_body("is_archived")}, source=one_channel())
+
+        relative = f"kind=history/channel=CHAN1/read=1760000500.000050_1760010800-{RUN}.team-chat"
+        self.assertEqual(self.document(session, relative)["outcome"], {"reason": "is_archived", "status": "failed"})
+
+    def test_keeps_the_failed_entry_of_a_channel_the_token_cannot_read(self):
+        _, result = relay_through(self.session(), {"team-chat-1": error_body("is_archived")}, source=one_channel())
+
+        self.assertEqual(result["entries"], {"CHAN1": failed("is_archived")})
+
+    def test_marks_a_read_with_a_repeated_cursor_partial(self):
+        session = self.session()
+        responses = {f"team-chat-{n}": relay_page("CHAN1", pagination=MORE.format("again")) for n in (1, 2)}
+        with self.assertRaises(_http.PartialRead):
+            relay_through(session, responses, source=one_channel())
+
+        relative = f"kind=history/channel=CHAN1/read=1760000500.000050_1760010800-{RUN}.team-chat"
+        self.assertEqual(self.document(session, relative)["outcome"], {"reason": "partial: cursor repeated", "status": "partial"})
+
+    def test_reads_a_cited_thread_in_its_own_read(self):
+        session = self.session()
+        source = {**one_channel(), "threads": [{"channel": "CHAN1", "root_ts": "1759990000.000100"}]}
+        relay_through(session, {"team-chat-1": relay_page("CHAN1"), "team-chat-2": thread_page(root="1759990000.000100", total=0)}, source=source)
+
+        self.assertEqual(self.listed(session, "thread"), [f"kind=thread/channel=CHAN1/root=1759990000.000100/read=1760000000_1760010800-{RUN}.team-chat"])
+
+    def test_reports_a_missing_page_by_its_read(self):
+        with self.assertRaises(_http.SourceUnreadable) as caught:
+            slack.parse(one_channel(), WINDOW, STORED, [], self.session(), {})
+
+        self.assertIn("kind=history/channel=CHAN1/", str(caught.exception))
+
+
+class ApiStoreTest(StoreCase):
+    def test_gives_the_collection_of_a_fetch_without_store(self):
+        result = slack.fetch(SOURCE, WINDOW, STORED, [], self.api_session(*(ok(name) for name in SHARED_OVER_API)))
+
+        self.assertEqual(state.dump(result), state.dump(read_shared()[1]))
+
+    def test_records_each_page_of_a_read(self):
+        session = self.api_session(*(ok(name) for name in SHARED_OVER_API))
+        slack.fetch(SOURCE, WINDOW, STORED, [], session)
+
+        relative = f"kind=history/channel=CHAN1/read=1760000500.000050_1760010800-{RUN}.team-chat"
+        self.assertEqual([page["file"] for page in self.document(session, relative)["pages"]], ["page-001.json", "page-002.json"])
+
+    def test_names_each_api_request_of_a_read(self):
+        session = self.api_session(*(ok(name) for name in SHARED_OVER_API))
+        slack.fetch(SOURCE, WINDOW, STORED, [], session)
+
+        relative = f"kind=history/channel=CHAN1/read=1760000500.000050_1760010800-{RUN}.team-chat"
+        request = self.document(session, relative)["pages"][0]["request"]
+        self.assertEqual((request["method"], request["path"], urllib.parse.parse_qs(request["query"])["oldest"]), ("GET", HISTORY_PATH, ["1760000500.000050"]))
+
+    def test_saves_the_record_of_a_failed_call(self):
+        session = self.api_session(status(401))
+
+        with self.assertRaises(_http.SourceUnreadable):
+            slack.fetch(one_channel(), WINDOW, STORED, [], session)
+
+        relative = f"kind=history/channel=CHAN1/read=1760000500.000050_1760010800-{RUN}.team-chat"
+        with open(os.path.join(session.base, relative, "page-001.json"), encoding="utf-8") as stream:
+            self.assertEqual(json.load(stream)["error"]["status"], 401)
+
+    def test_marks_a_read_failed_by_its_call_failed(self):
+        session = self.api_session(status(401))
+
+        with self.assertRaises(_http.SourceUnreadable):
+            slack.fetch(one_channel(), WINDOW, STORED, [], session)
+
+        relative = f"kind=history/channel=CHAN1/read=1760000500.000050_1760010800-{RUN}.team-chat"
+        self.assertEqual(self.document(session, relative)["outcome"]["status"], "failed")
+
+    def test_marks_the_read_cut_by_the_call_cap_partial(self):
+        roots = [root_item(ts=f"{1760001000 + 100 * n}.000100") for n in range(60)]
+        session = self.api_session(history(*roots), *(history() for _ in range(60)))
+
+        with self.assertRaises(_http.PartialRead):
+            slack.fetch(one_channel(), WINDOW, STORED, [], session)
+
+        statuses = [self.document(session, relative)["outcome"] for relative in self.listed(session, "thread")]
+        self.assertIn({"reason": "partial: call cap", "status": "partial"}, statuses)
+
+    def test_writes_no_root_thread_into_a_history_record(self):
+        session = self.api_session(*(ok(name) for name in SHARED_OVER_API))
+        slack.fetch(SOURCE, WINDOW, STORED, [], session)
+
+        rows = session.open("thread", (("channel", "CHAN1"), ("root", ROOT_TS)), ("1760000500.000050", "1760010800")).records()
+        self.assertNotIn("thread_ts", rows[0])
 
 
 if __name__ == "__main__":

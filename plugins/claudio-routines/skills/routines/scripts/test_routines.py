@@ -907,6 +907,31 @@ class RunsDirRenderTest(Case):
         self.assertEqual((code, "places.cloud.runs_dir" in stderr), (2, True))
 
 
+class StoreDirConfigTest(Case):
+    def setUp(self):
+        super().setUp()
+        self.write_template("prod-watch", "{{place}}\n")
+
+    def render(self, **place):
+        self.write_config(make_config(places=make_places(cloud=place)))
+        return self.run_private("render", "prod-watch")
+
+    def test_an_absolute_store_dir_is_accepted(self):
+        self.assertEqual(self.render(store_dir="/srv/claudio-store")[:2], (0, "cloud\n"))
+
+    def test_a_relative_store_dir_exits_2_naming_the_key(self):
+        code, _, stderr = self.render(store_dir="claudio-store")
+        self.assertEqual((code, "places.cloud.store_dir" in stderr), (2, True))
+
+    def test_a_store_dir_with_a_parent_part_exits_2_naming_the_key(self):
+        code, _, stderr = self.render(store_dir="/srv/../claudio-store")
+        self.assertEqual((code, "places.cloud.store_dir" in stderr), (2, True))
+
+    def test_a_non_string_store_dir_exits_2_naming_the_key(self):
+        code, _, stderr = self.render(store_dir=7)
+        self.assertEqual((code, "places.cloud.store_dir" in stderr), (2, True))
+
+
 class InjectedHostsConfigTest(Case):
     def setUp(self):
         super().setUp()
@@ -3111,13 +3136,13 @@ class ShippedFilesTest(Case):
         fetch = [line for line in self.prod_watch_commands("collect.py") if "collect.py fetch " in line]
         self.assertEqual([line.endswith("--out <run>/collections/<source>.json") for line in fetch], [True])
 
-    def test_prod_watch_plans_an_mcp_source_from_its_saved_responses(self):
+    def test_prod_watch_plans_an_mcp_source_in_its_run_folder(self):
         plan = [line for line in self.prod_watch_commands("collect.py") if "collect.py plan " in line]
-        self.assertEqual([line.endswith("--responses <run>/raw/<role>/<source> --out <run>/plan.json") for line in plan], [True])
+        self.assertEqual([line.endswith("--run <run> --out <run>/plan.json") for line in plan], [True])
 
     def test_prod_watch_parses_the_saved_responses_into_the_collection(self):
         parse = [line for line in self.prod_watch_commands("collect.py") if "collect.py parse " in line]
-        expected = "--responses <run>/raw/<role>/<source> --out <run>/collections/<source>.json"
+        expected = "--run <run> --out <run>/collections/<source>.json"
         self.assertEqual([line.endswith(expected) for line in parse], [True])
 
     def test_prod_watch_repeats_the_plan_until_done(self):
@@ -3126,12 +3151,12 @@ class ShippedFilesTest(Case):
     def test_prod_watch_calls_each_tool_with_the_arguments_as_given(self):
         self.assertIn("with its `arguments` exactly as given", self.prod_watch_step("Collect"))
 
-    def test_prod_watch_has_the_plan_save_each_recorded_result_under_its_call_id(self):
-        expected = "a hook records each result, and the plan command saves it as `<run>/raw/<role>/<source>/<id>.txt`, with `<id>` the call's `id`."
+    def test_prod_watch_has_the_plan_save_each_recorded_result_at_its_call_path(self):
+        expected = "a hook records each result, and the plan command saves it at the call's `path`."
         self.assertIn(expected, self.prod_watch_step("Collect"))
 
     def test_prod_watch_copies_a_result_the_harness_saved_to_a_file(self):
-        self.assertIn("When the harness saved the result to a file, copy that file.", self.prod_watch_step("Collect"))
+        self.assertIn("When the harness saved the result to a file, copy that file to `path`.", self.prod_watch_step("Collect"))
 
     def test_prod_watch_never_edits_a_relayed_result(self):
         self.assertIn("Never edit, summarize, filter or reformat a result.", self.prod_watch_step("Collect"))
@@ -3436,20 +3461,20 @@ class ShippedFilesTest(Case):
         start = text.index(": Collect\n")
         return text[start: text.index("\n## ", start)]
 
-    def test_every_runnable_template_names_the_role_of_each_source_it_collects(self):
-        expected = "write its name literally wherever a command says `<source>` and its `role` wherever a command says `<role>`."
+    def test_every_runnable_template_names_each_source_it_collects(self):
+        expected = "write its name literally wherever a command says `<source>`."
         for name in ("prod-watch", "tribe-digest", "chat-recap", "weekly-status"):
             with self.subTest(template=name):
                 self.assertIn(expected, self.runnable_collect_step(name))
 
-    def test_every_runnable_template_keeps_the_raw_results_of_a_source_by_role(self):
+    def test_every_runnable_template_relays_each_source_in_the_run_folder(self):
         for name in ("prod-watch", "tribe-digest", "chat-recap", "weekly-status"):
             with self.subTest(template=name):
                 step = self.runnable_collect_step(name)
                 relay = [line for line in step.splitlines() if "collect.py plan " in line or "collect.py parse " in line]
                 self.assertEqual(
-                    ([("--responses <run>/raw/<role>/<source> " in line) for line in relay], "`<run>/raw/<role>/<source>/<id>.txt`" in step, "<run>/responses" in step),
-                    ([True, True], True, False),
+                    ([("--run <run> " in line) for line in relay], "the call's `path`" in step, "<run>/responses" in step, "raw/" in step),
+                    ([True, True], True, False, False),
                 )
 
     RELAY_CALL = "  - Call the tool `tool` on the connector `connector`, with its `arguments` exactly as given.\n"
@@ -3469,8 +3494,23 @@ class ShippedFilesTest(Case):
         "  - Never edit, summarize, filter or reformat a result.\n"
     )
 
+    COLLECT_ONCE = (
+        "  - Make each call once and save nothing: a hook records each result, and the plan command saves it at the call's `path`.\n"
+        "  - Then run the plan command again. Repeat until `done` is true.\n"
+    )
+    COLLECT_FALLBACK = (
+        "  - When the plan lists again a call `id` that you already called, the hook missed its result: "
+        "save that result unchanged at the call's `path`, after `mkdir -p` of the folder that holds it.\n"
+        "    - When the harness saved the result to a file, copy that file to `path`.\n"
+        "    - Otherwise, write the result text as is with the Write tool. Never put a result in a shell command.\n"
+        "    - A `relay capture mismatch` line in the plan command's error output says how the call you made differs from the planned one. "
+        "It is a diagnostic only: never make that call again, save its result by hand as above.\n"
+        "    - Then run the plan command again.\n"
+        "  - Never edit, summarize, filter or reformat a result.\n"
+    )
+
     def test_every_runnable_template_has_the_model_make_each_call_once_and_a_hook_save_it(self):
-        expected = self.RELAY_CALL + self.RELAY_ONCE.format(directory="<run>/raw/<role>/<source>") + self.RELAY_FALLBACK.format(directory="<run>/raw/<role>/<source>")
+        expected = self.RELAY_CALL + self.COLLECT_ONCE + self.COLLECT_FALLBACK
         for name in ("prod-watch", "tribe-digest", "chat-recap", "weekly-status"):
             with self.subTest(template=name):
                 self.assertIn(expected, self.runnable_collect_step(name))
@@ -3480,7 +3520,7 @@ class ShippedFilesTest(Case):
             with self.subTest(template=name):
                 step = self.runnable_collect_step(name)
                 self.assertEqual(step.count("Save each result"), 0)
-                self.assertEqual(step.count("save that result unchanged as"), 1)
+                self.assertEqual(step.count("save that result unchanged at the call's `path`"), 1)
 
     def test_every_runnable_template_names_the_mismatch_line_a_diagnostic_only_once_in_the_collect_step(self):
         for name in ("prod-watch", "tribe-digest", "chat-recap", "weekly-status"):
@@ -3493,11 +3533,11 @@ class ShippedFilesTest(Case):
             with self.subTest(template=name):
                 self.assertIn(f"  - {DATA_GUARD}\n", self.runnable_collect_step(name))
 
-    def test_every_runnable_template_records_the_http_calls_of_an_api_source_by_role(self):
+    def test_every_runnable_template_fetches_an_api_source_in_the_run_folder(self):
         for name in ("prod-watch", "tribe-digest", "chat-recap", "weekly-status"):
             with self.subTest(template=name):
                 fetch = [line for line in self.runnable_collect_step(name).splitlines() if "collect.py fetch " in line]
-                self.assertEqual([("--responses <run>/raw/<role>/<source> --out <run>/collections/<source>.json" in line) for line in fetch], [True])
+                self.assertEqual([("--run <run> --out <run>/collections/<source>.json" in line) for line in fetch], [True])
 
     def test_every_runnable_template_writes_the_transport_choice_to_the_run_directory(self):
         for name in ("prod-watch", "tribe-digest", "chat-recap", "weekly-status"):
