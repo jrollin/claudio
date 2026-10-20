@@ -1637,7 +1637,7 @@ A degraded run's message is one line that starts with `degraded:` and names the 
 **Choice**: opt-in by the routine key `thread_reads` (`full`, the default, or `since`) (AC-59.4).
 - `recap_state` units gain the optional `owner_last_ts` (nullable); `apply` writes it from the features for every unit read in the run (AC-59.1).
 - With `since`, the chat adapter reads a thread unit whose stored `owner_last_ts` key exists from `last_ts` minus the re-read margin; other units read in full (AC-59.2).
-- `facts_of` takes the stored value with the messages read: `answered` is the later of the two, `owner_took_part` holds when the stored value is not null or the owner wrote in the read (AC-59.3).
+- With `since`, `facts_of` takes a thread unit's stored value with the messages read: `answered` is the later of the two, `owner_took_part` holds when the stored value is not null or the owner wrote in the read (AC-59.3). With `full`, the facts use the messages read only, so the default stays as it was.
 
 **Rationale**: long threads the recap already knows stop going through the relay in full, without losing whether the owner answered.
 

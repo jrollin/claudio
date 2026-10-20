@@ -944,6 +944,94 @@ class SearchRereadApiTest(unittest.TestCase):
         self.assertEqual(str(caught.exception), "partial: call cap")
 
 
+KNOWN_THREAD = {"channel": "C6", "root_ts": STORED_ROOT, "last_ts": "1792300600.000300"}
+KNOWN_OLDEST = "1792300600.000299"
+
+
+class SearchKnownThreadRelayTest(unittest.TestCase):
+    def reads(self, source, *hits):
+        seen, _, _ = drive(source, {"team-chat-1": search_text(*hits)})
+        return [(tool, arguments["channel_id"], arguments.get("oldest"), arguments.get("message_ts")) for tool, arguments in seen]
+
+    def thread_hit(self, root=STORED_ROOT):
+        return hit("C6", "#ops", PEER, "1792396000.000100", thread=root)
+
+    def test_reads_a_known_thread_found_by_a_hit_from_just_before_its_last_message(self):
+        reads = self.reads(search_source(known_threads=[KNOWN_THREAD]), self.thread_hit())
+
+        self.assertEqual(reads, [(THREAD_TOOL, "C6", KNOWN_OLDEST, STORED_ROOT)])
+
+    def test_reads_a_known_thread_that_is_also_reread_from_just_before_its_last_message(self):
+        reads = self.reads(search_source(rereads=[THREAD_REREAD], known_threads=[KNOWN_THREAD]))
+
+        self.assertEqual(reads, [(THREAD_TOOL, "C6", KNOWN_OLDEST, STORED_ROOT)])
+
+    def test_reads_in_full_a_thread_that_is_not_known(self):
+        other = {**KNOWN_THREAD, "root_ts": "1792300400.000100"}
+
+        reads = self.reads(search_source(known_threads=[other]), self.thread_hit())
+
+        self.assertEqual(reads, [(THREAD_TOOL, "C6", None, STORED_ROOT)])
+
+    def test_reads_in_full_a_thread_known_in_another_channel(self):
+        other = {**KNOWN_THREAD, "channel": "C7"}
+
+        reads = self.reads(search_source(known_threads=[other]), self.thread_hit())
+
+        self.assertEqual(reads, [(THREAD_TOOL, "C6", None, STORED_ROOT)])
+
+    def test_reads_in_full_without_known_threads(self):
+        reads = self.reads(search_source(), self.thread_hit())
+
+        self.assertEqual(reads, [(THREAD_TOOL, "C6", None, STORED_ROOT)])
+
+    def test_keeps_the_root_of_a_known_thread_without_a_reply_after_oldest(self):
+        parent = relay_text(thread_parent(STORED_ROOT) + "\n\nNo thread messsages\n", "There are no more messages in this thread.")
+        responses = {"team-chat-1": saved("search_empty.json"), "team-chat-2": parent}
+
+        unit = search_parse(search_source(rereads=[THREAD_REREAD], known_threads=[KNOWN_THREAD]), responses)["records"]["units"][0]
+
+        self.assertEqual([message["ts"] for message in unit["messages"]], [STORED_ROOT])
+
+    def test_keeps_the_root_and_the_replies_after_oldest_of_a_known_thread(self):
+        reply = thread_reply(PEER, LATE_REPLY, "Thanks", index=1, total=1)
+        responses = {"team-chat-1": saved("search_empty.json"), "team-chat-2": thread_page(reply, root=STORED_ROOT, total=1)}
+
+        unit = search_parse(search_source(rereads=[THREAD_REREAD], known_threads=[KNOWN_THREAD]), responses)["records"]["units"][0]
+
+        self.assertEqual([message["ts"] for message in unit["messages"]], [STORED_ROOT, LATE_REPLY])
+
+
+class SearchKnownThreadApiTest(unittest.TestCase):
+    ROOT_LAST = "1760002500.000300"
+    ROOT_OLDEST = "1760002500.000299"
+
+    def replies_requests(self, **options):
+        replies = history_doc(root_item(ROOT_TS, 1), reply_item("1760005000.000500", root=ROOT_TS))
+        routes = {SEARCH_PATH: [search_doc(api_match("C3", "1760005000.000500", thread=ROOT_TS))], REPLIES_PATH: [replies]}
+        opener, _ = api_units(routes, source=search_source(**options))
+        return requests_to(opener, REPLIES_PATH)
+
+    def test_reads_a_known_thread_from_just_before_its_last_message(self):
+        known = {"channel": "C3", "root_ts": ROOT_TS, "last_ts": self.ROOT_LAST}
+
+        requests = self.replies_requests(known_threads=[known])
+
+        self.assertEqual([query(request).get("oldest") for request in requests], [[self.ROOT_OLDEST]])
+
+    def test_reads_a_thread_that_is_not_known_in_full(self):
+        known = {"channel": "C3", "root_ts": "1760001000.000100", "last_ts": self.ROOT_LAST}
+
+        requests = self.replies_requests(known_threads=[known])
+
+        self.assertEqual([query(request).get("oldest") for request in requests], [None])
+
+    def test_reads_in_full_without_known_threads(self):
+        requests = self.replies_requests()
+
+        self.assertEqual([query(request).get("oldest") for request in requests], [None])
+
+
 class SearchRereadTransportEqualityTest(unittest.TestCase):
     ROOT, REPLY, MESSAGE = "1792300500.000200", "1792396000.000300", "1792395000.000100"
 

@@ -151,6 +151,14 @@ class AcceptedStateTest(CheckStateCase):
     def test_accepts_a_title_of_exactly_8_words(self):
         self.assertIsNone(recap_state.check_state(make_state(units={DM_A: make_unit(title="one two three four five six seven eight")})))
 
+    def test_accepts_a_unit_with_an_owner_last_ts(self):
+        document = make_state(units={DM_A: make_unit(owner_last_ts=LAST_TS)})
+        self.assertIsNone(recap_state.check_state(document))
+
+    def test_accepts_a_unit_whose_owner_last_ts_is_null(self):
+        document = make_state(units={DM_A: make_unit(owner_last_ts=None)})
+        self.assertIsNone(recap_state.check_state(document))
+
     def test_accepts_a_unit_with_a_channel_name_and_a_person(self):
         unit = make_unit(channel_name="#ops", person={"id": USER_A, "name": "Peer Name"})
         self.assertIsNone(recap_state.check_state(make_state(units={DM_A: unit})))
@@ -391,6 +399,11 @@ class UnitFieldRejectionTest(CheckStateCase):
 
     def test_rejects_a_due_time_that_is_text(self):
         self.rejects_unit("due", due="tomorrow")
+
+    def test_rejects_an_owner_last_ts_that_is_not_a_message_ts(self):
+        for value in ("yesterday", "", 1791990730, True):
+            with self.subTest(value=value):
+                self.rejects_unit("owner_last_ts", owner_last_ts=value)
 
 
 class UnknownKeyRejectionTest(CheckStateCase):

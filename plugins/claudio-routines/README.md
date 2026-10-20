@@ -427,6 +427,13 @@ Routine keys of the engine, validated at config load and by `routines.py lint --
 | `exclude` | Optional `authors`, `channels` and `keep_bots` (the bot ids kept) |
 | `history` | Optional `late_after_working_days` (0 to 365) and `drop_after_days` (1 to 365); the engine defaults apply when left out |
 | `rules` | Non-empty list of the ask rules the judgment follows |
+| `thread_reads` | Optional `full` (default) or `since`; see Thread reads |
+
+Thread reads:
+- `full`, or no key: every thread unit is read whole, as before.
+- `since`: a thread unit already in the state with an `owner_last_ts` key is read from its `last_ts` minus the re-read margin, so a long thread stops going through the relay in full. A new unit, or a stored unit without the key, is read whole.
+- `owner_last_ts` is the time of the owner's latest message or reaction in the unit, or null when the owner has none. Every unit read in a run gets it, whatever the mode, so `since` can be turned on at any time; a seeded unit has no key until it is read.
+- With `since` only, the facts of a thread unit merge the stored `owner_last_ts` with the messages read: a stored value counts as an answer and as the owner taking part, a reaction included. Facts that look back (a direct mention, a group ask and its replies) see only the messages read. With `full`, the facts use the messages read only, as before.
 
 Seed:
 - `/routines seed <slug>` turns the state a live recap routine kept in the document store into a recap state in a scratch file, shows its summary and waits for the owner's approval before it pushes `state/<slug>.json`.

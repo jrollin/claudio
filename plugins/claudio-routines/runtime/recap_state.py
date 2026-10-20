@@ -1,7 +1,7 @@
 import re
 
 import state
-from state import Nullable, Rejected, leaf
+from state import Nullable, Omittable, Rejected, leaf
 
 SCHEMA_VERSION = 1
 DM_KINDS = ("dm", "group_dm")
@@ -94,6 +94,7 @@ UNIT_SPEC = {
     "runs_waiting": COUNT,
     "late": Nullable(COUNT),
     "due": Nullable(UTC_TIME),
+    "owner_last_ts": Omittable(Nullable(MESSAGE_TS)),
 }
 STATE_SPEC = {
     "schema": SCHEMA,

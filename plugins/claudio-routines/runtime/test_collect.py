@@ -2049,6 +2049,52 @@ class RecapChatRereadsTest(RecapChatCase):
         self.fetch(source="team-chat", place="local")
         self.assertEqual([(item["kind"], item["root_ts"]) for item in self.chat.calls[0]["source"]["rereads"]], [("group_dm", None), ("mention", RECAP_ROOT_TS)])
 
+    def since(self, **units):
+        self.config["routines"][ROUTINE]["thread_reads"] = "since"
+        self.state = make_recap_state(units={key: make_recap_unit(**fields) for key, fields in units.items()})
+
+    def test_hands_the_adapter_the_thread_units_with_a_known_owner_activity_when_reading_since(self):
+        self.since(**{f"thread-{RECAP_CHANNEL_B}-{RECAP_ROOT_TS}": {"kind": "thread", "channel": RECAP_CHANNEL_B, "status": "handled", "owner_last_ts": RECAP_LAST_TS}})
+        self.fetch(source="team-chat", place="local")
+        self.assertEqual(self.chat.calls[0]["source"]["known_threads"], [{"channel": RECAP_CHANNEL_B, "root_ts": RECAP_ROOT_TS, "last_ts": RECAP_LAST_TS}])
+
+    def test_counts_a_null_owner_activity_as_known_when_reading_since(self):
+        self.since(**{f"thread-{RECAP_CHANNEL_B}-{RECAP_ROOT_TS}": {"kind": "thread", "channel": RECAP_CHANNEL_B, "owner_last_ts": None}})
+        self.fetch(source="team-chat", place="local")
+        self.assertEqual(len(self.chat.calls[0]["source"]["known_threads"]), 1)
+
+    def test_leaves_out_a_thread_unit_without_the_owner_activity_key_when_reading_since(self):
+        self.since(**{f"thread-{RECAP_CHANNEL_B}-{RECAP_ROOT_TS}": {"kind": "thread", "channel": RECAP_CHANNEL_B}})
+        self.fetch(source="team-chat", place="local")
+        self.assertEqual(self.chat.calls[0]["source"]["known_threads"], [])
+
+    def test_leaves_out_a_direct_conversation_unit_when_reading_since(self):
+        self.since(**{f"dm-{RECAP_CHANNEL_A}": {"owner_last_ts": RECAP_LAST_TS}})
+        self.fetch(source="team-chat", place="local")
+        self.assertEqual(self.chat.calls[0]["source"]["known_threads"], [])
+
+    def test_hands_the_adapter_the_known_threads_when_planning_since(self):
+        self.since(**{f"thread-{RECAP_CHANNEL_B}-{RECAP_ROOT_TS}": {"kind": "thread", "channel": RECAP_CHANNEL_B, "owner_last_ts": RECAP_LAST_TS}})
+        self.plan(source="team-chat")
+        self.assertEqual(len(self.chat.plans[0]["source"]["known_threads"]), 1)
+
+    def test_hands_the_adapter_no_known_threads_when_reading_in_full(self):
+        self.config["routines"][ROUTINE]["thread_reads"] = "full"
+        self.state = make_recap_state(units={f"thread-{RECAP_CHANNEL_B}-{RECAP_ROOT_TS}": make_recap_unit(kind="thread", channel=RECAP_CHANNEL_B, owner_last_ts=RECAP_LAST_TS)})
+        self.fetch(source="team-chat", place="local")
+        self.assertNotIn("known_threads", self.chat.calls[0]["source"])
+
+    def test_hands_the_adapter_no_known_threads_without_the_thread_reads_key(self):
+        self.state = make_recap_state(units={f"thread-{RECAP_CHANNEL_B}-{RECAP_ROOT_TS}": make_recap_unit(kind="thread", channel=RECAP_CHANNEL_B, owner_last_ts=RECAP_LAST_TS)})
+        self.fetch(source="team-chat", place="local")
+        self.assertNotIn("known_threads", self.chat.calls[0]["source"])
+
+    def test_replaces_the_known_threads_written_in_the_config_of_a_source(self):
+        self.since()
+        self.config["routines"][ROUTINE]["sources"]["team-chat"]["known_threads"] = [{"channel": "junk"}]
+        self.fetch(source="team-chat", place="local")
+        self.assertEqual(self.chat.calls[0]["source"]["known_threads"], [])
+
     def test_hands_a_document_source_no_rereads(self):
         source = {"provider": "docs", "page_id": "page-1"}
         self.assertEqual(collect.state_options(self.state, roles.RECAP_ENGINE, "document_store", source, "sources-page"), {})

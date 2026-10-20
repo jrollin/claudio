@@ -1238,6 +1238,18 @@ class RecapConfigTest(unittest.TestCase):
     def test_rejects_history_that_is_not_a_mapping(self):
         self.rejected("history", history=[])
 
+    def test_accepts_each_thread_reads_mode(self):
+        for mode in ("full", "since"):
+            with self.subTest(mode=mode):
+                self.assertIsNone(roles.validate_config(make_recap_config(thread_reads=mode), RECAP, "local", role_of))
+
+    def test_rejects_a_thread_reads_mode_outside_full_and_since(self):
+        for value in ("partial", "", None, True, 1):
+            with self.subTest(value=value):
+                config = make_recap_config()
+                config["routines"][RECAP]["thread_reads"] = value
+                self.assertEqual(self.path_of(config), f"routines.{RECAP}.thread_reads")
+
     def test_rejects_empty_rules(self):
         self.rejected("rules", rules=[])
 
