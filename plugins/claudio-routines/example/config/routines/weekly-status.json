@@ -1,5 +1,33 @@
 {
   "id": "<weekly-status-routine-id>",
   "template": "weekly-status",
-  "cron": "CRON_TZ=Europe/Paris 0 16 * * 5"
+  "engine": "weekly",
+  "cron": "CRON_TZ=Europe/Paris 0 16 * * 5",
+  "values": {
+    "digest": {
+      "name": "<weekly-status-name>",
+      "slug": "weekly-status"
+    }
+  },
+  "owner": "<chat-user-id>",
+  "workspace": "chat.example.test",
+  "recap": "chat-recap",
+  "exclude": {
+    "channels": [
+      "<chat-channel-id-to-skip>"
+    ]
+  },
+  "sources": {
+    "issues": {
+      "provider": "issue-tracker",
+      "jql": "<issue-query-with-the-owner-identity>"
+    },
+    "pull-requests": {
+      "provider": "code-host",
+      "searches": [
+        "is:pr org:example-org author:example-login",
+        "is:pr org:example-org reviewed-by:example-login"
+      ]
+    }
+  }
 }

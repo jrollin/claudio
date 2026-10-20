@@ -422,7 +422,13 @@ def recap_values(routine):
 
 
 def engine_values(routine):
-    return recap_values(routine) if routine.get("engine") == runtime_roles().RECAP_ENGINE else {}
+    roles = runtime_roles()
+    engine = routine.get("engine")
+    if engine == roles.RECAP_ENGINE:
+        return recap_values(routine)
+    if engine == roles.WEEKLY_ENGINE and "recap" in routine:
+        return {"recap.slug": routine["recap"]}
+    return {}
 
 
 def role_error(error, private):
@@ -438,6 +444,18 @@ def check_recap_keys(private, config, slug, place):
         roles.validate_config(config, slug, place)
     except roles.ConfigError as error:
         raise role_error(error, private) from error
+
+
+def uses_placeholder(text, key):
+    return any((match.group(1) or "").strip() == key for match in PLACEHOLDER.finditer(text))
+
+
+def check_weekly_recap(private, config, slug, text):
+    roles = runtime_roles()
+    routine = config["routines"][slug]
+    if routine.get("engine") != roles.WEEKLY_ENGINE or "recap" in routine or not uses_placeholder(text, "recap.slug"):
+        return
+    raise role_error(roles.ConfigError(f"routines.{slug}.recap: missing, a weekly routine names the chat recap routine it reads"), private)
 
 
 def build_context(config, routine, place, post):
@@ -494,9 +512,11 @@ def configured(config, slug):
 def render_routine(private, config, slug, place="cloud", post=False):
     routine = configured(config, slug)
     path = template_path(private, routine["template"])
+    text = read_text(path)
     check_recap_keys(private, config, slug, place)
+    check_weekly_recap(private, config, slug, text)
     context, own_keys = build_context(config, routine, place, post)
-    rendered, used = render_text(read_text(path), context, path)
+    rendered, used = render_text(text, context, path)
     unused = sorted(own_keys - used)
     where = routine_label(private, slug) if unused else ""
     for key in unused:

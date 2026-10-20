@@ -16,7 +16,7 @@ Manage claude.ai routines (scheduled cloud agents) as code:
 | `routines.py` | `skills/routines/scripts/routines.py` | File side of every flow: snapshots, render, diff, lint, update body, setup script |
 | Config tree | `runtime/config_tree.py` | Loads `config.json` and the routine files into one config, resolves each source's transport, and rejects secrets; the skill and the runtime share it |
 | Example | `example/` | A private directory to copy: `config.json` and one routine file per routine, placeholders only |
-| Skeletons | `skills/routines/templates/` | Generic `prod-watch.md`, `tribe-digest.md` and `chat-recap.md` prompts, `setup-env.sh` setup script and the not-runnable `weekly-status.md`, placeholders only |
+| Skeletons | `skills/routines/templates/` | Generic `prod-watch.md`, `tribe-digest.md`, `chat-recap.md` and `weekly-status.md` prompts and the `setup-env.sh` setup script, placeholders only |
 | State engine | `runtime/state.py` | Run window, item lifecycle, blind spots, mutes and run records for routine runs |
 | Collector | `runtime/collect.py` | Lists a routine's sources, checks the place's credentials and connectors, reads one source per command into a collection, and rebuilds every collection of a run offline from its raw folder |
 | Evaluator | `runtime/evaluate.py` | `features` computes the judgment features, `judge` checks the model's judgment and merges it into the facts, `annotate` adds the analysis of new and escalated items |
@@ -39,7 +39,7 @@ The real templates and every value that names a company resource live in a priva
 | `setup-env.sh` | Environment setup script, printed by `setup-script` | Yes |
 | `tribe-digest.md` | Routine prompt | Yes |
 | `chat-recap.md` | Routine prompt | Yes |
-| `weekly-status.md` | Routine prompt skeleton | No, structure only |
+| `weekly-status.md` | Routine prompt | Yes |
 
 A template is marked not runnable when its first line is exactly `<!-- not runnable -->`, in a public skeleton or a private template. A leading byte order mark and one trailing carriage return are ignored.
 - `render` keeps the marker line and warns, naming the template.
@@ -47,7 +47,7 @@ A template is marked not runnable when its first line is exactly `<!-- not runna
 - `diff` and `lint` treat it like any other template.
 - `lint` reports a first line that is an HTML comment holding `not runnable` in another case or spacing as the finding `marker`, since it would leave the template runnable.
 
-`lint --private` runs the role check of the runtime checkout on every routine file in `config/routines/`, for both places, and exits 2 naming the file and the key path of the first invalid value. Only a routine whose template calls the runtime (it holds `{{runtime.dir}}`) is checked: a prompt-only mirror and a template marked not runnable are not. `render` runs the key check of a recap routine before it renders.
+`lint --private` runs the role check of the runtime checkout on every routine file in `config/routines/`, for both places, and exits 2 naming the file and the key path of the first invalid value. Only a routine whose template calls the runtime (it holds `{{runtime.dir}}`) is checked: a prompt-only mirror and a template marked not runnable are not. `render` runs the key check of a recap routine before it renders, and fails a weekly routine without `recap` whose template uses `{{recap.slug}}`, naming `routines.<slug>.recap`.
 
 A private `<name>-runtime.md` template is a byte copy of the public runnable template `<name>.md` at the pinned runtime commit. `lint --private` reports `runtime-copy-differs:<name>.md` at line 1 when the copy differs, and `runtime-copy-missing:<name>.md` when that commit has no such public template; copy the public template again after each release.
 
@@ -466,7 +466,7 @@ python3 runtime/weekly.py message  --summary SUMMARY --features FEATURES --out M
   - A bullet reads `- <text> (owner: <name>) ([<label>](<link>), ...)`; the owner shows on open bullets that have one.
   - Labels: the issue key, `<repo name>#<number>` for a pull request, `thread in #<channel>` (or `thread` without a channel name) or `DM` for chat, the first 6 words of a page title.
   - `_Sources checked: <roles read>._` lists issue tracker, code host, chat and document store in that order, chat included when the recap fed items; one `Not read: <source> (<reason>)` line follows per source not read.
-  - `--tz` must name a known zone; the title date is the Monday of the summary's `week_start`.
+  - The title date is the Monday of the summary's `week_start`, which `window` already computed in the routine's zone: `message` takes no `--tz`.
 - Exit codes: 2 for an unreadable input, a features or summary file that fails its checks, a cite missing from the features or a `--now` that is not UTC; 3 for a state, window, collection or judgment that fails its checks, naming the file and key path.
 
 Routine keys of the engine, validated at config load and by `routines.py lint --private`:
@@ -475,9 +475,25 @@ Routine keys of the engine, validated at config load and by `routines.py lint --
 |---|---|
 | `owner` | The chat user id of the owner, non-blank; a chat source sets the same `owner` |
 | `workspace` | The chat host name that builds the chat links |
-| `recap` | Optional: the slug of the chat recap routine whose state feeds the chat items |
+| `recap` | Optional: the slug of the chat recap routine whose state feeds the chat items; the `weekly-status` template needs it, as its render value `recap.slug` |
 | `exclude` | Optional `channels`: the chat channels dropped, such as the routine's own digest channel |
 | `sources` | Issue tracker, code host, chat and document store sources only; a chat source sets `searches` |
+
+### Weekly template
+
+The `weekly-status` template needs the routine values `digest.slug` (the state file name) and `digest.name`, and the routine key `recap`. It follows the chat recap's save, raw folder, run folder and fallback rules, and runs these steps:
+
+1. Check the runtime: the pinned commit and a clean checkout, else `degraded: runtime missing, at another commit or modified`.
+2. Load the state from the `claude/state` branch, or `weekly.py init` on a baseline run. Then read the recap routine's `state/<recap>.json` and `runs/<recap>/` records into `<run>/recap/` with `git show` and `git archive | tar -x --strip-components=2`, so the records land in `<run>/recap/runs/*.json`. When that fails, the run goes on without `--recap` and the report names the recap as not read.
+3. `weekly.py window`, with `--report-only` when the post setting is `no`.
+4. `collect.py check-env`: a missing variable or connector ends that source not read, named in the report.
+5. `collect.py sources`, then one `fetch`, or one `plan` and `parse` relay loop, per source, with the raw results under `<run>/raw/<role>/<source>`.
+6. `weekly.py features`, with `--recap <run>/recap` when step 2 read it.
+7. The model reads `features.json` only and writes `judgment.json`; `weekly.py judge` checks it. One correction is allowed, a second rejection is the degraded run `degraded: judgment rejected, no weekly status this run`, reported like the message (posted when the post setting is `yes`), with no state written.
+8. `weekly.py apply` writes `next.json` and `record.json`.
+9. Save `next.json` to `state/<slug>.json` and `record.json` to `runs/<slug>/<run-at>.json` through a work tree, after a `cmp` check that no other run saved meanwhile, with one retry on a moved branch. A report-only run commits the run record only.
+10. `weekly.py message` writes `message.md`.
+11. Post `message.md` unchanged to the digest channel when the post setting is `yes`, else print it. A failed save adds the line `state not saved` first.
 
 ## Local runs
 
