@@ -1223,7 +1223,7 @@ Owner-gated: needs the release tag, the setup script paste at the cloud environm
 - **Verify**: `python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --private "$CLAUDIO_PRIVATE_DIR"`
 - **Blocked by**: T-111
 - **Rules**: BR-77, BR-80, BR-81
-- **Status**: Not Started
+- **Status**: Complete (released as 0.5.7 on 2026-10-20 and synced to all 5 routines, the chat recap seeded from the stored state and back on its runtime template; three cloud runs saved every chat relay result from a capture, 108 of them in the chat recap, and the tribe publish create fell back to a hand copy, which T-113 diagnoses; the cloud `errors.log` is gone after a run and was not read)
 
 ### T-113: Relay capture mismatch diagnostic
 - `relay_capture.mismatch` returns the value-free differences of the closest near capture, and `collect.relay_loop` prints one `relay capture mismatch <id>: ...` stderr line per call the plan prints again that has one, for `collect.py plan` and `tribe.py publish-plan`; the templates tell the model it is a diagnostic only (TD-74).
