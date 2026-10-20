@@ -1574,7 +1574,7 @@ A degraded run's message is one line that starts with `degraded:` and names the 
 - `window --now --tz`: `from_ts` is Monday 00:00 of the week of `now` in `tz`, `to_ts` is `now`; `--report-only` is accepted and changes nothing, as the window keeps no cursor.
 - `features`: one item per issue, pull request, chat thread and page with activity in the window (AC-54.1):
   - keys `issue:<key>`, `pr:<repo>#<number>`, `chat:<recap unit key>` (`dm-<channel>` or `thread-<channel>-<root ts>`), `page:<id>`;
-  - a recap unit makes an item when its `first_seen` or `last_ts` falls in the window: title, recap status, person, channel name, a link built from `workspace`, no excerpt; the week's recap run records add `recap_counts` (new, resolved and handled keys in the window);
+  - a recap unit makes an item when its `first_seen` or `last_ts` falls in the window: title, recap status, person, channel name, a link built from `workspace` (a thread links to its root message, a conversation to the conversation, since a seeded `last_ts` holds whole seconds only), no excerpt; the week's recap run records add `recap_counts` (new, resolved and handled keys in the window);
   - a direct chat unit with the same key adds its messages as excerpts to that item;
   - fields `source`, `role`, `kind`, `title`, `status` (or null), `link`, `when` (the latest activity in the window), `people` (display names) and `excerpts` (`by`, `at`, `text` of at most 500 characters: pull request activity up to 10, thread messages up to 15, the first 1000 characters of a page's blocks as one excerpt);
   - chat units in the routine's `exclude.channels` and the digest channel are dropped (BR-74);

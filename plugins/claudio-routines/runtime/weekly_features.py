@@ -1,5 +1,6 @@
 import decimal
 import os
+from urllib.parse import quote
 
 import evaluate
 import recap_features
@@ -127,6 +128,12 @@ def chat_link(host, channel, ts, root_ts):
     return recap_message.link_url({"channel": channel, "ts": ts, "root_ts": root_ts}, host)
 
 
+def recap_link(host, channel, root):
+    if root is None:
+        return f"https://{host}/archives/{quote(channel, safe='')}"
+    return chat_link(host, channel, root, None)
+
+
 def recap_unit_items(stored, window, routine, excluded, items):
     for key, unit in sorted(stored["units"].items()):
         last = stamp_seconds(unit["last_ts"], f"recap state: units.{key}.last_ts")
@@ -135,7 +142,7 @@ def recap_unit_items(stored, window, routine, excluded, items):
             continue
         kind = "dm" if unit["kind"] in recap_state.DM_KINDS else "thread"
         people = [] if unit["person"] is None else [unit["person"]["name"]]
-        link = chat_link(routine["workspace"], unit["channel"], unit["last_ts"], thread_root(key))
+        link = recap_link(routine["workspace"], unit["channel"], thread_root(key))
         when = last if in_window(window, last) else first
         items[f"chat:{key}"] = make_item(RECAP_SOURCE, "chat", kind, unit["title"], unit["status"], link, when, people, channel_name=unit["channel_name"])
 

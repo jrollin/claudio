@@ -502,12 +502,11 @@ class RecapFeaturesTest(FeaturesCase):
     def stored(self, **units):
         return make_stored(**units)
 
-    def test_a_recap_thread_seen_in_the_week_is_an_item_with_its_title_status_and_link(self):
+    def test_a_recap_thread_seen_in_the_week_is_an_item_with_its_title_status_and_root_link(self):
         unit = make_unit(kind="thread", channel=CHAN, channel_name="#export", status="waiting", title="Review the export plan", person={"id": PEER, "name": NAMES[PEER]}, **RECAP_FRESH)
 
         item = self.items(recap=self.stored(**{THREAD_KEY: unit}))[f"chat:{THREAD_KEY}"]
 
-        last = RECAP_FRESH["last_ts"]
         self.assertEqual(
             item,
             {
@@ -516,7 +515,7 @@ class RecapFeaturesTest(FeaturesCase):
                 "kind": "thread",
                 "title": "Review the export plan",
                 "status": "waiting",
-                "link": f"https://{HOST}/archives/{CHAN}/p{last.replace('.', '')}?thread_ts={ROOT}&cid={CHAN}",
+                "link": f"https://{HOST}/archives/{CHAN}/p{ROOT.replace('.', '')}",
                 "when": "2026-10-14T09:00:00Z",
                 "people": ["Peer Name"],
                 "excerpts": [],
@@ -524,12 +523,12 @@ class RecapFeaturesTest(FeaturesCase):
             },
         )
 
-    def test_a_recap_dm_links_to_its_last_message_without_a_thread(self):
+    def test_a_recap_dm_links_to_its_conversation(self):
         unit = make_unit(kind="dm", channel=DM, **RECAP_FRESH)
 
         item = self.items(recap=self.stored(**{DM_KEY: unit}))[f"chat:{DM_KEY}"]
 
-        self.assertEqual((item["kind"], item["people"], item["link"]), ("dm", [], f"https://{HOST}/archives/{DM}/p{RECAP_FRESH['last_ts'].replace('.', '')}"))
+        self.assertEqual((item["kind"], item["people"], item["link"]), ("dm", [], f"https://{HOST}/archives/{DM}"))
 
     def test_a_recap_unit_first_seen_in_the_week_is_an_item_even_with_an_older_message(self):
         unit = make_unit(kind="dm", channel=DM, first_seen="2026-10-13T08:00:00Z", last_ts=RECAP_STALE["last_ts"])
