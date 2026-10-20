@@ -37,7 +37,7 @@ def fetch(source, window, cursor, entries, session):
     reads = ApiReads(session, session.http, calls)
     cited, refused = _cited(source)
     channel_reads = [_channel_read(reads, channel, window, stored, cited[channel]) for channel in _channels(source)]
-    found = _search_units(source, window, _ApiReader(reads, session.http, calls, window, source["owner"])) if source.get("searches") else None
+    found = _search_units(source, window, _ApiReader(reads, window, source["owner"])) if source.get("searches") else None
     return _result(source, window, stored, channel_reads, refused, found)
 
 
@@ -92,7 +92,7 @@ def _walk(source, window, stored, session):
     reads = RelayReads(session)
     cited, refused = _cited(source)
     channel_reads = [_channel_read(reads, channel, window, stored, cited[channel]) for channel in _channels(source)]
-    found = _search_units(source, window, _RelayReader(reads, session, window)) if source.get("searches") else None
+    found = _search_units(source, window, _RelayReader(reads, window)) if source.get("searches") else None
     return channel_reads, refused, found
 
 

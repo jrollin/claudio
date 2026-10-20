@@ -20,28 +20,38 @@ from ._slack_read import (
     REPLIES_PATH,
     THREAD_TOOL,
     TOOL,
+    InvalidEntity,
     Item,
     _api_page,
     _in_span,
+    _is_count,
     _Pending,
     _relay_page,
 )
 from ._slack_search import (
     INFO_PATH,
     MEMBERS_PATH,
+    REACTIONS_PATH,
+    REACTIONS_TOOL,
+    SEARCH_CUT,
+    SEARCH_PAGE_SIZE,
+    SEARCH_PATH,
+    SEARCH_TOOL,
+    USERS_PATH,
     Hit,
     _api_members,
     _api_reactions,
     _api_search_page,
+    _api_query,
     _api_user_name,
     _relay_reactions,
+    _search_arguments,
     _search_page,
     _search_types,
     _unit_thread_page,
 )
 
 KINDS = ("history", "thread", "reactions", "members", "users", "search")
-INVALID_ENTITY = "invalid entity id"
 SLACK_ID = re.compile(r"[A-Z0-9]{1,32}")
 MESSAGE_TS = re.compile(r"[0-9]{1,16}\.[0-9]{1,9}")
 RECORD_KEYS = ("response", "error")
@@ -67,12 +77,6 @@ ROW_SPECS = {
     "members": {"id": state.TEXT},
     "users": {"name": state.TEXT},
 }
-
-
-class InvalidEntity(SourceUnreadable):
-    def __init__(self, what):
-        super().__init__(f"{what}: {INVALID_ENTITY}")
-        self.code = INVALID_ENTITY
 
 
 def _slack_id(value, what):
@@ -277,9 +281,9 @@ def _settled(handle, kind, read):
     return records
 
 
-def _relay_read_pages(handle, tool, arguments, parse, stop=None):
+def _relay_read_pages(handle, tool, arguments, parse, stop=None, cap=PAGE_CAP, capped=PAGE_CAP_PARTIAL):
     found, after, seen = [], None, set()
-    for _ in range(PAGE_CAP):
+    for _ in range(cap):
         asked = arguments if after is None else {**arguments, "cursor": after}
         try:
             data = handle.page({"tool": tool, "arguments": asked})
@@ -294,7 +298,7 @@ def _relay_read_pages(handle, tool, arguments, parse, stop=None):
         if after in seen:
             raise PartialRead(CURSOR_REPEATED)
         seen.add(after)
-    raise PartialRead(PAGE_CAP_PARTIAL)
+    raise PartialRead(capped)
 
 
 def _thread_arguments(channel, root, oldest):
@@ -318,6 +322,33 @@ class RelayReads:
         reached = lambda items: any(first < decimal.Decimal(item.ts) <= start for item in items)
         items = self._read(thread_key(channel, root, oldest, to), THREAD_TOOL, _thread_arguments(channel, root, oldest), reached)
         return [item for item in items if decimal.Decimal(item.ts) > start]
+
+    def thread(self, channel, root, oldest, to):
+        arguments = {"channel_id": channel, "message_ts": root, "limit": RELAY_THREAD_PAGE_SIZE, "response_format": "detailed"}
+        if oldest is not None:
+            arguments["oldest"] = str(oldest)
+        return self._read(thread_key(channel, root, oldest, to), THREAD_TOOL, arguments)
+
+    def search(self, search, start, to, cap):
+        key, arguments, kept = search_key(search["name"], start, to), _search_arguments(search, start, to), []
+        handle = self.session.open(*key)
+        parse = page_parser("search", "mcp", dict(key.entity), key.span, {"tool": SEARCH_TOOL, "arguments": arguments})
+
+        def keep(call_id, data):
+            hits, after = parse(call_id, data)
+            kept.extend(hits)
+            return hits, after
+
+        try:
+            _settled(handle, "search", lambda: _relay_read_pages(handle, SEARCH_TOOL, arguments, keep, cap=cap, capped=SEARCH_CUT))
+        except PartialRead as stop:
+            if stop.why != SEARCH_CUT:
+                raise
+            return kept, cap
+        return kept, None
+
+    def reactions(self, channel, ts):
+        return set(self._read(reactions_key(channel, ts), REACTIONS_TOOL, {"channel_id": channel, "message_ts": ts}))
 
     def _read(self, key, tool, arguments, stop=None):
         handle = self.session.open(*key)
@@ -343,9 +374,53 @@ class ApiReads:
     def cited(self, channel, root, oldest, to):
         return self.replies(channel, root, oldest, to)
 
+    def thread(self, channel, root, oldest, to):
+        params = {"channel": channel, "ts": root, "latest": str(to), "limit": str(API_PAGE_SIZE)}
+        if oldest is not None:
+            params["oldest"] = str(oldest)
+        items = self._read(thread_key(channel, root, oldest, to), channel, REPLIES_PATH, params)
+        return [item for item in items if decimal.Decimal(item.ts) <= to]
+
+    def search(self, search, start, to, cap):
+        key, found = search_key(search["name"], start, to), []
+        handle = self.session.open(*key)
+        params = {"query": _api_query(search, start, to), "sort": "timestamp", "sort_dir": "asc", "count": str(SEARCH_PAGE_SIZE)}
+
+        def pages():
+            for page in range(1, cap + 1):
+                body = self._body(handle, SEARCH_PATH, {**params, "page": str(page)})
+                found.extend(_api_search_page(search["name"], body))
+                last = dig(body, "messages", "paging", "pages")
+                if not _is_count(last) or page >= last:
+                    return found
+            raise PartialRead(SEARCH_CUT)
+
+        try:
+            _settled(handle, "search", pages)
+        except PartialRead as stop:
+            if stop.why != SEARCH_CUT:
+                raise
+            return found, cap
+        return found, None
+
+    def members(self, channel, path):
+        params = {"channel": channel} if path == INFO_PATH else {"channel": channel, "limit": str(API_PAGE_SIZE)}
+        return self._single(members_key(channel), path, params, lambda body: _api_members(channel, path, body))
+
+    def user_name(self, user):
+        return self._single(users_key(user), USERS_PATH, {"user": user}, lambda body: [_api_user_name(body)])[0]
+
+    def reactions(self, channel, ts):
+        params = {"channel": channel, "timestamp": ts, "full": "true"}
+        return set(self._single(reactions_key(channel, ts), REACTIONS_PATH, params, lambda body: sorted(_api_reactions(channel, body))))
+
     def _read(self, key, channel, path, params):
         handle = self.session.open(*key)
         return _settled(handle, key.kind, lambda: self._pages(handle, channel, path, params))
+
+    def _single(self, key, path, params, parse):
+        handle = self.session.open(*key)
+        return _settled(handle, key.kind, lambda: parse(self._body(handle, path, params)))
 
     def _pages(self, handle, channel, path, params):
         found, page = [], params
@@ -418,12 +493,6 @@ class CallOrderSession:
 
     def open(self, kind, entity, span=None):
         return _OrderedHandle(self)
-
-    def read(self, tool, arguments):
-        call_id = self.next_id()
-        if call_id not in self.responses:
-            raise _Pending(call_id, tool, arguments)
-        return call_id, self.responses[call_id]
 
 
 class _LiveHandle:

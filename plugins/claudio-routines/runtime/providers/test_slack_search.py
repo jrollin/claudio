@@ -1,12 +1,18 @@
 import collections
 import json
+import os
+import tempfile
 import unittest
 import urllib.parse
 
 import roles
 import state
+import store
 from providers import _http, slack
 from providers.slack_support import (
+    RUN,
+    relay_through,
+    store_session,
     BASE,
     CONNECTOR,
     HISTORY_PATH,
@@ -1202,6 +1208,123 @@ class SearchMentionsTransportEqualityTest(unittest.TestCase):
 for _name, _test in {**mention_tests(mentions_over_relay, "over_the_connector"), **mention_tests(mentions_over_api, "over_the_api")}.items():
     target = SearchRelayMentionsTest if "connector" in _name else SearchApiMentionsTest
     setattr(target, _name, _test)
+
+
+class InvalidEntityTest(unittest.TestCase):
+    LONG_ROOT = "12345678901234567.000100"
+
+    def responses(self):
+        return {"team-chat-1": search_text(hit("C4", "#dev", PEER, "1792396000.000100", thread=self.LONG_ROOT))}
+
+    def test_fails_the_thread_of_a_hit_whose_root_is_not_a_slack_ts(self):
+        result = search_parse(search_source(), self.responses())
+
+        self.assertEqual(result["entries"], {f"C4:{self.LONG_ROOT}": failed("invalid entity id")})
+
+    def test_still_reads_the_source_when_a_root_is_not_a_slack_ts(self):
+        self.assertTrue(search_parse(search_source(), self.responses())["records"]["units"] == [])
+
+
+class SearchStoreCase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def session(self, transport="mcp"):
+        return store_session(self.tmp.name, transport)
+
+    def kinds(self, session):
+        return sorted(os.listdir(session.base))
+
+    def document(self, session, relative):
+        with open(os.path.join(session.base, relative, store.READ_FILE), encoding="utf-8") as stream:
+            return json.load(stream)
+
+
+class SearchRelayStoreTest(SearchStoreCase):
+    def run_store(self, source, responses):
+        session = self.session()
+        return session, relay_through(session, responses, source=source, cursor={}, window=SEARCH_WINDOW)[1]
+
+    def test_names_the_first_search_call_by_its_read(self):
+        step = slack.plan(search_source(), SEARCH_WINDOW, {}, [], self.session(), CONNECTOR)
+
+        self.assertEqual(step["calls"][0]["id"], f"kind=search/search=dms/read=1792390000_1792400000-{RUN}.team-chat/page-001")
+
+    def test_gives_the_units_of_the_same_responses_by_call_order(self):
+        _, result = self.run_store(search_source(), full_responses())
+
+        self.assertEqual(state.dump(result), state.dump(search_parse(search_source(), full_responses())))
+
+    def test_files_the_search_the_conversation_and_the_thread_reads(self):
+        session, _ = self.run_store(search_source(), full_responses())
+
+        self.assertEqual(self.kinds(session), ["kind=history", "kind=search", "kind=thread"])
+
+    def test_starts_a_whole_thread_read_at_its_root(self):
+        session, _ = self.run_store(search_source(), full_responses())
+
+        reads = [name for _, folders, _ in os.walk(os.path.join(session.base, "kind=thread")) for name in folders if name.startswith("read=")]
+        self.assertEqual(reads, [f"read={THREAD_ROOT}_1792400000-{RUN}.team-chat"])
+
+    def test_marks_a_search_cut_at_its_page_cap_partial(self):
+        session, _ = self.run_store(search_source(search_page_cap=1), {"team-chat-1": search_text(hit("C4", "#dev", PEER, "1792396000.000100"), cursor="next")})
+
+        relative = f"kind=search/search=dms/read=1792390000_1792400000-{RUN}.team-chat"
+        self.assertEqual(self.document(session, relative)["outcome"], {"reason": "partial: search cut", "status": "partial"})
+
+    def test_marks_an_unreadable_reactions_read_failed(self):
+        entries = [(PEER, "1792395000.000100", "question")]
+        responses = {"team-chat-1": search_text(hit("D1", "DM", PEER, entries[0][1])), "team-chat-2": conversation_page("D1", *entries), "team-chat-3": "{}"}
+        session, _ = self.run_store(search_source(reactions=True), responses)
+
+        relative = f"kind=reactions/channel=D1/message=1792395000.000100/read={RUN}.team-chat"
+        self.assertEqual(self.document(session, relative)["outcome"], {"reason": "unreadable reactions response", "status": "failed"})
+
+    def test_writes_the_hits_of_a_search_read(self):
+        session, _ = self.run_store(search_source(), full_responses())
+
+        records = session.open("search", (("search", "dms"),), ("1792390000", "1792400000")).records()
+        self.assertEqual(len(records), 3)
+
+
+class SearchApiStoreTest(SearchStoreCase):
+    MESSAGE = {"type": "message", "user": "U2", "text": "question", "ts": "1760004000.000400"}
+
+    def routes(self):
+        return {
+            SEARCH_PATH: [search_doc(api_match("D1", "1760004000.000400", im=True))],
+            HISTORY_PATH: [history_doc(self.MESSAGE)],
+            INFO_PATH: [info_doc("D1", "U2")],
+            REACTIONS_PATH: [reaction_doc(OWNER)],
+        }
+
+    def fetch_store(self, users=None):
+        known = {user: user_doc(name) for user, name in USERS.items()} if users is None else users
+        opener, session = RoutedOpener(self.routes(), known), self.session("api")
+        session.http = client(opener)
+        return opener, session, slack.fetch(search_source(reactions=True), WINDOW, {}, [], session)
+
+    def test_gives_the_units_of_a_fetch_without_store(self):
+        _, _, result = self.fetch_store()
+
+        self.assertEqual(state.dump(result), state.dump(api_units(self.routes(), reactions=True)[1]))
+
+    def test_makes_the_same_calls_as_a_fetch_without_store(self):
+        opener, _, _ = self.fetch_store()
+
+        self.assertEqual(path_counts(opener), path_counts(api_units(self.routes(), reactions=True)[0]))
+
+    def test_files_members_user_and_reactions_reads(self):
+        _, session, _ = self.fetch_store()
+
+        self.assertEqual(self.kinds(session), ["kind=history", "kind=members", "kind=reactions", "kind=search", "kind=users"])
+
+    def test_writes_an_unknown_user_as_an_empty_name(self):
+        users = {user: user_doc(name) for user, name in USERS.items()}
+        _, session, _ = self.fetch_store({**users, "U2": error_doc("user_not_found")})
+
+        self.assertEqual(session.open("users", (("user", "U2"),), None).records(), [{"name": ""}])
 
 
 if __name__ == "__main__":

@@ -8,9 +8,8 @@ from state import clean_text
 
 from . import _common
 from ._common import dig
-from ._errors import PAGE_CAP_PARTIAL, PartialRead, SourceUnreadable
+from ._errors import PAGE_CAP_PARTIAL, SourceUnreadable
 from ._slack_read import (
-    API_PAGE_SIZE,
     EMAIL_TAIL,
     FROM_OPEN,
     KEY_PART_CAP,
@@ -18,24 +17,21 @@ from ._slack_read import (
     NO_MORE,
     NO_THREAD,
     PARENT_LINES,
-    RELAY_THREAD_PAGE_SIZE,
-    REPLIES_PATH,
     THREAD_NO_MORE,
     THREAD_PARENT,
     THREAD_TOOL,
     TS,
     ChannelFailed,
+    InvalidEntity,
     Item,
     ThreadNotFound,
     _api_failure,
-    _api_pages,
     _channel_read,
     _error_code,
     _is_count,
     _next_cursor,
     _no_replies_line,
     _relay_body,
-    _relay_pages,
     _replies_line,
     _string,
     _thread_key,
@@ -181,7 +177,12 @@ def _reread_unit(hit):
 def _read_conversations(reader, conversations, starts):
     lost = {}
     for channel, unit in list(conversations.items()):
-        read = reader.conversation(channel, starts.get(channel))
+        try:
+            read = reader.conversation(channel, starts.get(channel))
+        except InvalidEntity as failure:
+            lost[channel] = failure.code
+            del conversations[channel]
+            continue
         if read.failure is not None:
             lost[channel] = read.failure
             del conversations[channel]
@@ -191,7 +192,7 @@ def _read_conversations(reader, conversations, starts):
         try:
             if not unit.reread_only:
                 unit.participants = reader.participants(unit)
-        except ChannelFailed as failure:
+        except (ChannelFailed, InvalidEntity) as failure:
             lost[channel] = failure.code
             del conversations[channel]
     return lost
@@ -212,7 +213,7 @@ def _read_threads(reader, threads, failed, oldest):
         except ChannelFailed as failure:
             lost[channel] = failure.code
             del threads[(channel, root)]
-        except ThreadNotFound as failure:
+        except (ThreadNotFound, InvalidEntity) as failure:
             lost[_thread_key(channel, root)] = failure.code
             del threads[(channel, root)]
         else:
@@ -228,7 +229,7 @@ def _read_reactions(reader, unit, owner):
     for item in later[-REACTIONS_PER_UNIT:]:
         try:
             users = reader.reactions(unit.channel, item.ts)
-        except (ChannelFailed, ThreadNotFound, ReactionsFailed) as failure:
+        except (ChannelFailed, ThreadNotFound, ReactionsFailed, InvalidEntity) as failure:
             lost[f"reactions:{unit.channel}:{item.ts}"] = failure.code
         else:
             unit.reacted[decimal.Decimal(item.ts)] = owner in users
@@ -270,40 +271,19 @@ def _conversation_kind(channel, name, types):
 
 
 class _RelayReader:
-    def __init__(self, reads, relay, window):
+    def __init__(self, reads, window):
         self.reads = reads
-        self.relay = relay
         self.window = window
 
     def search(self, search, start, cap):
-        arguments = _search_arguments(search, start, self.window)
-        types, kept = _search_types(search), []
-
-        def parse(call_id, text):
-            hits, after = _search_page(call_id, text, types)
-            kept.extend(hits)
-            return hits, after
-
-        try:
-            _relay_pages(self.relay, SEARCH_TOOL, arguments, parse, cap, SEARCH_CUT)
-        except PartialRead as stop:
-            if stop.why != SEARCH_CUT:
-                raise
-            cut = cap
-        else:
-            cut = None
-        return [hit for hit in kept if _within(hit, start, self.window["to_ts"])], cut
+        hits, cut = self.reads.search(search, start, self.window["to_ts"], cap)
+        return [hit for hit in hits if _within(hit, start, self.window["to_ts"])], cut
 
     def conversation(self, channel, start=None):
         return _channel_read(self.reads, channel, _unit_window(self.window, start), {}, [])
 
     def thread(self, channel, root, oldest):
-        arguments = {"channel_id": channel, "message_ts": root, "limit": RELAY_THREAD_PAGE_SIZE, "response_format": "detailed"}
-        if oldest is not None:
-            arguments["oldest"] = str(oldest)
-        seen_ts = set()
-        parse = lambda call_id, text: _unit_thread_page(channel, call_id, text, root, self.window["to_ts"], seen_ts)
-        return _relay_pages(self.relay, THREAD_TOOL, arguments, parse)
+        return self.reads.thread(channel, root, oldest, self.window["to_ts"])
 
     def participants(self, unit):
         return unit.participants
@@ -312,8 +292,7 @@ class _RelayReader:
         return item
 
     def reactions(self, channel, ts):
-        _, text = self.relay.read(REACTIONS_TOOL, {"channel_id": channel, "message_ts": ts})
-        return _relay_reactions(text)
+        return self.reads.reactions(channel, ts)
 
 
 def _relay_reactions(text):
@@ -339,7 +318,7 @@ def _reactions_text(text):
     return None
 
 
-def _search_arguments(search, start, window):
+def _search_arguments(search, start, to):
     arguments = {"filters": search["filters"]}
     if "channel_types" in search:
         arguments["channel_types"] = search["channel_types"]
@@ -348,7 +327,7 @@ def _search_arguments(search, start, window):
     return {
         **arguments,
         "after": str(start),
-        "before": str(window["to_ts"]),
+        "before": str(to),
         "sort": "timestamp",
         "sort_dir": "asc",
         "limit": SEARCH_PAGE_SIZE,
@@ -435,52 +414,35 @@ def _thread_parent(channel, root, lines):
 
 
 class _ApiReader:
-    def __init__(self, reads, http, calls, window, owner):
+    def __init__(self, reads, window, owner):
         self.reads = reads
-        self.http = http
-        self.calls = calls
         self.window = window
         self.owner = owner
         self.names = {}
 
     def search(self, search, start, cap):
         types = _search_types(search)
-        params = {"query": _api_query(search, start, self.window), "sort": "timestamp", "sort_dir": "asc", "count": str(SEARCH_PAGE_SIZE)}
-        found, cut = [], cap
-        for page in range(1, cap + 1):
-            self.calls.spend()
-            body = self.http.get(SEARCH_PATH, {**params, "page": str(page)})
-            found.extend(hit for hit in _api_search_page(search["name"], body) if types is None or hit.kind_type in types)
-            pages = dig(body, "messages", "paging", "pages")
-            if not _is_count(pages) or page >= pages:
-                cut = None
-                break
-        return [hit for hit in found if _within(hit, start, self.window["to_ts"])], cut
+        hits, cut = self.reads.search(search, start, self.window["to_ts"], cap)
+        kept = [hit for hit in hits if types is None or hit.kind_type in types]
+        return [hit for hit in kept if _within(hit, start, self.window["to_ts"])], cut
 
     def conversation(self, channel, start=None):
         return _channel_read(self.reads, channel, _unit_window(self.window, start), {}, [])
 
     def thread(self, channel, root, oldest):
-        to = self.window["to_ts"]
-        params = {"channel": channel, "ts": root, "latest": str(to), "limit": str(API_PAGE_SIZE)}
-        if oldest is not None:
-            params["oldest"] = str(oldest)
-        items = _api_pages(channel, REPLIES_PATH, params, self.http, self.calls)
-        return [item for item in items if decimal.Decimal(item.ts) <= to]
+        return self.reads.thread(channel, root, oldest, self.window["to_ts"])
 
     def participants(self, unit):
-        self.calls.spend()
         if unit.kind == DM:
-            others = _api_members(unit.channel, INFO_PATH, self.http.get(INFO_PATH, {"channel": unit.channel}))
+            others = self.reads.members(unit.channel, INFO_PATH)
             other = others[0] if others else ""
             members = [other, self.owner] if other and other != self.owner else [self.owner]
         else:
-            members = _api_members(unit.channel, MEMBERS_PATH, self.http.get(MEMBERS_PATH, {"channel": unit.channel, "limit": str(API_PAGE_SIZE)}))
+            members = self.reads.members(unit.channel, MEMBERS_PATH)
         return [(member, self._name_of(member)) for member in members]
 
     def reactions(self, channel, ts):
-        self.calls.spend()
-        return _api_reactions(channel, self.http.get(REACTIONS_PATH, {"channel": channel, "timestamp": ts, "full": "true"}))
+        return self.reads.reactions(channel, ts)
 
     def named(self, item):
         return item if item.name or not item.author else item._replace(name=self._name_of(item.author))
@@ -491,8 +453,10 @@ class _ApiReader:
         return self.names[user]
 
     def _lookup(self, user):
-        self.calls.spend()
-        return _api_user_name(self.http.get(USERS_PATH, {"user": user}))
+        try:
+            return self.reads.user_name(user)
+        except InvalidEntity:
+            return ""
 
 
 def _api_search_page(name, body):
@@ -530,10 +494,10 @@ def _api_user_name(body):
     return _string(dig(profile, "display_name")) or _string(dig(profile, "real_name")) or _string(dig(body, "user", "real_name"))
 
 
-def _api_query(search, start, window):
+def _api_query(search, start, to):
     day = datetime.timedelta(days=2)
     first = datetime.datetime.fromtimestamp(start, datetime.timezone.utc).date() - day
-    last = datetime.datetime.fromtimestamp(window["to_ts"], datetime.timezone.utc).date() + day
+    last = datetime.datetime.fromtimestamp(to, datetime.timezone.utc).date() + day
     return " ".join([search["filters"], *search.get("keywords", []), f"after:{first.isoformat()}", f"before:{last.isoformat()}"])
 
 

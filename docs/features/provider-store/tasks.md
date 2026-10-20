@@ -80,7 +80,8 @@ Paths are under `plugins/claudio-routines/` unless they start with `docs/` or `s
 - **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime -p 'test_slack_search.py' && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime -p 'test_conformance.py' && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime -p 'test_*pipeline.py'`
 - **Blocked by**: T-4
 - **Rules**: BR-4
-- **Status**: Not Started
+- **Status**: Complete
+- **Result**: searches, unit threads, members, user lookups and reactions each open one read through `RelayReads` or `ApiReads`, the readers keep the window and channel-type filters, and an id that fails its check fails only its read (`invalid entity id`); the old relay and API pagers are removed; 15 new tests, the 116 existing search tests unedited and green, full runtime suite (5579) green
 
 ### T-6: Wire the read sessions into `collect.py`
 - **Scope**:

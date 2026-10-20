@@ -5,8 +5,7 @@ import re
 
 from . import _common
 from ._common import dig
-from ._errors import CALL_CAP, CALL_CAP_PARTIAL, PAGE_CAP_PARTIAL, PartialRead, SourceUnreadable
-from ._http import PAGE_CAP
+from ._errors import CALL_CAP, CALL_CAP_PARTIAL, PartialRead, SourceUnreadable
 
 HISTORY_PATH = "/api/conversations.history"
 REPLIES_PATH = "/api/conversations.replies"
@@ -16,6 +15,7 @@ RELAY_THREAD_PAGE_SIZE = 20
 SKIPPED_SUBTYPES = frozenset(("channel_join", "channel_leave"))
 FAILED_CHANNEL_CODES = ("channel_not_found", "is_archived", "not_in_channel")
 THREAD_NOT_FOUND = "thread_not_found"
+INVALID_ENTITY = "invalid entity id"
 TOOL = "slack_read_channel"
 THREAD_TOOL = "slack_read_thread"
 CURSOR_REPEATED = "cursor repeated"
@@ -59,6 +59,12 @@ class ThreadNotFound(SourceUnreadable):
     def __init__(self, channel, code):
         super().__init__(f"{channel}: {code}")
         self.code = code
+
+
+class InvalidEntity(SourceUnreadable):
+    def __init__(self, what):
+        super().__init__(f"{what}: {INVALID_ENTITY}")
+        self.code = INVALID_ENTITY
 
 
 class _Pending(Exception):
@@ -109,21 +115,6 @@ def _channel_read(reads, channel, window, stored, roots):
     return Read(channel, history, [*replies, *found], None, lost)
 
 
-def _api_pages(channel, path, params, http, calls):
-    found, page = [], params
-    for _ in range(PAGE_CAP):
-        calls.spend()
-        body = http.get(path, page)
-        found.extend(_api_page(channel, path, body))
-        if dig(body, "has_more") is not True:
-            return found
-        after = dig(body, "response_metadata", "next_cursor")
-        if not isinstance(after, str) or not after:
-            raise PartialRead(f"GET {path}: {channel}: has_more without next_cursor")
-        page = {**params, "cursor": after}
-    raise PartialRead(PAGE_CAP_PARTIAL)
-
-
 def _api_page(channel, path, body):
     if dig(body, "ok") is not True:
         raise _api_failure(channel, body)
@@ -159,21 +150,6 @@ def _api_message(channel, path, item):
 
 def _is_count(value):
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
-
-
-def _relay_pages(relay, tool, arguments, parse_page, cap=PAGE_CAP, capped=PAGE_CAP_PARTIAL):
-    found, after, seen = [], None, set()
-    for _ in range(cap):
-        asked = arguments if after is None else {**arguments, "cursor": after}
-        call_id, text = relay.read(tool, asked)
-        items, after = parse_page(call_id, text)
-        found.extend(items)
-        if after is None:
-            return found
-        if after in seen:
-            raise PartialRead(CURSOR_REPEATED)
-        seen.add(after)
-    raise PartialRead(capped)
 
 
 def _relay_body(tool, call_id, channel, text, page_open):
