@@ -182,9 +182,11 @@ A source also holds the options of its provider's role:
 | Observability tool | `kind` | `monitors` or `metrics` |
 | Observability tool | `scope_filter` | Query of the alert event search of a `monitors` source, such as `source:alert env:prod`; a `metrics` source ignores it, since its pack queries carry their own scope |
 | Observability tool | `discovery_query` | Optional monitor search query of a `monitors` source: the monitors it finds are judged under `monitor-<id>` even when the pack lacks them; without it nothing is discovered; a `metrics` source refuses it |
-| Document store | `page_id` | The sources page that holds the mutes table: a top-level `Mutes` heading followed by a table with the columns `key` and `until` (or `silence until`, never both), never nested inside a toggle heading; a source sets exactly one of `page_id`, `pages` and `page_from_state` |
+| Document store | `page_id` | The sources page that holds the mutes table: a top-level `Mutes` heading followed by a table with the columns `key` and `until` (or `silence until`, never both), never nested inside a toggle heading; a source sets exactly one of `page_id`, `pages`, `page_from_state`, `edited_by` and `created_by` |
 | Document store | `pages` | A non-empty list of page ids whose changes are collected: a page is read in full when its edit time moved, and its entry is `unchanged` or `not found or not shared` otherwise; keep it to about 10 pages, since a connector source fetches every listed page |
 | Document store | `page_from_state` | `previous_page`, in place of `page_id` and `pages`, for a routine with the `tribe` engine: the source reads the previous digest page named by the state, and a run with no previous page leaves the source unread |
+| Document store | `edited_by` | A user id, in place of `page_id` and `pages`: over `api`, the pages that user last edited in the window, newest first, up to `edited_cap` (1 to 20, default 10) |
+| Document store | `created_by` | A user id (`me` for the connected user), in place of `page_id` and `pages`: over `mcp` only, the pages that user created in the window, without their blocks; `exclude_paths` drops pages whose path starts with one of its prefixes |
 | Chat channel | `channels` | A non-empty list of channels; the replies of each thread whose root lies in the window are read too |
 | Code host | `repos` | A non-empty list of `owner/name` repositories |
 | Code host | `query` | Optional search query; a source with a non-empty one is not read, since neither transport takes a search query |

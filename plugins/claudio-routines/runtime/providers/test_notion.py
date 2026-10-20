@@ -1991,5 +1991,177 @@ class SourcesPageCursorTest(unittest.TestCase):
         self.assertEqual([call["id"] for call in relay_plan({})["calls"]], [CALL_ID])
 
 
+CREATED_SOURCE = {
+    "name": "created",
+    "provider": "docs",
+    "transport": {"cloud": "mcp", "local": "mcp"},
+    "created_by": "me",
+    "exclude_paths": ["Notes / Projects"],
+}
+CREATED_CALL = "created-1"
+CREATED_ID = "created-page-one"
+OTHER_CREATED_ID = "created-page-two"
+CREATED_IN_WINDOW = "2025-10-09T09:10:00.000Z"
+CREATED_BEFORE_START = "2025-10-09T08:00:00.000Z"
+CREATED_AFTER_END = "2025-10-09T12:00:00.000Z"
+
+
+def created_hit(page_id=CREATED_ID, timestamp=CREATED_IN_WINDOW, **changes):
+    return {
+        "id": page_id,
+        "title": "Weekly plan",
+        "url": "https://docs.example.test/p/" + page_id.replace("-", "") + "?pvs=204",
+        "type": "page",
+        "highlight": "",
+        "timestamp": timestamp,
+        "path": "Notes / Ideas",
+        **changes,
+    }
+
+
+def created_search(*hits, **changes):
+    return json.dumps({"results": list(hits), "type": "workspace_search", **changes})
+
+
+def created_plan(responses):
+    return notion.plan(CREATED_SOURCE, WINDOW, None, [], responses, CONNECTOR)
+
+
+def created_parse(text, source=CREATED_SOURCE):
+    return notion.parse(source, WINDOW, None, [], {CREATED_CALL: text}, {CREATED_CALL: None})
+
+
+def created_ids(*hits):
+    return [page["id"] for page in created_parse(created_search(*hits))["records"]["pages"]]
+
+
+def created_failure(test, text, error=_http.SourceUnreadable):
+    with test.assertRaises(error) as caught:
+        created_parse(text)
+    return caught.exception
+
+
+class CreatedPlanTest(unittest.TestCase):
+    def test_first_step_searches_the_pages_the_user_created_since_the_window_start(self):
+        self.assertEqual(
+            created_plan({})["calls"],
+            [
+                {
+                    "id": CREATED_CALL,
+                    "connector": CONNECTOR,
+                    "tool": "notion-search",
+                    "arguments": {
+                        "query": "",
+                        "filters": {"created_by_user_ids": ["me"], "created_date_range": {"start_date": "2025-10-09"}},
+                        "page_size": 50,
+                        "max_highlight_length": 0,
+                    },
+                    "digest": None,
+                }
+            ],
+        )
+
+    def test_first_step_is_not_done(self):
+        self.assertFalse(created_plan({})["done"])
+
+    def test_saved_search_ends_the_plan(self):
+        self.assertEqual(created_plan({CREATED_CALL: created_search()}), {"done": True, "partial": None, "calls": []})
+
+
+class CreatedParseTest(unittest.TestCase):
+    def test_keeps_a_page_created_in_the_window_as_a_pages_record(self):
+        result = created_parse(created_search(created_hit()))
+
+        self.assertEqual(
+            result["records"]["pages"],
+            [
+                {
+                    "id": CREATED_ID,
+                    "title": "Weekly plan",
+                    "last_edited": "2025-10-09T09:10:00Z",
+                    "link": "https://www.notion.so/" + CREATED_ID.replace("-", ""),
+                    "blocks": [],
+                }
+            ],
+        )
+
+    def test_drops_a_page_created_before_the_window_start(self):
+        self.assertEqual(created_ids(created_hit(timestamp=CREATED_BEFORE_START)), [])
+
+    def test_drops_a_page_created_after_the_window_end(self):
+        self.assertEqual(created_ids(created_hit(timestamp=CREATED_AFTER_END)), [])
+
+    def test_drops_a_page_under_an_excluded_path(self):
+        excluded = created_hit(OTHER_CREATED_ID, path="Notes / Projects / Weekly")
+
+        self.assertEqual(created_ids(excluded, created_hit()), [CREATED_ID])
+
+    def test_keeps_a_page_without_a_path(self):
+        top_level = {key: value for key, value in created_hit().items() if key != "path"}
+
+        self.assertEqual(created_ids(top_level), [CREATED_ID])
+
+    def test_skips_a_result_that_is_not_a_page(self):
+        self.assertEqual(created_ids(created_hit(OTHER_CREATED_ID, type="database"), created_hit()), [CREATED_ID])
+
+    def test_keeps_the_search_order(self):
+        self.assertEqual(created_ids(created_hit(OTHER_CREATED_ID), created_hit()), [OTHER_CREATED_ID, CREATED_ID])
+
+    def test_link_follows_the_links_base_of_the_provider(self):
+        source = {**CREATED_SOURCE, "provider_config": {"links_base": "https://docs.example.test/"}}
+
+        result = created_parse(created_search(created_hit()), source)
+
+        self.assertEqual(result["records"]["pages"][0]["link"], "https://docs.example.test/" + CREATED_ID.replace("-", ""))
+
+    def test_cursor_holds_the_creation_time_of_each_kept_page(self):
+        result = created_parse(created_search(created_hit(), created_hit(OTHER_CREATED_ID, timestamp=CREATED_BEFORE_START)))
+
+        self.assertEqual(result["cursor"], {"pages": {CREATED_ID: "2025-10-09T09:10:00Z"}})
+
+    def test_collection_conforms_to_the_document_store_schema(self):
+        result = created_parse(created_search(created_hit()))
+
+        self.assertIsNone(roles.validate_collection({**collection(result), "source": "created", "transport": "mcp"}))
+
+    def test_a_full_page_of_results_ends_the_read_partial(self):
+        hits = [created_hit(f"id-{number}") for number in range(50)]
+
+        error = created_failure(self, created_search(*hits), _http.PartialRead)
+
+        self.assertEqual(str(error), "partial: result cap")
+
+    def test_one_result_short_of_a_full_page_is_read(self):
+        hits = [created_hit(f"id-{number}") for number in range(49)]
+
+        self.assertEqual(len(created_ids(*hits)), 49)
+
+    def test_a_response_that_is_not_json_makes_the_source_unreadable(self):
+        self.assertEqual(str(created_failure(self, "not json")), "notion-search: response created-1 is not JSON")
+
+    def test_a_response_without_results_makes_the_source_unreadable(self):
+        self.assertEqual(str(created_failure(self, json.dumps({"type": "workspace_search"}))), "notion-search: response created-1 without results")
+
+    def test_a_page_result_without_a_valid_timestamp_makes_the_source_unreadable(self):
+        error = created_failure(self, created_search(created_hit(timestamp="yesterday")))
+
+        self.assertEqual(str(error), "notion-search: response created-1 result 0 without a valid timestamp")
+
+    def test_a_page_result_without_an_id_makes_the_source_unreadable(self):
+        error = created_failure(self, created_search(created_hit(id="")))
+
+        self.assertEqual(str(error), "notion-search: response created-1 result 0 without an id")
+
+
+class CreatedApiRefusalTest(unittest.TestCase):
+    def test_the_api_read_refuses_a_created_by_source(self):
+        opener = FakeOpener([])
+
+        with self.assertRaises(_http.SourceUnreadable) as caught:
+            notion.fetch(CREATED_SOURCE, WINDOW, None, [], client(opener))
+
+        self.assertEqual((str(caught.exception), opener.requests), ("created_by: reads over mcp only", []))
+
+
 if __name__ == "__main__":
     unittest.main()

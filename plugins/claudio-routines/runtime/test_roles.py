@@ -930,6 +930,67 @@ class DocumentEditedByOptionTest(ConfigCase):
         self.assert_config_error(config, self.SOURCE_PATH + ".edited_by")
 
 
+class DocumentCreatedByOptionTest(ConfigCase):
+    SOURCE_PATH = "routines.prod-watch.sources.sources-page"
+
+    def created_config(self, transport=None, **options):
+        config = make_config()
+        source = routine_sources(config)["sources-page"]
+        del source["page_id"]
+        source["transport"] = transport or {"cloud": "mcp", "local": "mcp"}
+        source.update({"created_by": "me", **options})
+        return config
+
+    def test_accepts_a_source_reading_the_pages_a_user_created(self):
+        self.assertIsNone(roles.validate_config(self.created_config(), ROUTINE, "local", role_of))
+
+    def test_accepts_excluded_paths_next_to_created_by(self):
+        config = self.created_config(exclude_paths=["Notes / Projects", "Notes / Drafts"])
+
+        self.assertIsNone(roles.validate_config(config, ROUTINE, "local", role_of))
+
+    def test_rejects_a_blank_created_by(self):
+        self.assert_config_error(self.created_config(created_by="  "), self.SOURCE_PATH + ".created_by")
+
+    def test_rejects_a_created_by_that_is_not_a_string(self):
+        self.assert_config_error(self.created_config(created_by=7), self.SOURCE_PATH + ".created_by")
+
+    def test_rejects_created_by_next_to_pages(self):
+        self.assert_config_error(self.created_config(pages=[page_id()]), self.SOURCE_PATH)
+
+    def test_rejects_created_by_next_to_page_id(self):
+        self.assert_config_error(self.created_config(page_id=page_id()), self.SOURCE_PATH)
+
+    def test_rejects_created_by_next_to_edited_by(self):
+        self.assert_config_error(self.created_config(edited_by="user-ab12"), self.SOURCE_PATH)
+
+    def test_rejects_created_by_next_to_page_from_state(self):
+        self.assert_config_error(self.created_config(page_from_state="previous_page"), self.SOURCE_PATH)
+
+    def test_rejects_excluded_paths_without_created_by(self):
+        config = make_config()
+        routine_sources(config)["sources-page"]["exclude_paths"] = ["Notes / Projects"]
+        self.assert_config_error(config, self.SOURCE_PATH + ".exclude_paths")
+
+    def test_rejects_a_blank_excluded_path(self):
+        self.assert_config_error(self.created_config(exclude_paths=["Notes", " "]), self.SOURCE_PATH + ".exclude_paths[1]")
+
+    def test_rejects_excluded_paths_that_is_not_a_list(self):
+        self.assert_config_error(self.created_config(exclude_paths="Notes"), self.SOURCE_PATH + ".exclude_paths")
+
+    def test_rejects_created_by_over_the_api_transport_of_the_place_checked(self):
+        config = self.created_config(transport={"cloud": "mcp", "local": "api"})
+        self.assert_config_error(config, self.SOURCE_PATH + ".created_by")
+
+    def test_rejects_created_by_over_the_api_transport_of_the_other_place(self):
+        config = self.created_config(transport={"cloud": "api", "local": "mcp"})
+        self.assert_config_error(config, self.SOURCE_PATH + ".created_by")
+
+    def test_rejects_created_by_over_a_listed_transport_holding_api(self):
+        config = self.created_config(transport={"cloud": ["mcp", "api"], "local": "mcp"})
+        self.assert_config_error(config, self.SOURCE_PATH + ".created_by")
+
+
 class FirstReadDaysTest(ConfigCase):
     KEY_PATH = "routines.prod-watch.first_read_days"
 

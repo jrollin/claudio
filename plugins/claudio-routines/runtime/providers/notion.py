@@ -45,6 +45,11 @@ BLOCK_KINDS = {
     "table": "table",
 }
 FETCH_TOOL = "notion-fetch"
+SEARCH_TOOL = "notion-search"
+SEARCH_PAGE_SIZE = 50
+RESULT_CAP_PARTIAL = "result cap"
+PAGE_RESULT = "page"
+DATE_CHARS = 10
 HTTP_NOT_FOUND = 404
 HTTP_BAD_REQUEST = 400
 DATABASE_TYPE = "database"
@@ -128,6 +133,8 @@ class _Budget:
 
 
 def fetch(source, window, cursor, entries, http):
+    if "created_by" in source:
+        raise SourceUnreadable("created_by: reads over mcp only")
     budget = _Budget(http)
     if "edited_by" in source:
         return _fetch_listed_pages(source, _edited_page_ids(source, window, http), cursor, budget)
@@ -144,6 +151,8 @@ def _fetch_listed_pages(source, page_ids, cursor, budget):
 
 
 def plan(source, window, cursor, entries, responses, connector):
+    if "created_by" in source:
+        return _plan_created(source, window, responses, connector)
     stored = _stored(cursor)
     for index, page_id in enumerate(_page_ids(source), 1):
         call_id = _call_id(source, index)
@@ -164,6 +173,8 @@ def _source_unreadable(page_id, responses, call_id, stored):
 
 
 def parse(source, window, cursor, entries, responses, digests):
+    if "created_by" in source:
+        return _parse_created(source, window, responses)
     page_ids = _page_ids(source)
     if "pages" not in source:
         page = _page_from_response(page_ids[0], _response(responses, _call_id(source, 1)))
@@ -174,6 +185,51 @@ def parse(source, window, cursor, entries, responses, digests):
         for index, page_id in enumerate(page_ids, 1)
     ]
     return _listed(source, page_ids, stored, outcomes)
+
+
+def _plan_created(source, window, responses, connector):
+    call_id = _call_id(source, 1)
+    if call_id in responses:
+        return _common.ended()
+    filters = {
+        "created_by_user_ids": [source["created_by"]],
+        "created_date_range": {"start_date": _utc(window["from_ts"])[:DATE_CHARS]},
+    }
+    arguments = {"query": "", "filters": filters, "page_size": SEARCH_PAGE_SIZE, "max_highlight_length": 0}
+    call = {"id": call_id, "connector": connector, "tool": SEARCH_TOOL, "arguments": arguments, "digest": None}
+    return {"done": False, "partial": None, "calls": [call]}
+
+
+def _parse_created(source, window, responses):
+    call_id = _call_id(source, 1)
+    results = _response(responses, call_id, SEARCH_TOOL).get("results")
+    if not isinstance(results, list):
+        raise SourceUnreadable(f"{SEARCH_TOOL}: response {call_id} without results")
+    if len(results) >= SEARCH_PAGE_SIZE:
+        raise PartialRead(RESULT_CAP_PARTIAL)
+    start, end, excluded = _utc(window["from_ts"]), _utc(window["to_ts"]), tuple(source.get("exclude_paths", ()))
+    pages = []
+    for index, item in enumerate(results):
+        if dig(item, "type") == PAGE_RESULT and not _under(item, excluded):
+            page = _created_page(item, call_id, index)
+            if start <= page["last_edited"] <= end:
+                pages.append(page)
+    return _result(source, pages, {}, {page["id"]: page["last_edited"] for page in pages})
+
+
+def _under(item, prefixes):
+    path = dig(item, "path")
+    return isinstance(path, str) and path.startswith(prefixes)
+
+
+def _created_page(item, call_id, index):
+    where = f"{SEARCH_TOOL}: response {call_id} result {index}"
+    page_id, created, title = dig(item, "id"), utc_text(dig(item, "timestamp")), dig(item, "title")
+    if not isinstance(page_id, str) or not page_id:
+        raise SourceUnreadable(f"{where} without an id")
+    if created is None:
+        raise SourceUnreadable(f"{where} without a valid timestamp")
+    return {"id": page_id, "title": title if isinstance(title, str) else "", "last_edited": created, "blocks": []}
 
 
 def _page_from_response(page_id, body):
@@ -309,10 +365,10 @@ def _call_id(source, index):
     return f"{source['name']}-{index}"
 
 
-def _response(responses, call_id):
+def _response(responses, call_id, tool=FETCH_TOOL):
     if call_id not in responses:
-        raise SourceUnreadable(f"{FETCH_TOOL}: no response {call_id}")
-    where = f"{FETCH_TOOL}: response {call_id}"
+        raise SourceUnreadable(f"{tool}: no response {call_id}")
+    where = f"{tool}: response {call_id}"
     return json_object(responses[call_id], f"{where} is not JSON", f"{where} is not a JSON object")
 
 
