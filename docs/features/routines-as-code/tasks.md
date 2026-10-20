@@ -1137,11 +1137,11 @@ Owner-gated: needs the merged pull request, a release tag, the transport and its
 - **Files**: `plugins/claudio-routines/skills/routines/templates/weekly-status.md` (modify), `plugins/claudio-routines/example/config/routines/weekly-status.json` (modify), `plugins/claudio-routines/skills/routines/scripts/test_routines.py` (modify), `plugins/claudio-routines/README.md` (modify)
 - **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
 - **Blocked by**: T-103
-- **Status**: Not Started
+- **Status**: Complete
 
 ### T-105: Weekly status rollout
 Owner-gated: needs the release tag, the tokens per place and an approved sync.
-1. Write the private routine file with `engine: weekly`, `recap: slack-recap`, the owner identities and the sources over `api`; add the direct chat source once a chat token exists.
+1. Write the private routine file with `engine: weekly`, `recap: slack-recap`, the owner identities and the issue tracker and code host sources over `api`; no document store source (see Out of Scope); add the direct chat source once a chat token exists.
 2. Copy the runnable template to the private `weekly-status-runtime.md` and point the routine file at it.
 3. Run one local report-only run and compare it with the last live weekly status.
 4. Sync the routine.

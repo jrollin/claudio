@@ -36,7 +36,6 @@ DATA_GUARD = (
 RUN_AT = "20261017T090000Z"
 MARKER = "<!-- not runnable -->"
 MARKED = MARKER + "\nPost to {{chat.channel}}.\n"
-SKELETONS = ("weekly-status",)
 DENY = ["PushNotification", "Bash(sleep *)", "Monitor"]
 CHAT_OWNER = "U" + "1" * 6
 CHAT_PROVIDERS = {
@@ -224,6 +223,27 @@ def recap_routine(**changes):
         rules=["An ask needs a reply from the owner."],
     )
     routine["sources"] = {"chat": source}
+    routine.update(changes)
+    return {key: value for key, value in routine.items() if value is not None}
+
+
+def weekly_routine(**changes):
+    routine = checked_routine(
+        template="weekly-status",
+        values={"digest": {"name": "Weekly", "slug": "weekly-status"}},
+        engine="weekly",
+        owner=CHAT_OWNER,
+        workspace="chat.example.test",
+        recap="chat-recap",
+    )
+    routine["sources"] = {
+        "chat": {
+            "provider": "chat",
+            "transport": CHAT_TRANSPORT,
+            "owner": CHAT_OWNER,
+            "searches": [{"name": "dms", "filters": "is:dm", "since": "window"}],
+        }
+    }
     routine.update(changes)
     return {key: value for key, value in routine.items() if value is not None}
 
@@ -2144,6 +2164,21 @@ class RoutineRolesLintTest(PinnedClaudioCase):
         stderr = self.lint_file("chat-recap", routine)[2]
         self.assertEqual(stderr, "routines.py: config/routines/chat-recap.json: sources.chat.owner: must equal the routine owner\n")
 
+    WEEKLY_TEMPLATE = "{{runtime.dir}} {{recap.slug}}\n"
+
+    def test_a_valid_weekly_routine_file_passes(self):
+        self.assertEqual(self.lint_file("weekly-status", weekly_routine(), self.WEEKLY_TEMPLATE)[:2], (0, ""))
+
+    def test_a_weekly_routine_without_a_recap_exits_2_naming_its_key_path(self):
+        code, _, stderr = self.lint_file("weekly-status", weekly_routine(recap=None), self.WEEKLY_TEMPLATE)
+        self.assertEqual((code, stderr), (2, "routines.py: config/routines/weekly-status.json: recap: missing, a weekly routine names the chat recap routine it reads\n"))
+
+    def test_a_weekly_chat_source_of_another_owner_exits_2_naming_its_key_path(self):
+        routine = weekly_routine()
+        routine["sources"]["chat"]["owner"] = "U" + "9" * 6
+        stderr = self.lint_file("weekly-status", routine, self.WEEKLY_TEMPLATE)[2]
+        self.assertEqual(stderr, "routines.py: config/routines/weekly-status.json: sources.chat.owner: must equal the routine owner\n")
+
     def test_a_valid_tribe_routine_file_passes(self):
         self.assertEqual(self.lint_file("tribe-digest", self.tribe_routine())[:2], (0, ""))
 
@@ -2905,31 +2940,26 @@ class ShippedFilesTest(Case):
     def test_shipped_templates_pass_the_public_lint(self):
         self.assertEqual(run("lint", "--public")[:2], (0, ""))
 
-    def test_the_skeleton_is_marked_not_runnable(self):
-        marked = [lint.is_marked(read(os.path.join(SHIPPED_TEMPLATES, f"{name}.md"))) for name in SKELETONS]
-        self.assertEqual(marked, [True])
-
-    def test_the_skeleton_carries_no_marker_near_miss(self):
-        near = [lint.near_miss_marker(read(os.path.join(SHIPPED_TEMPLATES, f"{name}.md"))) for name in SKELETONS]
-        self.assertEqual(near, [False])
-
     def test_the_runnable_templates_and_the_setup_script_are_not_marked(self):
-        names = ("prod-watch.md", "tribe-digest.md", "chat-recap.md", "setup-env.sh")
+        names = ("prod-watch.md", "tribe-digest.md", "chat-recap.md", "weekly-status.md", "setup-env.sh")
         marked = [lint.is_marked(read(os.path.join(SHIPPED_TEMPLATES, name))) for name in names]
         self.assertEqual(marked, [False] * len(names))
 
-    def test_the_skeleton_holds_the_four_sections(self):
-        sections = ("## Purpose\n", "## Sources\n", "## Steps\n", "## Outputs\n")
-        held = [all(section in read(os.path.join(SHIPPED_TEMPLATES, f"{name}.md")) for section in sections) for name in SKELETONS]
-        self.assertEqual(held, [True])
+    def render_weekly(self, **changes):
+        config = make_config(values={"chat": {"digest_channel_id": "channel-test"}})
+        config.update(providers=CHAT_PROVIDERS, routines={})
+        self.write_config(config)
+        self.write_routine_file("weekly-status", weekly_routine(**changes))
+        return self.run_private("render", "weekly-status")
 
-    def test_the_skeleton_keeps_its_records_on_the_state_branch(self):
-        held = ["`claude/state`" in read(os.path.join(SHIPPED_TEMPLATES, f"{name}.md")) for name in SKELETONS]
-        self.assertEqual(held, [True])
+    def test_the_weekly_template_renders_without_warnings(self):
+        code, stdout, stderr = self.render_weekly()
+        self.assertEqual((code, stderr, "{{" in stdout, "state/chat-recap.json" in stdout), (0, "", False, True))
 
-    def test_the_skeleton_does_not_call_a_runtime_script(self):
-        calls = [lint.SCRIPT_CALL.search(read(os.path.join(SHIPPED_TEMPLATES, f"{name}.md"))) for name in SKELETONS]
-        self.assertEqual(calls, [None])
+    def test_a_weekly_routine_without_a_recap_fails_the_render_naming_its_key_path(self):
+        code, stdout, stderr = self.render_weekly(recap=None)
+        self.assertEqual((code, stdout), (2, ""))
+        self.assertEqual(stderr, "routines.py: config/routines/weekly-status.json: recap: missing, a weekly routine names the chat recap routine it reads\n")
 
     def test_prod_watch_skeleton_renders_without_warnings(self):
         self.write_config(self.full_config())
@@ -3346,7 +3376,7 @@ class ShippedFilesTest(Case):
         self.assertIn("fetch --no-prune origin +claude/state:refs/remotes/origin/claude/state", self.prod_watch_step("Load the state"))
 
     def test_every_runnable_template_creates_its_run_folder_under_the_runs_dir(self):
-        slugs = {"prod-watch": "prod-watch", "tribe-digest": "{{digest.slug}}", "chat-recap": "{{digest.slug}}"}
+        slugs = {"prod-watch": "prod-watch", "tribe-digest": "{{digest.slug}}", "chat-recap": "{{digest.slug}}", "weekly-status": "{{digest.slug}}"}
         for name, slug in slugs.items():
             command = f"mkdir -p {{{{runs.dir}}}}/{slug} && mktemp -d {{{{runs.dir}}}}/{slug}/$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX"
             bullet = (
@@ -3358,7 +3388,7 @@ class ShippedFilesTest(Case):
                 self.assertEqual(lines, [bullet])
 
     def test_every_runnable_template_fetches_the_state_branch_without_pruning(self):
-        for name in ("prod-watch", "tribe-digest", "chat-recap"):
+        for name in ("prod-watch", "tribe-digest", "chat-recap", "weekly-status"):
             with self.subTest(template=name):
                 text = read(os.path.join(SHIPPED_TEMPLATES, f"{name}.md"))
                 self.assertIn("fetch --no-prune origin +claude/state:refs/remotes/origin/claude/state", text)
@@ -3371,12 +3401,12 @@ class ShippedFilesTest(Case):
 
     def test_every_runnable_template_names_the_role_of_each_source_it_collects(self):
         expected = "write its name literally wherever a command says `<source>` and its `role` wherever a command says `<role>`."
-        for name in ("prod-watch", "tribe-digest", "chat-recap"):
+        for name in ("prod-watch", "tribe-digest", "chat-recap", "weekly-status"):
             with self.subTest(template=name):
                 self.assertIn(expected, self.runnable_collect_step(name))
 
     def test_every_runnable_template_keeps_the_raw_results_of_a_source_by_role(self):
-        for name in ("prod-watch", "tribe-digest", "chat-recap"):
+        for name in ("prod-watch", "tribe-digest", "chat-recap", "weekly-status"):
             with self.subTest(template=name):
                 step = self.runnable_collect_step(name)
                 relay = [line for line in step.splitlines() if "collect.py plan " in line or "collect.py parse " in line]
@@ -3386,19 +3416,19 @@ class ShippedFilesTest(Case):
                 )
 
     def test_every_runnable_template_records_the_http_calls_of_an_api_source_by_role(self):
-        for name in ("prod-watch", "tribe-digest", "chat-recap"):
+        for name in ("prod-watch", "tribe-digest", "chat-recap", "weekly-status"):
             with self.subTest(template=name):
                 fetch = [line for line in self.runnable_collect_step(name).splitlines() if "collect.py fetch " in line]
                 self.assertEqual([("--responses <run>/raw/<role>/<source> --out <run>/collections/<source>.json" in line) for line in fetch], [True])
 
     def test_every_runnable_template_writes_the_transport_choice_to_the_run_directory(self):
-        for name in ("prod-watch", "tribe-digest", "chat-recap"):
+        for name in ("prod-watch", "tribe-digest", "chat-recap", "weekly-status"):
             with self.subTest(template=name):
                 sources = [line for line in self.runnable_collect_step(name).splitlines() if "collect.py sources " in line]
                 self.assertEqual([line.endswith("--place {{place}} --out <run>/sources.json") for line in sources], [True])
 
     def test_every_runnable_template_passes_the_transport_choice_to_every_fetch_plan_and_parse(self):
-        for name in ("prod-watch", "tribe-digest", "chat-recap"):
+        for name in ("prod-watch", "tribe-digest", "chat-recap", "weekly-status"):
             with self.subTest(template=name):
                 commands = [
                     line
@@ -3412,20 +3442,20 @@ class ShippedFilesTest(Case):
 
     def test_every_runnable_template_fetches_a_source_with_no_usable_transport_once(self):
         expected = "A source whose `transport` is null has no usable transport: run the `fetch` command for it once."
-        for name in ("prod-watch", "tribe-digest", "chat-recap"):
+        for name in ("prod-watch", "tribe-digest", "chat-recap", "weekly-status"):
             with self.subTest(template=name):
                 self.assertIn(expected, self.runnable_collect_step(name))
 
     def test_every_runnable_template_reports_nothing_for_a_fallback_line(self):
         expected = "Report nothing for it and continue."
-        for name in ("prod-watch", "tribe-digest", "chat-recap"):
+        for name in ("prod-watch", "tribe-digest", "chat-recap", "weekly-status"):
             with self.subTest(template=name):
                 text = read(os.path.join(SHIPPED_TEMPLATES, f"{name}.md"))
                 line = next(line for line in text.splitlines() if line.startswith("- Each `fallback <source> <from> <to> <variable>` line"))
                 self.assertIn(expected, line)
 
     def test_every_runnable_template_never_reads_a_source_through_the_other_transport(self):
-        for name in ("prod-watch", "tribe-digest", "chat-recap"):
+        for name in ("prod-watch", "tribe-digest", "chat-recap", "weekly-status"):
             with self.subTest(template=name):
                 self.assertIn("- Never read a source through the other transport, even when its read fails.", self.runnable_collect_step(name))
 
@@ -3439,20 +3469,20 @@ class ShippedFilesTest(Case):
             "git -C {{state.dir}} fetch --no-prune origin +claude/state:refs/remotes/origin/claude/state && \\",
             "git -C {{state.dir}} worktree add --detach <run>/store origin/claude/state && \\",
         ]
-        for name in ("prod-watch", "tribe-digest", "chat-recap"):
+        for name in ("prod-watch", "tribe-digest", "chat-recap", "weekly-status"):
             with self.subTest(template=name):
                 block = self.runnable_save_step(name).split("```bash\n")[1]
                 self.assertEqual([line.strip() for line in block.splitlines()[:2]], expected)
 
     def test_every_runnable_template_retries_a_push_rejected_by_a_moved_branch_once(self):
         retry = "- A push rejected because the branch moved (`fetch first` or `non-fast-forward` in its output) gets one retry:"
-        for name in ("prod-watch", "tribe-digest", "chat-recap"):
+        for name in ("prod-watch", "tribe-digest", "chat-recap", "weekly-status"):
             with self.subTest(template=name):
                 self.assertIn(retry, self.runnable_save_step(name))
 
     def test_every_runnable_template_never_forces_or_retries_twice(self):
         rule = "- Never force the push, never pull or rebase, and never retry a second time or after another failure."
-        for name in ("prod-watch", "tribe-digest", "chat-recap"):
+        for name in ("prod-watch", "tribe-digest", "chat-recap", "weekly-status"):
             with self.subTest(template=name):
                 self.assertIn(rule, self.runnable_save_step(name))
 
@@ -3664,11 +3694,33 @@ class ShippedFilesTest(Case):
     def test_example_full_load_passes_the_id_clash_check_for_every_routine(self):
         self.assertEqual(sorted(self.example()["routines"]), ["chat-recap", "prod-watch", "tribe-digest", "weekly-status"])
 
-    def test_example_skeleton_routine_without_collectors_holds_no_sources(self):
-        self.assertNotIn("sources", self.example()["routines"]["weekly-status"])
+    def test_example_weekly_routine_reads_an_issue_tracker_by_jql_and_a_code_host_by_searches(self):
+        sources = self.example()["routines"]["weekly-status"]["sources"]
+        self.assertEqual(
+            {name: (source["provider"], sorted({"jql", "searches"} & set(source))) for name, source in sources.items()},
+            {"issues": ("issue-tracker", ["jql"]), "pull-requests": ("code-host", ["searches"])},
+        )
 
-    def test_example_shared_values_hold_the_digest_channel_and_the_owner(self):
-        self.assertEqual(sorted(self.example_file("config.json")["values"]), ["chat", "owner"])
+    def test_example_weekly_routine_names_the_recap_routine_it_reads_and_its_digest(self):
+        routine = self.example()["routines"]["weekly-status"]
+        self.assertEqual(
+            (routine["engine"], routine["template"], routine["recap"], routine["values"]["digest"]["slug"], routine["exclude"]),
+            ("weekly", "weekly-status", "chat-recap", "weekly-status", {"channels": ["<chat-channel-id-to-skip>"]}),
+        )
+
+    def test_example_weekly_routine_passes_the_role_check_in_both_places(self):
+        roles = runtime_module("roles")
+        adapters = {"<issue-tracker-adapter>": "issue_tracker", "<code-host-adapter>": "code_host"}
+        for place in ("cloud", "local"):
+            with self.subTest(place=place):
+                roles.validate_config(self.example(), "weekly-status", place, role_of=lambda adapter: adapters[adapter])
+
+    def test_example_code_host_provider_reads_over_api_in_both_places(self):
+        provider = self.example_file("config.json")["providers"]["code-host"]
+        self.assertEqual((provider["transport"], sorted(provider["api"]["credentials"])), ({"cloud": "api", "local": "api"}, ["token"]))
+
+    def test_example_shared_values_hold_the_digest_channel_only(self):
+        self.assertEqual(sorted(self.example_file("config.json")["values"]), ["chat"])
 
     def test_example_providers_set_a_default_transport_for_both_places(self):
         providers = self.example_file("config.json")["providers"]
@@ -3693,10 +3745,10 @@ class ShippedFilesTest(Case):
     def test_example_loads_through_the_secret_guard_with_secret_named_credential_keys(self):
         providers = self.example()["providers"]
         names = sorted(name for provider in providers.values() for name in provider["api"]["credentials"])
-        self.assertEqual(names, ["email", "token", "token", "token", "token"])
+        self.assertEqual(names, ["email", "token", "token", "token", "token", "token"])
 
     def test_example_holds_one_provider_per_role(self):
-        self.assertEqual(sorted(self.example_file("config.json")["providers"]), ["chat", "document-store", "issue-tracker", "observability"])
+        self.assertEqual(sorted(self.example_file("config.json")["providers"]), ["chat", "code-host", "document-store", "issue-tracker", "observability"])
 
     def test_example_issue_tracker_provider_sets_a_links_base_and_both_credentials(self):
         provider = self.example_file("config.json")["providers"]["issue-tracker"]
@@ -4072,27 +4124,20 @@ class RuntimeModuleTest(unittest.TestCase):
         self.assertEqual((first is second, imports.call_count), (True, 1))
 
 
-class RecapTemplateTest(unittest.TestCase):
-    PATH = os.path.join(SHIPPED_TEMPLATES, "chat-recap.md")
-    SCRIPTS = ("recap", "collect")
-    CALL = re.compile(r"/(?:recap|collect)\.py ([a-z-]+)")
-    ORDER = ["init", "window", "features", "judge", "apply", "message"]
+class RenderedTemplate:
+    PATH = None
+    SLUG = None
+    SCRIPTS = ()
 
     def raw(self):
         return read(self.PATH)
-
-    def test_the_judge_step_says_what_each_summary_completes(self):
-        text = self.raw()
-        for opening in ("without their name", "as the object of `You promised`", "as the object of `<name> owes`"):
-            with self.subTest(opening=opening):
-                self.assertIn(opening, text)
 
     def example(self):
         return runtime_module("config_tree").load(os.path.join(EXAMPLE_DIR, "config.json"), None)
 
     def rendered(self, place="cloud", post=False):
         config = self.example()
-        context, _ = routines.build_context(config, config["routines"]["chat-recap"], place, post)
+        context, _ = routines.build_context(config, config["routines"][self.SLUG], place, post)
         return routines.render_text(self.raw(), context, self.PATH)[0]
 
     def step(self, title):
@@ -4117,6 +4162,20 @@ class RecapTemplateTest(unittest.TestCase):
 
     def position(self, needle):
         return self.rendered().index(needle)
+
+
+class RecapTemplateTest(RenderedTemplate, unittest.TestCase):
+    PATH = os.path.join(SHIPPED_TEMPLATES, "chat-recap.md")
+    SLUG = "chat-recap"
+    SCRIPTS = ("recap", "collect")
+    CALL = re.compile(r"/(?:recap|collect)\.py ([a-z-]+)")
+    ORDER = ["init", "window", "features", "judge", "apply", "message"]
+
+    def test_the_judge_step_says_what_each_summary_completes(self):
+        text = self.raw()
+        for opening in ("without their name", "as the object of `You promised`", "as the object of `<name> owes`"):
+            with self.subTest(opening=opening):
+                self.assertIn(opening, text)
 
     def test_renders_with_the_example_config_in_both_places_with_no_placeholder_left(self):
         left = [place for place in ("cloud", "local") if "{{" in self.rendered(place)]
@@ -4216,6 +4275,211 @@ class RecapTemplateTest(unittest.TestCase):
         raw = self.raw()
         names = ("{{digest.slug}}", "{{digest.name}}", "{{place}}", "{{run.post}}", "{{state.dir}}", "{{runtime.dir}}", "{{window.lookback_working_days}}")
         self.assertEqual([name for name in names if name not in raw], [])
+
+
+class WeeklyTemplateTest(RenderedTemplate, unittest.TestCase):
+    PATH = os.path.join(SHIPPED_TEMPLATES, "weekly-status.md")
+    SLUG = "weekly-status"
+    SCRIPTS = ("weekly", "collect")
+    CALL = re.compile(r"/(?:weekly|collect)\.py ([a-z-]+)")
+    ORDER = ["init", "window", "features", "judge", "apply", "message"]
+
+    def test_renders_with_the_example_config_in_both_places_with_no_placeholder_left(self):
+        left = [place for place in ("cloud", "local") if "{{" in self.rendered(place)]
+        self.assertEqual(left, [])
+
+    def test_is_not_marked_not_runnable(self):
+        text = self.raw()
+        self.assertEqual((lint.is_marked(text), lint.near_miss_marker(text), "not runnable" in text), (False, False, False))
+
+    def test_passes_the_public_lint_with_the_runtime_contracts(self):
+        self.assertEqual([finding for finding in routines.public_findings() if finding[0] == self.PATH], [])
+
+    def test_every_script_call_names_an_existing_command_with_existing_flags(self):
+        contracts = {f"{script}.py": lint.parser_contract(self.parser(script)) for script in self.SCRIPTS}
+        lines = [line for script in self.SCRIPTS for line in self.calls(script)]
+        self.assertEqual((len(lines) > 10, [line for line in lines if lint.contract_rules(line, contracts)]), (True, []))
+
+    def test_every_script_call_passes_the_required_flags_of_its_command(self):
+        missing = [
+            line
+            for script in self.SCRIPTS
+            for line in self.calls(script)
+            if any(flag not in line for flag in self.required(script)[self.CALL.search(line).group(1)])
+        ]
+        self.assertEqual(missing, [])
+
+    def test_calls_every_command_of_a_run_in_order(self):
+        order = [self.CALL.search(line).group(1) for line in self.calls("weekly")]
+        self.assertEqual(order, self.ORDER)
+
+    def test_the_window_is_computed_in_the_configured_timezone_before_any_source_is_collected(self):
+        window = next(line for line in self.calls("weekly") if " window " in line)
+        first_collection = min(self.position(line) for line in self.calls("collect") if " fetch " in line or " plan " in line)
+        self.assertEqual(("--tz Europe/Paris" in window, self.position(window) < first_collection), (True, True))
+
+    def test_the_window_offers_the_report_only_flag_the_engine_has_and_no_start_flag(self):
+        options = lint.parser_contract(self.parser("weekly"))[0]["window"]
+        text = self.step("Compute the window")
+        self.assertEqual(({"--report-only"} <= options, "--since" in options, "add `--report-only` to that command" in text, "--since" in text), (True, False, True, False))
+
+    def test_the_features_read_the_recap_folder_the_state_step_filled(self):
+        features = next(line for line in self.calls("weekly") if " features " in line)
+        self.assertEqual(("--recap <run>/recap " in features, "--routine weekly-status " in features, "--collections <run>/collections " in features), (True, True, True))
+
+    def test_the_recap_input_is_one_command_that_strips_two_path_components_into_the_runs_folder(self):
+        command = next(line for line in self.step("Load the state").splitlines() if " archive origin/claude/state " in line)
+        self.assertEqual(
+            command,
+            "mkdir -p <run>/recap/runs && git -C /<cloud-private-repo-dir> show origin/claude/state:state/chat-recap.json > <run>/recap/state.json && "
+            "git -C /<cloud-private-repo-dir> archive origin/claude/state runs/chat-recap | tar -x --strip-components=2 -C <run>/recap/runs",
+        )
+
+    def test_a_failed_recap_command_continues_without_the_recap_and_names_it_not_read(self):
+        step = self.step("Load the state")
+        report = self.step("Report the message")
+        features = self.step("Compute the features")
+        self.assertEqual(
+            ("the run continues without `--recap`" in step, "Leave out `--recap <run>/recap`" in features, "`recap not read: chat-recap`" in report),
+            (True, True, True),
+        )
+
+    def test_the_state_is_saved_after_apply_and_before_the_message_is_rendered(self):
+        saved = self.position("push origin HEAD:refs/heads/claude/state")
+        self.assertEqual((self.position("weekly.py apply") < saved, saved < self.position("weekly.py message")), (True, True))
+
+    def test_the_save_copies_the_next_state_and_the_run_record(self):
+        block = self.step("Save the state")
+        self.assertEqual(
+            ("cp <run>/next.json <run>/store/state/weekly-status.json" in block, "cp <run>/record.json <run>/store/runs/weekly-status/<run-at>.json" in block),
+            (True, True),
+        )
+
+    def test_a_failed_message_render_leaves_the_saved_state_as_it_is(self):
+        self.assertIn("The state stays as Step 9 left it.", self.step("Render the message"))
+
+    def test_the_message_render_has_no_timezone_flag(self):
+        message = next(line for line in self.calls("weekly") if " message " in line)
+        self.assertEqual(("--tz" in message, "--tz" in lint.parser_contract(self.parser("weekly"))[0]["message"]), (False, False))
+
+    def test_the_judge_step_reads_the_features_only_and_writes_the_judgment_only(self):
+        step = self.step("Judge")
+        self.assertEqual(
+            ("Read `<run>/features.json`, and no other file." in step, "Make no provider call and no connector call in this step." in step),
+            (True, True),
+        )
+        self.assertIn("The only file you write is `<run>/judgment.json` (Step 7)", self.rendered())
+
+    def test_the_judgment_limits_follow_the_checker(self):
+        step = self.step("Judge")
+        weekly = runtime_module("weekly")
+        limits = (
+            f"Write 1 to {weekly.LIMITS['accomplishments']} accomplishments",
+            f"up to {weekly.LIMITS['decisions']} decisions",
+            f"up to {weekly.LIMITS['open']} open items",
+            f"at most {weekly.OWNER_CHARS} characters",
+            f"1 to {weekly.TEXT_CHARS} characters",
+            f"at most {weekly.TOTAL_WORDS} words",
+            "reports only the first failure",
+        )
+        self.assertEqual([limit for limit in limits if limit not in step], [])
+
+    def test_the_judgment_shape_names_the_sections_the_checker_reads(self):
+        weekly = runtime_module("weekly")
+        shape = next(line for line in self.step("Judge").splitlines() if line.startswith('{"schema"'))
+        fields = {section: fields for section, fields in weekly.FIELDS.items()}
+        self.assertEqual(
+            [section for section in weekly.SECTIONS if f'"{section}": [{{"text"' not in shape],
+            [],
+        )
+        self.assertEqual(sorted(fields["open"]), ["cites", "owner", "text"])
+        self.assertIn('"owner": <name or null>', shape)
+
+    def test_the_second_rejection_is_a_degraded_run_that_writes_no_state(self):
+        step = self.step("Judge")
+        self.assertEqual(
+            (
+                "A second exit 3: this is a degraded run. Report exactly one line, `degraded: judgment rejected, no weekly status this run`" in step,
+                "Write no state and no run record." in step,
+            ),
+            (True, True),
+        )
+
+    def test_the_degraded_line_is_posted_like_the_message(self):
+        self.assertIn("as the run's message: post it when the post setting is `yes`, else print it.", self.step("Judge"))
+
+    def test_the_runtime_check_reports_the_exact_one_liner(self):
+        self.assertIn("report exactly one line, `degraded: runtime missing, at another commit or modified`", self.step("Check the runtime"))
+
+    def test_a_result_is_saved_with_the_write_tool_never_through_a_shell_command(self):
+        self.assertIn("write the result text as is with the Write tool. Never put a result in a shell command.", self.step("Collect"))
+
+    def test_the_message_is_posted_to_the_digest_channel_only_when_the_post_setting_is_yes(self):
+        step = self.step("Report the message")
+        self.assertIn("When the post setting is `yes`, post the message to `<chat-channel-id>`. Otherwise, print it in this session and post nothing.", step)
+        self.assertIn("Never post anywhere else.", step)
+
+    def test_the_post_setting_governs_every_report(self):
+        local, cloud = self.rendered("local"), self.rendered("cloud")
+        self.assertEqual(
+            ("The post setting of this run is `no`." in local, "The post setting of this run is `yes`." in cloud, "--report-only" in local),
+            (True, True, True),
+        )
+
+    def test_the_template_names_no_vendor_and_no_push_tool(self):
+        rendered = self.rendered()
+        vendor = lint.provider_rule(runtime_module("providers").names())
+        self.assertEqual(([line for line in rendered.splitlines() if vendor(line)], "PushNotification" in rendered), ([], False))
+
+    def test_the_routine_values_come_through_placeholders_only(self):
+        raw = self.raw()
+        names = ("{{digest.slug}}", "{{digest.name}}", "{{recap.slug}}", "{{place}}", "{{run.post}}", "{{state.dir}}", "{{runtime.dir}}", "{{timezone}}")
+        self.assertEqual([name for name in names if name not in raw], [])
+
+
+class WeeklyRecapExtraction(RenderedTemplate, Case):
+    patch_templates = False
+    PATH = os.path.join(SHIPPED_TEMPLATES, "weekly-status.md")
+    SLUG = "weekly-status"
+    STATE_DIR = "/<cloud-private-repo-dir>"
+
+    def setUp(self):
+        super().setUp()
+        self.clone = make_repo(
+            os.path.join(self.root, "clone"),
+            {
+                "state/chat-recap.json": '{"recap": true}\n',
+                "runs/chat-recap/20261016T090000Z.json": '{"run": 1}\n',
+                "runs/chat-recap/20261017T090000Z.json": '{"run": 2}\n',
+                "runs/other/20261017T090000Z.json": '{"other": true}\n',
+            },
+        )
+        git(self.clone, "update-ref", "refs/remotes/origin/claude/state", "HEAD")
+        self.run_dir = os.path.join(self.root, "run")
+        os.makedirs(self.run_dir)
+
+    def extract(self):
+        command = next(line for line in self.step("Load the state").splitlines() if " archive origin/claude/state " in line)
+        script = command.replace("<run>", self.run_dir).replace(self.STATE_DIR, self.clone)
+        return subprocess.run(["bash", "-c", script], env=git_env(), capture_output=True, text=True)
+
+    def test_the_run_records_land_directly_in_the_recap_runs_folder(self):
+        result = self.extract()
+        self.assertEqual(
+            (result.returncode, sorted(os.listdir(os.path.join(self.run_dir, "recap", "runs")))),
+            (0, ["20261016T090000Z.json", "20261017T090000Z.json"]),
+            result.stderr,
+        )
+
+    def test_the_recap_state_lands_beside_the_runs_folder(self):
+        self.extract()
+        self.assertEqual(read(os.path.join(self.run_dir, "recap", "state.json")), '{"recap": true}\n')
+
+    def test_a_missing_recap_state_fails_the_command(self):
+        git(self.clone, "rm", "-q", "state/chat-recap.json")
+        git(self.clone, "commit", "-q", "-m", "drop the recap state")
+        git(self.clone, "update-ref", "refs/remotes/origin/claude/state", "HEAD")
+        self.assertNotEqual(self.extract().returncode, 0)
 
 
 class SaveBlockExecution:
@@ -4346,6 +4610,15 @@ class SaveBlockExecution:
 
 class SaveBlockExecutionTest(SaveBlockExecution, Case):
     pass
+
+
+class WeeklySaveBlockExecutionTest(SaveBlockExecution, Case):
+    SLUG = "weekly-status"
+
+    def config(self, places):
+        config = make_config(template="weekly-status", values={"chat": {"digest_channel_id": "channel-test"}}, places=places)
+        config.update(providers=CHAT_PROVIDERS, routines={self.SLUG: weekly_routine()})
+        return config
 
 
 class TribeSaveBlockExecutionTest(SaveBlockExecution, Case):

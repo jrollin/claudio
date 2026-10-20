@@ -19,7 +19,7 @@ PUBLIC_RULES = (
     )),
 )
 REQUIRED_DENY = ("PushNotification", "Bash(sleep *)", "Monitor")
-RUNTIME_SCRIPTS = ("state.py", "collect.py", "evaluate.py", "digest.py", "tribe.py", "recap.py")
+RUNTIME_SCRIPTS = ("state.py", "collect.py", "evaluate.py", "digest.py", "tribe.py", "recap.py", "weekly.py")
 SCRIPT_NAMES = "|".join(re.escape(name.removesuffix(".py")) for name in RUNTIME_SCRIPTS)
 SCRIPT_CALL = re.compile(rf"(?<![\w.-])({SCRIPT_NAMES})\.py(?!\w)")
 COMMAND = re.compile(r"[ \t]+(-*[A-Za-z0-9][A-Za-z0-9_-]*)")

@@ -900,6 +900,7 @@ THE routine renders from the runnable `weekly-status` template and a private rou
 - Linking a shared platform-limit key from another digest read less than 24 hours earlier, instead of reading it again
 - Reading code host searches and edited document store pages through the connector: the weekly status reads them over `api` only
 - Jira status transitions and comment text in the weekly status: issues carry their current status only
+- Document store pages in the weekly status: the search API cannot filter by editor, and a busy workspace edits thousands of visible pages a day, so the owner's routine file sets no `edited_by` source; a later spec may read pages the owner created through the connector, or a docs database by its last editor
 - Reading chat channels in full for the recap: the announcement scan searches the configured channels only
 - Changing the 4 mirrored live prompts: the mirrors reproduce them as they are
 - After the tribe judgment:

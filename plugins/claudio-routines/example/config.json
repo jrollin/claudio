@@ -94,14 +94,24 @@
         "cloud": ["api", "mcp"],
         "local": ["api", "mcp"]
       }
+    },
+    "code-host": {
+      "adapter": "<code-host-adapter>",
+      "api": {
+        "base_url": "https://<code-host-api-host>",
+        "credentials": {
+          "token": "CODE_HOST_TOKEN"
+        }
+      },
+      "transport": {
+        "cloud": "api",
+        "local": "api"
+      }
     }
   },
   "values": {
     "chat": {
       "digest_channel_id": "<chat-channel-id>"
-    },
-    "owner": {
-      "name": "<owner-name>"
     }
   }
 }
