@@ -260,7 +260,7 @@ Transport choice:
 Reads:
 - Each source writes one collection, `<run>/collections/<source>.json`, in the record schema of its role.
 - `fetch`, `plan` and `parse` take `--run <run>`, the run folder, and keep the raw results of each source in it:
-  - A store-backed source (Slack) files each read in the run store, `<run>/store`, one folder per read (see Read store), and keeps its relay files, `calls.json` and `planned.json`, in `<run>/relay/<source>/`.
+  - A store-backed chat source files each read in the run store, `<run>/store`, one folder per read (see Read store), and keeps its relay files, `calls.json` and `planned.json`, in `<run>/relay/<source>/`.
   - Any other source keeps them in `<run>/raw/<role>/<source>/`, with `<role>` the role `collect.py sources` prints.
   - `mcp`: `calls.json` and one `<call id>.txt` per saved connector result.
   - `api`: one `<source>-<n>.json` per HTTP call, in call order, with the method, path, query, request body, status, `Link` header, decoded response and error. It holds no request header and no credential.
@@ -602,7 +602,7 @@ The `weekly-status` template needs the routine values `digest.slug` (the state f
 
 ## Read store
 
-A store-backed adapter (Slack) files every read of a run in the run store, `<run>/store`, so a run selects, reparses and replays one read at a time. The [provider-store spec](../../docs/features/provider-store/) holds the rules.
+A store-backed adapter (the chat adapter) files every read of a run in the run store, `<run>/store`, so a run selects, reparses and replays one read at a time. The [provider-store spec](../../docs/features/provider-store/) holds the rules.
 
 Layout, in hive-style `key=value` folders:
 
@@ -619,7 +619,7 @@ Layout, in hive-style `key=value` folders:
 - `<key>` is the provider's config key.
 - `<from>` and `<to>` are the read's span: its `oldest` argument (the root ts for a whole thread) and its `latest` argument, or the window end of the run for a connector thread read.
 - `<fetch id>` is `<run id>.<source>`, so two sources of one run never share a read.
-- A search name is percent-encoded, and an id from tool text that is not a Slack id or ts fails its read with `invalid entity id`.
+- A search name is percent-encoded, and an id from tool text that is not a chat id or ts fails its read with `invalid entity id`.
 
 Each read folder:
 - `page-001.txt`, `page-002.txt`, and so on: the connector pages, byte-exact.
@@ -656,7 +656,7 @@ FROM read_json('<run>/store/provider=chat/kind=thread/*/*/*/records.jsonl',
 WHERE channel = 'C0123';
 ```
 
-`hive_types_autocast = false` keeps the Slack ts values as text.
+`hive_types_autocast = false` keeps the chat ts values as text.
 
 ## Offline replay
 
