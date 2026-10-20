@@ -1608,6 +1608,39 @@ A degraded run's message is one line that starts with `degraded:` and names the 
 
 **Rationale**: the fourth engine follows the template and routine file conventions of the other three, so the lint, render, sync and private copies work unchanged.
 
+### TD-70: Proxy-injected credentials
+
+**Choice**:
+- `places.<place>.injected_hosts` (optional list of hosts) names the hosts whose credential the place's proxy adds, such as the cloud environment's network secrets (AC-56.1).
+- The transport choice counts `api` as usable for a provider whose `api.base_url` host is listed, whatever its variables; `check-env` prints `injected <source> <host>` (AC-56.2).
+- `_common.api_client` builds the client with no credential and the adapter's `STATIC_HEADERS` (default none; the document store sends its API version, the code host its media type and API version) in place of the auth headers (AC-56.3, BR-76).
+- The code host is never injected: the cloud proxy authenticates GitHub itself and attaches no network secret to it.
+
+**Rationale**: a network secret stays out of the session, unlike an environment variable every session and the model can read.
+
+### TD-71: Who waits in the weekly status
+
+**Choice**: `weekly_features` adds `waiting_on` to recap items from the unit status and person (AC-57.1): `waiting` and `promise` give `owner`, `waiting_on_others` the person's name, `team_ask` `team`, any other status null. Direct chat items without a recap unit keep null. The template's judge step points `owner` at it (AC-57.2).
+
+### TD-72: Pages created by the owner
+
+**Choice**: a document store source sets `created_by` in place of `page_id`, `pages` and `edited_by` (AC-58.1).
+- `mcp` only; config load refuses an `api` transport for it.
+- `plan`: one call of the connector's search with `query` empty, `filters.created_by_user_ids` `[<created_by>]`, `filters.created_date_range.start_date` the window start date, `page_size` 50, `max_highlight_length` 0 (AC-58.2).
+- `parse`: the JSON `results` of type `page`, kept when the timestamp is in the window and the `path` starts with none of `exclude_paths`; each a `pages` record with `blocks` empty and `last_edited` the result's timestamp.
+- 50 results end the read partial (AC-58.3).
+
+**Alternatives considered**: the connector's editor filter: refused on this plan (Business only).
+
+### TD-73: Partial recap thread reads
+
+**Choice**: opt-in by the routine key `thread_reads` (`full`, the default, or `since`) (AC-59.4).
+- `recap_state` units gain the optional `owner_last_ts` (nullable); `apply` writes it from the features for every unit read in the run (AC-59.1).
+- With `since`, the chat adapter reads a thread unit whose stored `owner_last_ts` key exists from `last_ts` minus the re-read margin; other units read in full (AC-59.2).
+- `facts_of` takes the stored value with the messages read: `answered` is the later of the two, `owner_took_part` holds when the stored value is not null or the owner wrote in the read (AC-59.3).
+
+**Rationale**: long threads the recap already knows stop going through the relay in full, without losing whether the owner answered.
+
 ## Implementation Considerations
 
 ### Data Model
@@ -2203,6 +2236,10 @@ sequenceDiagram
 | `plugins/claudio-routines/runtime/providers/jira.py`, `github.py`, `notion.py` | modify | Weekly sources: `jql`, code host `searches` with activity, `edited_by` |
 | `plugins/claudio-routines/runtime/weekly.py`, `weekly_state.py` | new | Weekly engine: window, features, judge, apply, message |
 | `plugins/claudio-routines/skills/routines/templates/weekly-status.md` | modify | Runnable weekly status |
+| `plugins/claudio-routines/runtime/providers/_common.py`, `_http.py`, adapters, `collect.py`, `roles.py` | modify | Proxy-injected credentials |
+| `plugins/claudio-routines/runtime/weekly_features.py`, `templates/weekly-status.md` | modify | `waiting_on` on weekly items |
+| `plugins/claudio-routines/runtime/providers/notion.py` | modify | Pages created by the owner over the connector |
+| `plugins/claudio-routines/runtime/recap_state.py`, `recap_features.py`, `recap_lifecycle.py`, `providers/_slack_search.py` | modify | Partial recap thread reads |
 
 Tasks create the private repository files (`config.json`, `config/routines/*.json`, `templates/prod-watch.md`, `templates/prod-watch-runtime.md`, `templates/tribe-digest.md`, `templates/chat-recap.md`, `templates/weekly-status.md`, `routines/*`, `reference/` compare script and reasons) outside this repository; this inventory never lists their content.
 

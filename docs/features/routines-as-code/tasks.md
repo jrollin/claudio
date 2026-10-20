@@ -3,7 +3,7 @@
 ---
 feature: routines-as-code
 spec_version: 1
-total_tasks: 105
+total_tasks: 109
 phases:
   - name: "Leak guard"
     tasks: [T-1, T-2, T-3]
@@ -47,6 +47,8 @@ phases:
     tasks: [T-97, T-98]
   - name: "Weekly status engine"
     tasks: [T-99, T-100, T-101, T-102, T-103, T-104, T-105]
+  - name: "Backlog after the cloud rollout"
+    tasks: [T-106, T-107, T-108, T-109]
 depends_on: []
 ---
 
@@ -1013,7 +1015,7 @@ Owner-gated: needs the merged pull request, a release tag, the transport and its
 - **Verify**: `python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --private "$CLAUDIO_PRIVATE_DIR" && python3 plugins/claudio-routines/skills/routines/scripts/routines.py diff <slug>`
 - **Blocked by**: T-85
 - **Rules**: BR-67, BR-68
-- **Status**: Not Started
+- **Status**: Complete
 
 ## Phase 19: Raw data and replay
 
@@ -1150,6 +1152,42 @@ Owner-gated: needs the release tag, the tokens per place and an approved sync.
 - **Verify**: `python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --private "$CLAUDIO_PRIVATE_DIR" && python3 plugins/claudio-routines/skills/routines/scripts/routines.py diff weekly-status-summary`
 - **Blocked by**: T-104
 - **Rules**: BR-73, BR-74, BR-75
+- **Status**: Complete
+
+## Phase 22: Backlog after the cloud rollout
+
+### T-106: Proxy-injected credentials
+- `places.<place>.injected_hosts`, the transport choice, `check-env` `injected` lines and `_common.api_client` follow TD-70. Each adapter declares `STATIC_HEADERS`.
+- Templates: Step 4 explains `injected` lines (information, continue).
+- Tests: a listed host makes `api` usable without variables; `check-env` prints `injected`; the client sends the static headers and no credential header per provider; an unlisted host still needs its variables; the code host is refused in `injected_hosts`.
+- **Refs**: US-56, TD-70
+- **Files**: `plugins/claudio-routines/runtime/providers/_common.py` (modify), `plugins/claudio-routines/runtime/providers/_http.py` (modify), `plugins/claudio-routines/runtime/providers/notion.py` (modify), `plugins/claudio-routines/runtime/providers/github.py` (modify), `plugins/claudio-routines/runtime/providers/test_common.py` (modify), `plugins/claudio-routines/runtime/collect.py` (modify), `plugins/claudio-routines/runtime/test_collect.py` (modify), `plugins/claudio-routines/runtime/roles.py` (modify), `plugins/claudio-routines/runtime/test_roles.py` (modify), `plugins/claudio-routines/skills/routines/scripts/routines.py` (modify), `plugins/claudio-routines/skills/routines/templates/*.md` (modify), `plugins/claudio-routines/README.md` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify)
+- **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
+- **Rules**: BR-25, BR-76
+- **Status**: Not Started
+
+### T-107: Who waits in the weekly status
+- `weekly_features` adds `waiting_on` (TD-71); the weekly template's judge step sets `owner` from it.
+- Tests: each recap status maps to its `waiting_on`; a direct chat item keeps null; the template line.
+- **Refs**: US-57, TD-71
+- **Files**: `plugins/claudio-routines/runtime/weekly_features.py` (modify), `plugins/claudio-routines/runtime/test_weekly.py` (modify), `plugins/claudio-routines/skills/routines/templates/weekly-status.md` (modify), `plugins/claudio-routines/skills/routines/scripts/test_routines.py` (modify), `plugins/claudio-routines/README.md` (modify)
+- **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
+- **Status**: Not Started
+
+### T-108: Pages created by the owner
+- The document store adapter's `created_by` follows TD-72; `roles.py` validates `created_by` and `exclude_paths` and refuses `api` for it.
+- Tests: the planned call's arguments; the parse keeps pages in the window and outside the excluded paths; 50 results end the read partial; a non-page result is skipped; config refusals.
+- **Refs**: US-58, TD-72
+- **Files**: `plugins/claudio-routines/runtime/providers/notion.py` (modify), `plugins/claudio-routines/runtime/providers/test_notion.py` (modify), `plugins/claudio-routines/runtime/roles.py` (modify), `plugins/claudio-routines/runtime/test_roles.py` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify)
+- **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
+- **Status**: Not Started
+
+### T-109: Partial recap thread reads
+- `thread_reads`, `owner_last_ts`, the partial reads and the merged facts follow TD-73.
+- Tests: apply writes `owner_last_ts` for read units; `since` reads a known unit from `last_ts` minus the margin and a new or unknown unit in full; the merged facts keep `answered` and `owner_took_part` when the owner's message is before `oldest`; `full` and no key keep every read unchanged.
+- **Refs**: US-59, TD-73
+- **Files**: `plugins/claudio-routines/runtime/recap_state.py` (modify), `plugins/claudio-routines/runtime/recap_features.py` (modify), `plugins/claudio-routines/runtime/recap_lifecycle.py` (modify), `plugins/claudio-routines/runtime/providers/_slack_search.py` (modify), `plugins/claudio-routines/runtime/roles.py` (modify), `plugins/claudio-routines/runtime/test_recap*.py` (modify), `plugins/claudio-routines/runtime/providers/test_slack_search.py` (modify), `plugins/claudio-routines/README.md` (modify)
+- **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
 - **Status**: Not Started
 
 ## Related Features

@@ -815,6 +815,46 @@ THE routine renders from the runnable `weekly-status` template and a private rou
 - [ ] The routine file names the owner's identities per source, the excluded channels and the sources; the lint names the key path of an invalid value *(AC-55.2)*
 - [ ] A local report-only run prints the status and saves only its run record *(AC-55.3)*
 
+### Let the cloud proxy add the credentials {#US-56}
+
+WHEN a place's proxy adds a provider's credential to its requests
+THE collector reads that provider over `api` with no credential variable, and sends no secret header itself
+
+**Acceptance Criteria:**
+- [ ] `places.<place>.injected_hosts` lists the hosts whose credentials the place's proxy adds *(AC-56.1)*
+- [ ] A provider whose `api.base_url` host is listed for the place counts as usable over `api` without its variables, and `check-env` prints an `injected <source> <host>` line instead of `missing` *(AC-56.2)*
+- [ ] Its requests carry only the adapter's static headers (an API version, a media type), never a credential header *(AC-56.3)*
+
+### Say who waits on whom in the weekly status {#US-57}
+
+WHEN a weekly item comes from a recap thread
+THE item names who waits: the owner, the person the owner waits on, or the team
+
+**Acceptance Criteria:**
+- [ ] A recap item carries `waiting_on`: `owner` for a unit waiting on the owner or promised by the owner, the person's name for a unit the owner waits on, `team` for a team ask, else null *(AC-57.1)*
+- [ ] The template tells the model to set an open item's `owner` from `waiting_on` when it names another person *(AC-57.2)*
+
+### List the pages the owner created in the week {#US-58}
+
+WHEN a weekly status run reads the document store
+THE connector search returns the pages the owner created since the week start, and the routine's own pages are left out
+
+**Acceptance Criteria:**
+- [ ] A document store source takes `created_by` (`me` for the connected user) with optional `exclude_paths`, read over `mcp` only *(AC-58.1)*
+- [ ] The plan makes one search call filtered by creator and creation date from the window start; the parse keeps pages created in the window whose path starts with none of `exclude_paths` *(AC-58.2)*
+- [ ] A result list at the page size ends the read partial *(AC-58.3)*
+
+### Read only the new part of a known recap thread {#US-59}
+
+WHEN a recap routine sets `thread_reads: since` and a thread unit is already in the state with a known owner activity
+THE run reads that thread from just before its last stored message, and the facts merge the stored owner activity with the new replies
+
+**Acceptance Criteria:**
+- [ ] The recap state keeps, per unit, `owner_last_ts`: the time of the owner's latest message or reaction in the unit, or null when the owner has none; a unit without the key is unknown *(AC-59.1)*
+- [ ] With `thread_reads: since`, a thread unit with a known `owner_last_ts` is read with `oldest` set to its `last_ts` minus the re-read margin; a unit new to the state or unknown is read in full *(AC-59.2)*
+- [ ] The facts take the later of the stored `owner_last_ts` and the owner's messages read, for `answered`, and count the owner as taking part when either holds *(AC-59.3)*
+- [ ] Without `thread_reads`, or with `full`, every read is unchanged *(AC-59.4)*
+
 ## Business Rules
 
 - No private name, identifier, URL host or secret is committed to this public repository *(BR-1)*
@@ -891,6 +931,7 @@ THE routine renders from the runnable `weekly-status` template and a private rou
 - Every link in the weekly status comes from a collection: the model cites item keys, and the script turns them into links *(BR-73)*
 - The routines' own posts never count as the owner's work: the digest channel and the excluded conversations are dropped before any item exists *(BR-74)*
 - The weekly state and its run records hold the window, counts and item keys, never a message, comment or page text *(BR-75)*
+- A credential the proxy injects never reaches the session: no variable holds it and no request the collector builds carries it *(BR-76)*
 - A raw record never holds a credential: request headers are never recorded, and credentials only travel in request headers *(BR-71)*
 
 ## Out of Scope
@@ -900,7 +941,7 @@ THE routine renders from the runnable `weekly-status` template and a private rou
 - Linking a shared platform-limit key from another digest read less than 24 hours earlier, instead of reading it again
 - Reading code host searches and edited document store pages through the connector: the weekly status reads them over `api` only
 - Jira status transitions and comment text in the weekly status: issues carry their current status only
-- Document store pages in the weekly status: the search API cannot filter by editor, and a busy workspace edits thousands of visible pages a day, so the owner's routine file sets no `edited_by` source; a later spec may read pages the owner created through the connector, or a docs database by its last editor
+- Document store pages the owner edited but did not create, in the weekly status: neither the search API nor the connector on this plan filters by editor; US-58 lists the pages the owner created
 - Reading chat channels in full for the recap: the announcement scan searches the configured channels only
 - Changing the 4 mirrored live prompts: the mirrors reproduce them as they are
 - After the tribe judgment:
