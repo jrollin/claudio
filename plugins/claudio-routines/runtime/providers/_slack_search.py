@@ -18,6 +18,7 @@ from ._slack_read import (
     NO_MORE,
     NO_THREAD,
     PARENT_LINES,
+    RELAY_THREAD_PAGE_SIZE,
     REPLIES_PATH,
     THREAD_NO_MORE,
     THREAD_PARENT,
@@ -297,7 +298,7 @@ class _RelayReader:
         return _relay_read(self.relay, channel, _unit_window(self.window, start), {}, [])
 
     def thread(self, channel, root, oldest):
-        arguments = {"channel_id": channel, "message_ts": root, "response_format": "detailed"}
+        arguments = {"channel_id": channel, "message_ts": root, "limit": RELAY_THREAD_PAGE_SIZE, "response_format": "detailed"}
         if oldest is not None:
             arguments["oldest"] = str(oldest)
         seen_ts = set()

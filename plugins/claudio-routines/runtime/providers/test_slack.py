@@ -151,14 +151,14 @@ def endless_pages(channel, count):
 
 
 def thread_call(call_id, channel, root, oldest, cursor=None):
-    arguments = {"channel_id": channel, "message_ts": root, "oldest": oldest, "response_format": "detailed"}
+    arguments = {"channel_id": channel, "message_ts": root, "oldest": oldest, "limit": 20, "response_format": "detailed"}
     if cursor is not None:
         arguments["cursor"] = cursor
     return {"id": call_id, "connector": CONNECTOR, "tool": THREAD_TOOL, "arguments": arguments, "digest": None}
 
 
 def call(call_id, channel, oldest, cursor=None):
-    arguments = {"channel_id": channel, "oldest": oldest, "latest": "1760010800", "limit": 100, "response_format": "detailed"}
+    arguments = {"channel_id": channel, "oldest": oldest, "latest": "1760010800", "limit": 30, "response_format": "detailed"}
     if cursor is not None:
         arguments["cursor"] = cursor
     return {"id": call_id, "connector": CONNECTOR, "tool": TOOL, "arguments": arguments, "digest": None}

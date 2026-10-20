@@ -3,7 +3,7 @@
 ---
 feature: routines-as-code
 spec_version: 1
-total_tasks: 109
+total_tasks: 110
 phases:
   - name: "Leak guard"
     tasks: [T-1, T-2, T-3]
@@ -48,7 +48,7 @@ phases:
   - name: "Weekly status engine"
     tasks: [T-99, T-100, T-101, T-102, T-103, T-104, T-105]
   - name: "Backlog after the cloud rollout"
-    tasks: [T-106, T-107, T-108, T-109]
+    tasks: [T-106, T-107, T-108, T-109, T-110]
 depends_on: []
 ---
 
@@ -1187,6 +1187,14 @@ Owner-gated: needs the release tag, the tokens per place and an approved sync.
 - Tests: apply writes `owner_last_ts` for read units; `since` reads a known unit from `last_ts` minus the margin and a new or unknown unit in full; the merged facts keep `answered` and `owner_took_part` when the owner's message is before `oldest`; `full` and no key keep every read unchanged.
 - **Refs**: US-59, TD-73
 - **Files**: `plugins/claudio-routines/runtime/recap_state.py` (modify), `plugins/claudio-routines/runtime/recap_features.py` (modify), `plugins/claudio-routines/runtime/recap_lifecycle.py` (modify), `plugins/claudio-routines/runtime/providers/_slack_search.py` (modify), `plugins/claudio-routines/runtime/roles.py` (modify), `plugins/claudio-routines/runtime/test_recap*.py` (modify), `plugins/claudio-routines/runtime/test_roles.py` (modify), `plugins/claudio-routines/runtime/collect.py` (modify), `plugins/claudio-routines/runtime/test_collect.py` (modify), `plugins/claudio-routines/runtime/providers/test_slack_search.py` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify), `plugins/claudio-routines/README.md` (modify)
+- **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
+- **Status**: Complete
+
+### T-110: Smaller chat relay pages
+- The chat connector reads ask for at most 30 messages a channel page and 20 replies a thread page (TD-21): `RELAY_PAGE_SIZE` is 30 and every `slack_read_thread` call (window roots, cited threads, search units, rereads) sends `limit` 20. The `api` transport is unchanged.
+- Tests: the planned channel call carries `limit` 30 and every thread call `limit` 20; a thread read over several pages follows the cursor to the last page for a window root, a cited thread (with the early stop at the previous window end) and a search unit or reread.
+- **Refs**: US-28, TD-21
+- **Files**: `plugins/claudio-routines/runtime/providers/_slack_read.py` (modify), `plugins/claudio-routines/runtime/providers/_slack_search.py` (modify), `plugins/claudio-routines/runtime/providers/test_slack.py` (modify), `plugins/claudio-routines/runtime/providers/test_slack_search.py` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify), `docs/features/routines-as-code/design.md` (modify)
 - **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
 - **Status**: Complete
 
