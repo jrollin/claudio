@@ -44,6 +44,7 @@ class Settings:
         self.exclude_channels = exclude.get("channels", [])
         self.keep_bots = exclude.get("keep_bots", [])
         self.rules = routine["rules"]
+        self.thread_reads = routine.get("thread_reads", "full")
 
 
 def kept(message, settings):
@@ -105,6 +106,15 @@ def answered_at(messages, owner):
     return max(stamps, default=None)
 
 
+def later(*stamps):
+    return max((stamp for stamp in stamps if stamp is not None), default=None)
+
+
+def stored_owner_ts(previous):
+    stamp = None if previous is None else previous.get("owner_last_ts")
+    return None if stamp is None else decimal.Decimal(stamp)
+
+
 def group_facts(messages, settings):
     found = []
     for group in settings.groups:
@@ -116,9 +126,11 @@ def group_facts(messages, settings):
     return found
 
 
-def facts_of(channel, messages, settings, previous, zone, window):
+def facts_of(channel, messages, settings, previous, zone, window, merge_owner=False):
     owner = settings.owner
-    answered = answered_at(messages, owner)
+    read_at = answered_at(messages, owner)
+    stored_at = stored_owner_ts(previous) if merge_owner else None
+    answered = later(read_at, stored_at)
     asks = [item for item in messages if is_ask_after(item, answered, owner)]
     unanswered = asks[0]["ts"] if asks else None
     return {
@@ -128,7 +140,8 @@ def facts_of(channel, messages, settings, previous, zone, window):
         "announcement_channel": channel in settings.announcement_channels,
         "direct_mention": any(item["user"] != owner and owner in item["mentions"] for item in messages),
         "owner_answered": unanswered is None and any(item["user"] != owner for item in messages),
-        "owner_took_part": any(item["user"] == owner for item in messages),
+        "owner_took_part": stored_at is not None or any(item["user"] == owner for item in messages),
+        "owner_last_ts": None if read_at is None else str(read_at),
         "age_working_days": None if unanswered is None else recap_window.working_days_between(int(decimal.Decimal(unanswered)), window["to_ts"], zone),
         "previous": previous,
     }
@@ -164,7 +177,8 @@ def unit_documents(units, settings, stored, zone, window):
     for key in sorted(units):
         unit = units[key]
         messages = [unit["messages"][stamp] for stamp in sorted(unit["messages"])]
-        facts = facts_of(unit["channel"], messages, settings, stored["units"].get(key), zone, window)
+        merge_owner = settings.thread_reads == "since" and recap_state.THREAD_KEY.fullmatch(key) is not None
+        facts = facts_of(unit["channel"], messages, settings, stored["units"].get(key), zone, window, merge_owner)
         kind = unit["kind"] or thread_kind(facts)
         documents[key] = {"kind": kind, "channel": unit["channel"], "name": unit["name"], "messages": messages, "facts": dict(sorted(facts.items())), "allowed": allowed_kinds(kind, facts)}
         people[key] = {"channel": unit["channel"], "name": unit["name"], "participants": listed(unit["participants"]), "authors": listed({item["user"]: item["name"] for item in messages})}

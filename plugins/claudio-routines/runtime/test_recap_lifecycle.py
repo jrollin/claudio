@@ -55,6 +55,7 @@ def facts_of(**fields):
         "direct_mention": False,
         "owner_answered": False,
         "owner_took_part": False,
+        "owner_last_ts": None,
         "age_working_days": None,
         "previous": None,
     }
@@ -618,6 +619,61 @@ class KeptStateTest(LifecycleCase):
         self.apply({}, {}, stored)
 
         self.assertEqual(self.unit()["late"], 5)
+
+
+class OwnerLastTsTest(LifecycleCase):
+    EARLIER, LATER = at("2026-10-15T08:00:00Z", 5), at("2026-10-15T10:00:00Z", 7)
+
+    def written(self, stored=None, **facts):
+        previous = None if stored is None else state_of(dm_a=stored)
+        self.apply({DM_A: feature_unit(**facts)}, {DM_A: entry()}, previous)
+        return self.unit()
+
+    def test_a_new_unit_gets_the_owner_activity_read(self):
+        self.assertEqual(self.written(owner_last_ts=self.LATER)["owner_last_ts"], self.LATER)
+
+    def test_a_new_unit_without_owner_activity_gets_null(self):
+        unit = self.written(owner_last_ts=None)
+
+        self.assertIn("owner_last_ts", unit)
+        self.assertIsNone(unit["owner_last_ts"])
+
+    def test_a_stored_unit_without_the_key_gets_the_owner_activity_read(self):
+        self.assertEqual(self.written(make_unit(), owner_last_ts=self.EARLIER)["owner_last_ts"], self.EARLIER)
+
+    def test_a_stored_unit_without_the_key_and_without_owner_activity_gets_null(self):
+        unit = self.written(make_unit(), owner_last_ts=None)
+
+        self.assertIn("owner_last_ts", unit)
+        self.assertIsNone(unit["owner_last_ts"])
+
+    def test_the_stored_owner_activity_is_kept_when_the_read_has_none(self):
+        self.assertEqual(self.written(make_unit(owner_last_ts=self.EARLIER), owner_last_ts=None)["owner_last_ts"], self.EARLIER)
+
+    def test_the_stored_owner_activity_is_kept_when_it_is_the_later(self):
+        self.assertEqual(self.written(make_unit(owner_last_ts=self.LATER), owner_last_ts=self.EARLIER)["owner_last_ts"], self.LATER)
+
+    def test_the_owner_activity_read_replaces_an_earlier_stored_one(self):
+        self.assertEqual(self.written(make_unit(owner_last_ts=self.EARLIER), owner_last_ts=self.LATER)["owner_last_ts"], self.LATER)
+
+    def test_a_stored_null_stays_null_when_the_read_has_none(self):
+        self.assertIsNone(self.written(make_unit(owner_last_ts=None), owner_last_ts=None)["owner_last_ts"])
+
+    def test_a_unit_not_read_keeps_its_key_absent(self):
+        self.apply({}, {}, state_of(dm_a=make_unit()))
+
+        self.assertNotIn("owner_last_ts", self.unit())
+
+    def test_a_unit_not_read_keeps_its_stored_owner_activity(self):
+        self.apply({}, {}, state_of(dm_a=make_unit(owner_last_ts=self.EARLIER)))
+
+        self.assertEqual(self.unit()["owner_last_ts"], self.EARLIER)
+
+    def test_a_unit_not_read_keeps_a_stored_null(self):
+        self.apply({}, {}, state_of(dm_a=make_unit(owner_last_ts=None)))
+
+        self.assertIn("owner_last_ts", self.unit())
+        self.assertIsNone(self.unit()["owner_last_ts"])
 
 
 class ChannelNameTest(LifecycleCase):

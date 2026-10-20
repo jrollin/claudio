@@ -368,6 +368,63 @@ class FactTest(FeaturesCase):
             (True, False),
         )
 
+    def test_the_owner_last_ts_is_the_latest_owner_message_read(self):
+        facts = self.facts(msg(OWNER, self.EARLY), msg(PEER, self.MID), msg(OWNER, self.LATE))
+
+        self.assertEqual(facts["owner_last_ts"], self.LATE)
+
+    def test_the_owner_last_ts_is_the_latest_owner_reaction_read(self):
+        facts = self.facts(msg(PEER, self.EARLY), msg(PEER, self.MID, owner_reacted=True), msg(PEER, self.LATE, owner_reacted=False))
+
+        self.assertEqual(facts["owner_last_ts"], self.MID)
+
+    def test_the_owner_last_ts_is_null_without_an_owner_message_or_reaction(self):
+        self.assertIsNone(self.facts(msg(PEER, self.EARLY), msg(PEER, self.MID, owner_reacted=False))["owner_last_ts"])
+
+    def stored_thread(self, owner_last_ts):
+        fields = {} if owner_last_ts == "absent" else {"owner_last_ts": owner_last_ts}
+        return make_stored(**{f"thread-{CHAN}-{self.EARLY}": make_unit(channel=CHAN, kind="thread", last_ts=self.MID, **fields)})
+
+    def test_a_peer_message_after_the_stored_owner_activity_asks_again(self):
+        facts = self.facts(msg(PEER, self.EARLY), msg(PEER, self.LATE), stored=self.stored_thread(self.MID), config=make_config(thread_reads="since"))
+
+        self.assertEqual((facts["unanswered_from"], facts["owner_answered"]), (self.LATE, False))
+
+    def test_peer_messages_before_the_stored_owner_activity_leave_nothing_waiting(self):
+        facts = self.facts(msg(PEER, self.EARLY), msg(PEER, self.MID), stored=self.stored_thread(self.LATE), config=make_config(thread_reads="since"))
+
+        self.assertEqual((facts["unanswered_from"], facts["owner_answered"]), (None, True))
+
+    def test_the_owner_took_part_from_the_stored_activity_alone(self):
+        facts = self.facts(msg(PEER, self.EARLY), stored=self.stored_thread(self.MID), config=make_config(thread_reads="since"))
+
+        self.assertIs(facts["owner_took_part"], True)
+
+    def test_full_reads_leave_out_the_stored_owner_activity(self):
+        facts = self.facts(msg(PEER, self.EARLY), msg(PEER, self.MID), stored=self.stored_thread(self.LATE), config=make_config(thread_reads="full"))
+
+        self.assertEqual((facts["unanswered_from"], facts["owner_took_part"]), (self.EARLY, False))
+
+    def test_a_routine_without_thread_reads_leaves_out_the_stored_owner_activity(self):
+        facts = self.facts(msg(PEER, self.EARLY), msg(PEER, self.MID), stored=self.stored_thread(self.LATE))
+
+        self.assertEqual((facts["unanswered_from"], facts["owner_took_part"]), (self.EARLY, False))
+
+    def test_a_stored_null_owner_activity_leaves_the_facts_unchanged(self):
+        facts = self.facts(msg(PEER, self.EARLY), msg(PEER, self.MID), stored=self.stored_thread(None))
+
+        self.assertEqual((facts["unanswered_from"], facts["owner_took_part"]), (self.EARLY, False))
+
+    def test_a_stored_unit_without_the_owner_last_ts_leaves_the_facts_unchanged(self):
+        facts = self.facts(msg(PEER, self.EARLY), msg(PEER, self.MID), stored=self.stored_thread("absent"))
+
+        self.assertEqual((facts["unanswered_from"], facts["owner_took_part"]), (self.EARLY, False))
+
+    def test_the_owner_last_ts_fact_leaves_out_the_stored_activity(self):
+        facts = self.facts(msg(PEER, self.EARLY), msg(PEER, self.LATE), stored=self.stored_thread(self.MID))
+
+        self.assertIsNone(facts["owner_last_ts"])
+
     def test_the_previous_unit_is_the_stored_one(self):
         stamp = self.EARLY
         previous = make_unit(channel=CHAN, kind="thread", last_ts=stamp)
@@ -622,7 +679,7 @@ class FilesTest(FeaturesCase):
             (found["kind"], found["channel"], found["name"], sorted(found["facts"]), found["allowed"]),
             (
                 "dm", DM, "DM",
-                ["age_working_days", "announcement_channel", "direct_mention", "groups", "last_author_is_owner", "owner_answered", "owner_took_part", "previous", "unanswered_from"],
+                ["age_working_days", "announcement_channel", "direct_mention", "groups", "last_author_is_owner", "owner_answered", "owner_last_ts", "owner_took_part", "previous", "unanswered_from"],
                 ["you're waiting on", "promise", "already handled", "noise"],
             ),
         )

@@ -133,7 +133,7 @@ def _search_units(source, window, reader):
     conversations, threads, singles = _grouped(hits)
     starts = _add_rereads(source.get("rereads") or [], hits, conversations, threads)
     lost.update(_read_conversations(reader, conversations, starts))
-    lost.update(_read_threads(reader, threads, lost))
+    lost.update(_read_threads(reader, threads, lost, _known_oldest(source.get("known_threads") or [])))
     units = [unit for unit in (*conversations.values(), *threads.values(), *singles.values()) if unit.items]
     for unit in units:
         unit.items = {key: reader.named(item) for key, item in unit.items.items()}
@@ -197,14 +197,18 @@ def _read_conversations(reader, conversations, starts):
     return lost
 
 
-def _read_threads(reader, threads, failed):
+def _known_oldest(known):
+    return {(item["channel"], item["root_ts"]): decimal.Decimal(item["last_ts"]) - REREAD_MARGIN for item in known}
+
+
+def _read_threads(reader, threads, failed, oldest):
     lost = {}
     for (channel, root), unit in list(threads.items()):
         if channel in failed or channel in lost:
             del threads[(channel, root)]
             continue
         try:
-            items = reader.thread(channel, root)
+            items = reader.thread(channel, root, oldest.get((channel, root)))
         except ChannelFailed as failure:
             lost[channel] = failure.code
             del threads[(channel, root)]
@@ -292,8 +296,10 @@ class _RelayReader:
     def conversation(self, channel, start=None):
         return _relay_read(self.relay, channel, _unit_window(self.window, start), {}, [])
 
-    def thread(self, channel, root):
+    def thread(self, channel, root, oldest):
         arguments = {"channel_id": channel, "message_ts": root, "response_format": "detailed"}
+        if oldest is not None:
+            arguments["oldest"] = str(oldest)
         seen_ts = set()
         parse = lambda call_id, text: _unit_thread_page(channel, call_id, text, root, self.window, seen_ts)
         return _relay_pages(self.relay, THREAD_TOOL, arguments, parse)
@@ -451,8 +457,10 @@ class _ApiReader:
     def conversation(self, channel, start=None):
         return _api_read(channel, _unit_window(self.window, start), {}, self.http, self.calls, [])
 
-    def thread(self, channel, root):
+    def thread(self, channel, root, oldest):
         params = {"channel": channel, "ts": root, "latest": str(self.window["to_ts"]), "limit": str(API_PAGE_SIZE)}
+        if oldest is not None:
+            params["oldest"] = str(oldest)
         items = _api_pages(channel, REPLIES_PATH, params, self.http, self.calls)
         return [item for item in items if decimal.Decimal(item.ts) <= self.window["to_ts"]]
 

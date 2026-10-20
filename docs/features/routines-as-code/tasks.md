@@ -1186,9 +1186,9 @@ Owner-gated: needs the release tag, the tokens per place and an approved sync.
 - `thread_reads`, `owner_last_ts`, the partial reads and the merged facts follow TD-73.
 - Tests: apply writes `owner_last_ts` for read units; `since` reads a known unit from `last_ts` minus the margin and a new or unknown unit in full; the merged facts keep `answered` and `owner_took_part` when the owner's message is before `oldest`; `full` and no key keep every read unchanged.
 - **Refs**: US-59, TD-73
-- **Files**: `plugins/claudio-routines/runtime/recap_state.py` (modify), `plugins/claudio-routines/runtime/recap_features.py` (modify), `plugins/claudio-routines/runtime/recap_lifecycle.py` (modify), `plugins/claudio-routines/runtime/providers/_slack_search.py` (modify), `plugins/claudio-routines/runtime/roles.py` (modify), `plugins/claudio-routines/runtime/test_recap*.py` (modify), `plugins/claudio-routines/runtime/providers/test_slack_search.py` (modify), `plugins/claudio-routines/README.md` (modify)
+- **Files**: `plugins/claudio-routines/runtime/recap_state.py` (modify), `plugins/claudio-routines/runtime/recap_features.py` (modify), `plugins/claudio-routines/runtime/recap_lifecycle.py` (modify), `plugins/claudio-routines/runtime/providers/_slack_search.py` (modify), `plugins/claudio-routines/runtime/roles.py` (modify), `plugins/claudio-routines/runtime/test_recap*.py` (modify), `plugins/claudio-routines/runtime/test_roles.py` (modify), `plugins/claudio-routines/runtime/collect.py` (modify), `plugins/claudio-routines/runtime/test_collect.py` (modify), `plugins/claudio-routines/runtime/providers/test_slack_search.py` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify), `plugins/claudio-routines/README.md` (modify)
 - **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
-- **Status**: Not Started
+- **Status**: Complete
 
 ## Related Features
 

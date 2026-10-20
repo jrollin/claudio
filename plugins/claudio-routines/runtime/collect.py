@@ -236,9 +236,23 @@ def recap_rereads(run_state):
     return rereads
 
 
-def state_options(run_state, engine, role, source, name):
+def recap_known_threads(run_state):
+    known = []
+    for key, unit in sorted(run_state["units"].items()):
+        thread = recap_state.THREAD_KEY.fullmatch(key)
+        if thread and "owner_last_ts" in unit:
+            known.append({"channel": unit["channel"], "root_ts": thread.group(2), "last_ts": unit["last_ts"]})
+    return known
+
+
+def recap_options(run_state, thread_reads):
+    options = {"rereads": recap_rereads(run_state)}
+    return {**options, "known_threads": recap_known_threads(run_state)} if thread_reads == "since" else options
+
+
+def state_options(run_state, engine, role, source, name, thread_reads="full"):
     if engine == roles.RECAP_ENGINE:
-        return {"rereads": recap_rereads(run_state)} if role == "chat" and source.get("searches") else {}
+        return recap_options(run_state, thread_reads) if role == "chat" and source.get("searches") else {}
     if engine != roles.TRIBE_ENGINE:
         return {}
     if role == "chat":
@@ -392,8 +406,8 @@ def prepare(args, transport):
     cursor = conforming_cursor(base, EMPTY_RECORDS[kind], stored_cursor(run_state.get("cursors", {}), args.source, role, kind))
     draft = Draft(base, EMPTY_RECORDS[kind], cursor, selected, deferred, skipped_reason(run_state, engine, source))
     provider = config["providers"][source["provider"]]
-    options = state_options(run_state, engine, role, source, args.source)
-    configured = {key: value for key, value in source.items() if key not in ("threads", "rereads")}
+    options = state_options(run_state, engine, role, source, args.source, routine.get("thread_reads", "full"))
+    configured = {key: value for key, value in source.items() if key not in ("threads", "rereads", "known_threads")}
     injected = transport == "api" and is_injected(provider, roles.injected_hosts(config, args.place))
     return provider, {**configured, "name": args.source, "provider_config": provider, **options}, window, draft, injected
 

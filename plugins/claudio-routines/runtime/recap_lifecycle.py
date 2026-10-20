@@ -163,6 +163,11 @@ def newest_ts(messages):
     return max((item["ts"] for item in messages), key=Decimal)
 
 
+def owner_last_ts_of(facts, stored):
+    kept = None if stored is None else stored.get("owner_last_ts")
+    return max((stamp for stamp in (kept, facts["owner_last_ts"]) if stamp is not None), key=Decimal, default=None)
+
+
 def due_of(entry, status, stored):
     if status != "promise":
         return None
@@ -188,6 +193,7 @@ def unit_of(document, entry, stored, status, people, run):
         "runs_waiting": runs_waiting if status in recap_state.HELD_STATUSES else 0,
         "late": late_age(status, document["facts"], first_seen, due, run),
         "due": due,
+        "owner_last_ts": owner_last_ts_of(document["facts"], stored),
     }
 
 

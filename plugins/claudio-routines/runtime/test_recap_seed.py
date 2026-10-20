@@ -186,8 +186,9 @@ class ConvertedStateTest(SeedCase):
         dropped = ("nine", "ten", "eleven", "twelve", BLIND_SPOT_TEXT, PERMALINK_HOST, "model-a", "sources_last_edited", "posted")
         self.assertEqual([word for word in dropped if word in text], [])
 
-    def test_unit_fields_are_the_state_fields(self):
-        self.assertEqual({tuple(sorted(unit)) for unit in self.state["units"].values()}, {tuple(sorted(recap_state.UNIT_SPEC))})
+    def test_unit_fields_are_the_state_fields_but_the_unknown_owner_activity(self):
+        fields = set(recap_state.UNIT_SPEC) - {"owner_last_ts"}
+        self.assertEqual({tuple(sorted(unit)) for unit in self.state["units"].values()}, {tuple(sorted(fields))})
 
 
 class SourceVariantTest(SeedCase):

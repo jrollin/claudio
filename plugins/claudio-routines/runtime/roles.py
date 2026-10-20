@@ -30,6 +30,7 @@ RECAP_ENGINE = ENGINES[2]
 WEEKLY_ENGINE = ENGINES[3]
 WEEKLY_ROLES = ("issue_tracker", "code_host", "chat", "document_store")
 RECAP_LANDINGS = ("waiting", "good_to_know")
+THREAD_READS = ("full", "since")
 RECAP_LOOKBACK_CAP = 365
 PAGE_FROM_STATE = ("previous_page",)
 PAGE_OPTIONS = ("page_id", "pages", "page_from_state", "edited_by", "created_by")
@@ -240,6 +241,7 @@ RECAP_KEYS = {
         )
     ),
     "rules": ListOf(TEXT, non_empty=True),
+    "thread_reads": Omittable(Choice(THREAD_READS)),
 }
 KEY_PATH = Rule(_matches(KEY_PATH_TEXT), "must be a dotted path of object keys")
 PAGE_LINK = Rule(
