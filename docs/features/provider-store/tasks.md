@@ -236,7 +236,8 @@ Paths are under `plugins/claudio-routines/` unless they start with `docs/` or `s
 - **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime -p 'test_store.py'`
 - **Blocked by**: T-13
 - **Rules**: BR-10
-- **Status**: Not Started
+- **Status**: Complete
+- **Result**: `store.py prune --root --older-than-days N [--dry-run]` deletes whole read folders fetched before the age, folders without `read.json` and `.incoming/` leftovers by mtime, prints `<provider> deleted N kept M`; a non-positive or fractional age exits 2: 12 new tests, store (141) and runtime suites passing
 
 ### T-18: Document the shared store
 - **Scope**:

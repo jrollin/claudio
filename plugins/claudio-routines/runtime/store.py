@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 
 import providers
@@ -36,11 +37,14 @@ BARRED_IN_PART = ("/", "\\", "=", "\x00")
 KEY = re.compile(r"[a-z][a-z0-9_]*")
 TS = re.compile(r"[0-9]{1,16}(?:\.[0-9]{1,9})?")
 PAGE_FILE = re.compile(r"page-[0-9]{3,}\.(?:json|txt)")
+PROVIDER_FOLDER = re.compile(r"provider=(?P<key>.+)")
+POSITIVE = re.compile(r"[1-9][0-9]*")
 READ_NAME = re.compile(r"read=(?:(?P<start>[0-9.]+)_(?P<end>[0-9.]+)-)?(?P<fetch>[^/]+)")
 LONE_SURROGATE = re.compile(r"[\ud800-\udfff]")
 REPLACEMENT = "�"
 UTC_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 GIT_TIMEOUT = 10
+DAY_SECONDS = 86400
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 SCHEMA_ONE = state.leaf(lambda value: state.is_integer(value) and value == SCHEMA, f"schema {SCHEMA}")
@@ -722,7 +726,80 @@ def run_reparse(args):
     return 3 if rejected else 0
 
 
-COMMANDS = {"reparse": run_reparse}
+def now_epoch():
+    return int(time.time())
+
+
+def positive_days(text):
+    if POSITIVE.fullmatch(text) is None:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a positive whole number of days")
+    return int(text)
+
+
+def fetched_at_or_none(folder):
+    if not os.path.isfile(os.path.join(folder, READ_FILE)):
+        return None
+    try:
+        return fetched_epoch(load_document(folder))
+    except (state.InputError, state.Rejected):
+        return None
+
+
+def is_expired(folder, cutoff):
+    fetched = fetched_at_or_none(folder)
+    return (os.lstat(folder).st_mtime if fetched is None else fetched) < cutoff
+
+
+def prunable_folders(provider_folder):
+    for folder, folders, _ in os.walk(provider_folder):
+        name = os.path.basename(folder)
+        if name == INCOMING or READ_NAME.fullmatch(name):
+            children = sorted(folders)
+            folders[:] = []
+            if name == INCOMING:
+                yield from (os.path.join(folder, child) for child in children if not os.path.islink(os.path.join(folder, child)))
+            else:
+                yield folder
+        else:
+            folders.sort()
+
+
+def remove_folder(folder):
+    try:
+        shutil.rmtree(folder)
+    except OSError as error:
+        raise state.InputError(f"prune: cannot delete {folder}: {error.strerror}") from error
+
+
+def provider_folders(root):
+    try:
+        names = sorted(os.listdir(root))
+    except OSError as error:
+        raise state.InputError(f"prune: cannot list {root}: {error.strerror}") from error
+    for name in names:
+        match, path = PROVIDER_FOLDER.fullmatch(name), os.path.join(root, name)
+        if match is not None and not os.path.islink(path) and os.path.isdir(path):
+            yield match["key"], path
+
+
+def run_prune(args):
+    if not os.path.isdir(args.root):
+        raise state.InputError(f"prune: root {args.root} is not a folder")
+    cutoff = now_epoch() - args.older_than_days * DAY_SECONDS
+    for key, path in provider_folders(args.root):
+        deleted = kept = 0
+        for folder in prunable_folders(path):
+            if not is_expired(folder, cutoff):
+                kept += 1
+                continue
+            deleted += 1
+            if not args.dry_run:
+                remove_folder(folder)
+        print(f"{key} deleted {deleted} kept {kept}")
+    return 0
+
+
+COMMANDS = {"reparse": run_reparse, "prune": run_prune}
 
 
 def build_parser():
@@ -734,17 +811,22 @@ def build_parser():
         reparse.add_argument(flag, action="append")
     reparse.add_argument("--from", dest="from_text", metavar="UTC_TIME")
     reparse.add_argument("--to", dest="to_text", metavar="UTC_TIME")
+    prune = commands.add_parser("prune", help="delete the read folders fetched before an age in days")
+    prune.add_argument("--root", required=True)
+    prune.add_argument("--older-than-days", required=True, type=positive_days, metavar="N")
+    prune.add_argument("--dry-run", action="store_true")
     return parser
 
 
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
-    try:
-        args.start = None if args.from_text is None else utc_time(args.from_text)
-        args.end = None if args.to_text is None else utc_time(args.to_text)
-    except argparse.ArgumentTypeError as error:
-        parser.error(str(error))
+    if args.command == "reparse":
+        try:
+            args.start = None if args.from_text is None else utc_time(args.from_text)
+            args.end = None if args.to_text is None else utc_time(args.to_text)
+        except argparse.ArgumentTypeError as error:
+            parser.error(str(error))
     try:
         return COMMANDS[args.command](args)
     except state.InputError as error:

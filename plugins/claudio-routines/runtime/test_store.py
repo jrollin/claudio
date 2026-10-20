@@ -1125,5 +1125,114 @@ class ReplayEligibleTest(EligibleCase):
         self.assertEqual(self.fetch_ids(reused), [OTHER_RUN + ".channels"])
 
 
+DAY = 86400
+PRUNE_NOW = FETCHED_EPOCH + 10 * DAY
+OLD_AT = "2026-10-20T07:30:09Z"
+NEW_AT = "2026-10-29T07:30:09Z"
+
+
+class PruneTest(SharedStoreCase):
+    def stored_at(self, fetched_at, run=OTHER_RUN, provider="chat", span=SPAN):
+        root = os.path.join(self.tmp.name, "runs", f"{run}-{provider}")
+        session = store.ReadSession(root, provider, run, "channels", "slack", "mcp", clock=lambda: fetched_at, runtime="ab" * 20, shared=self.shared)
+        return self.finished(session, span=span)
+
+    def prune(self, *flags, days="5", root=None):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), mock.patch.object(store, "now_epoch", return_value=PRUNE_NOW):
+            try:
+                code = store.main(["prune", "--root", root or self.shared, "--older-than-days", days, *flags])
+            except SystemExit as exit_:
+                code = exit_.code
+        return code, out.getvalue().splitlines(), err.getvalue()
+
+    def fetch_ids(self):
+        return sorted(read.fetch_id for read in store.walk_reads(self.shared))
+
+    def aged(self, path, days):
+        moment = PRUNE_NOW - days * DAY
+        os.utime(path, (moment, moment))
+
+    def test_deletes_the_reads_fetched_before_the_age(self):
+        self.stored_at(OLD_AT, run=OTHER_RUN)
+        self.stored_at(NEW_AT, run=RUN)
+
+        self.prune()
+
+        self.assertEqual(self.fetch_ids(), [RUN + ".channels"])
+
+    def test_prints_the_counts_per_provider(self):
+        self.stored_at(OLD_AT, run=OTHER_RUN, provider="chat")
+        self.stored_at(NEW_AT, run=RUN, provider="chat")
+        self.stored_at(NEW_AT, run=RUN, provider="chat_two")
+
+        self.assertEqual(self.prune(), (0, ["chat deleted 1 kept 1", "chat_two deleted 0 kept 1"], ""))
+
+    def test_a_dry_run_prints_the_counts_and_deletes_nothing(self):
+        self.stored_at(OLD_AT, run=OTHER_RUN)
+        self.stored_at(NEW_AT, run=RUN)
+
+        code, lines, _ = self.prune("--dry-run")
+
+        self.assertEqual((code, lines, self.fetch_ids()), (0, ["chat deleted 1 kept 1"], sorted([OTHER_RUN + ".channels", RUN + ".channels"])))
+
+    def test_deletes_a_folder_without_its_read_document_older_than_the_age(self):
+        folder = os.path.join(self.shared, "provider=chat", "kind=history", "channel=C0TRIBE1", "read=1_2-" + OTHER_RUN + ".channels")
+        os.makedirs(folder)
+        self.aged(folder, 6)
+
+        self.prune()
+
+        self.assertFalse(os.path.exists(folder))
+
+    def test_keeps_a_folder_without_its_read_document_younger_than_the_age(self):
+        folder = os.path.join(self.shared, "provider=chat", "kind=history", "channel=C0TRIBE1", "read=1_2-" + OTHER_RUN + ".channels")
+        os.makedirs(folder)
+        self.aged(folder, 4)
+
+        self.prune()
+
+        self.assertTrue(os.path.isdir(folder))
+
+    def test_deletes_a_staging_leftover_older_than_the_age(self):
+        staging = os.path.join(self.incoming(), "read-left")
+        os.makedirs(staging)
+        self.aged(staging, 6)
+
+        self.prune()
+
+        self.assertFalse(os.path.exists(staging))
+
+    def test_deletes_whole_read_folders_only(self):
+        handle = self.stored_at(OLD_AT)
+
+        self.prune()
+
+        self.assertEqual((os.path.exists(self.shared_folder(handle)), os.path.isdir(os.path.dirname(self.shared_folder(handle)))), (False, True))
+
+    def test_a_run_store_keeps_its_linked_reads_after_a_prune(self):
+        self.stored_at(OLD_AT)
+        session = self.sharing(run=RUN)
+        linked = session.link_in(session.shared_reads("history", HISTORY)[0])
+
+        self.prune()
+
+        self.assertEqual((self.fetch_ids(), store.load_records(linked.folder)), ([], RECORDS))
+
+    def test_an_age_of_zero_exits_2(self):
+        self.assertEqual(self.prune(days="0")[0], 2)
+
+    def test_a_fractional_age_exits_2(self):
+        self.assertEqual(self.prune(days="1.5")[0], 2)
+
+    def test_a_negative_age_exits_2(self):
+        self.assertEqual(self.prune(days="-3")[0], 2)
+
+    def test_a_root_that_is_not_a_folder_exits_2(self):
+        code, _, err = self.prune(root=os.path.join(self.tmp.name, "missing"))
+
+        self.assertEqual((code, "missing" in err), (2, True))
+
+
 if __name__ == "__main__":
     unittest.main()
