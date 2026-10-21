@@ -599,6 +599,7 @@ THE checker validates it against the features and the state before the engine ap
 - [ ] A text holding a chat author id or an email is rejected, per BR-52 *(AC-37.7)*
 - [ ] More than 3 decisions are rejected *(AC-37.8)*
 - [ ] A first rejection is corrected once from the checker's message; a second ends the run with no state and no run record written, and one message that starts with `degraded: judgment rejected`, per AC-21.6 and AC-21.7 *(AC-37.9)*
+- [ ] A feature cite without a value passes only in a warning's evidence, when it equals a cite stored with that warning and the features hold no value under that feature and name this run *(AC-37.10)*
 
 ### Apply the tribe lifecycle {#US-38}
 

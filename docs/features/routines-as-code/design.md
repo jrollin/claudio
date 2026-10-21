@@ -1211,7 +1211,7 @@ Feature rules:
 - values outside BR-54 and the check groups;
 - empty texts, and texts that are not labels (TD-27: 300 characters, no control characters) or that hold `<`, `>`, `@` or `://`, since the page is table markup; both rules apply to the NFKC form too;
 - an evidence item, detail, correction or highlight without a cite;
-- cites that match nothing: a record cite must name the source and link of a record of this run's features or of a cite stored with a warning, and a feature cite must give a value equal to the features;
+- cites that match nothing: a record cite must name the source and link of a record of this run's features or of a cite stored with a warning, and a feature cite must give a value equal to the features, except a warning's own stored feature cite, without value, when the features hold no value under it this run (AC-37.10);
 - a `measured` warning without a feature cite, or a `reported` one without a record cite;
 - a text holding an author id that appears in this run's collections, or an email;
 - more than 3 decisions.

@@ -715,6 +715,41 @@ class FeatureCiteTest(CheckTestCase):
     def test_feature_cite_with_a_missing_value_is_rejected_with_its_key_path(self):
         self.assertIn("warnings.db-capacity.evidence[0].cites[0].value", self.rejection(self.evidence_citing(CPU_STORED_CITE)))
 
+    def features_storing(self, *cites):
+        features_doc = make_features()
+        features_doc["previous"]["warnings"]["db-capacity"]["cites"].extend(cites)
+        return features_doc
+
+    def test_stored_feature_cite_of_a_value_gone_this_run_passes(self):
+        gone = {"feature": "metric:gone", "name": "latest"}
+
+        self.assertIsNone(tribe_judgment.check(self.features_storing(gone), self.evidence_citing(CPU_CITE, gone)))
+
+    def test_stored_feature_cite_of_a_name_gone_this_run_passes(self):
+        gone = {"feature": "cpu", "name": "p99"}
+
+        self.assertIsNone(tribe_judgment.check(self.features_storing(gone), self.evidence_citing(CPU_CITE, gone)))
+
+    def test_feature_cite_without_value_not_stored_with_the_warning_is_rejected_with_its_key_path(self):
+        message = self.rejection(self.evidence_citing(CPU_CITE, {"feature": "metric:gone", "name": "latest"}))
+
+        self.assertIn("warnings.db-capacity.evidence[0].cites[1].value", message)
+
+    def test_feature_cite_without_value_stored_with_another_warning_is_rejected(self):
+        features_doc = make_features()
+        stored = features_doc["previous"]["warnings"]["db-capacity"]
+        features_doc["previous"]["warnings"]["queue-backlog"] = {**stored, "title": "Old queue backlog", "cites": [{"feature": "metric:gone", "name": "latest"}]}
+        document = changed("warnings", "queue-backlog", {**make_judgment()["warnings"]["db-capacity"], "title": "Old queue backlog"})
+        document["warnings"]["db-capacity"]["evidence"] = [{"claim": "CPU is at 90", "cites": [CPU_CITE, {"feature": "metric:gone", "name": "latest"}]}]
+
+        self.assertIn("warnings.db-capacity.evidence[0].cites[1].value", self.rejection(document, features_doc))
+
+    def test_detail_feature_cite_without_value_is_rejected_with_its_key_path(self):
+        features_doc = self.features_storing({"feature": "metric:gone", "name": "latest"})
+        document = changed("details", "Database", 0, "cites", [{"feature": "metric:gone", "name": "latest"}])
+
+        self.assertIn("details.Database[0].cites[0].value", self.rejection(document, features_doc))
+
     def test_feature_cite_of_a_document_absent_from_the_features_is_rejected_with_its_key_path(self):
         message = self.rejection(self.evidence_citing({"feature": "memory", "name": "value", "value": 90}))
 

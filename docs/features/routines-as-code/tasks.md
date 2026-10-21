@@ -3,7 +3,7 @@
 ---
 feature: routines-as-code
 spec_version: 1
-total_tasks: 114
+total_tasks: 115
 phases:
   - name: "Leak guard"
     tasks: [T-1, T-2, T-3]
@@ -51,6 +51,8 @@ phases:
     tasks: [T-106, T-107, T-108, T-109, T-110]
   - name: "Relay capture"
     tasks: [T-111, T-112, T-113, T-114]
+  - name: "Stored feature cites"
+    tasks: [T-115]
 depends_on: []
 ---
 
@@ -1248,6 +1250,18 @@ Owner-gated: needs the release tag, the setup script paste at the cloud environm
 - **Rules**: BR-82
 - **Status**: Complete
 - **Result**: 0.5.8 released, pinned, pasted and synced to the 5 routines on 2026-10-20; the tribe digest run of 2026-10-21 05:49 UTC captured every relay result, the publish create included, with no `relay capture mismatch` line and no hand copy
+
+## Phase: Stored feature cites
+
+### T-115: Accept a warning's stored feature cite when its value is gone
+- A stored warning whose cited feature value is absent from this run's features cannot be judged: the stored cite has no `value`, and the checker requires one on every feature cite, against AC-36.5. A cloud scheduling digest run of 2026-10-21 ended `degraded: judgment rejected` on such a warning, after its cited group left a top read.
+- The judgment checker accepts, in a warning's evidence, a feature cite without `value` when it equals a cite stored with that warning and the features hold no value under that feature and name this run; any other feature cite still gives its value.
+- **Refs**: US-37, TD-50
+- **Files**: `plugins/claudio-routines/runtime/tribe_judgment.py` (modify), `plugins/claudio-routines/runtime/test_tribe_judgment.py` (modify), `docs/features/routines-as-code/requirements.md` (modify), `docs/features/routines-as-code/design.md` (modify)
+- **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime -p 'test_tribe_judgment.py'`
+- **Rules**: BR-59
+- **Status**: Complete
+- **Result**: stored feature cites accepted only for values gone this run; a stored cite whose value the features hold, one of another warning, and one in details stay rejected: 5 new tests, tribe judgment (159) and runtime suites passing
 
 ## Related Features
 
