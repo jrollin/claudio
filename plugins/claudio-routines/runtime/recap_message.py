@@ -256,5 +256,5 @@ def add_message_arguments(parser):
 
 def run_message(args):
     check_message_inputs(args)
-    state.write_all([(args.out, message_text(args).encode("utf-8"))])
+    state.write_all(state.message_files(args.out, message_text(args)))
     return 0

@@ -26,6 +26,8 @@ BLIND_SPOT_CAP = 8
 PLACES = ("cloud", "local")
 TRANSPORTS = ("api", "mcp")
 MONITOR_PREFIX = "monitor-"
+MESSAGE_PART_CAP = 4000
+BLOCK_BREAK = "\n\n"
 LABEL_CAP = 300
 MITIGATION_CAP = 3
 REASON_TAGS = ("measured", "inferred")
@@ -329,6 +331,44 @@ def stage(path, data):
         os.unlink(temp)
         raise
     return temp
+
+
+def message_pieces(body, cap):
+    for block in body.split(BLOCK_BREAK):
+        if len(block) <= cap:
+            yield BLOCK_BREAK, block
+            continue
+        for line_index, line in enumerate(block.split("\n")):
+            chunks = [line[start : start + cap] for start in range(0, len(line), cap)] or [""]
+            for chunk_index, chunk in enumerate(chunks):
+                yield (BLOCK_BREAK if line_index == 0 else "\n") if chunk_index == 0 else "", chunk
+
+
+def message_parts(text, cap=None):
+    cap = MESSAGE_PART_CAP if cap is None else cap
+    body = text.rstrip("\n")
+    if len(body) <= cap:
+        return [text]
+    parts, current = [], None
+    for separator, piece in message_pieces(body, cap):
+        joined = piece if current is None else current + separator + piece
+        if len(joined) <= cap:
+            current = joined
+        else:
+            parts.append(current)
+            current = piece
+    parts.append(current)
+    return [part + "\n" for part in parts]
+
+
+def part_path(path, number):
+    root, extension = os.path.splitext(path)
+    return f"{root}.{number}{extension}"
+
+
+def message_files(path, text, cap=None):
+    parts = message_parts(text, cap)
+    return [(path if number == 1 else part_path(path, number), part.encode("utf-8")) for number, part in enumerate(parts, 1)]
 
 
 def write_all(documents):

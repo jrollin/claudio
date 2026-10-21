@@ -395,7 +395,7 @@ A routine run decides its facts in these steps. The scripts set every value; the
 4. `state.py apply` runs once into `<run>/preview/`. Its summary lists the new and escalated items.
 5. The model writes `analysis.json` for exactly those keys: `risk`, `reason` claims tagged `measured` (with cited features) or `inferred`, 1 to 3 `mitigation` leads and the next `action`, each text at most 300 characters. `evaluate.py annotate` adds it to `facts.json` and changes nothing else.
 6. The real `state.py apply` writes the next state, the summary and the run record. The summary lists new and escalated items in rank order, each with its analysis; the state keeps the analysis until the item escalates.
-7. `digest.py` renders the digest from the summary, the next state, the run record and `base.json`. It shows each new and escalated item with its analysis, in rank order. A report-only run shows the analysis and stores nothing. The model posts the file's text unchanged and writes none of it.
+7. `digest.py` renders the digest from the summary, the next state, the run record and `base.json`. It shows each new and escalated item with its analysis, in rank order. A report-only run shows the analysis and stores nothing. The model posts the file's text unchanged and writes none of it. A digest longer than 4,000 characters comes in parts, `digest.md` then `digest.2.md` and so on, cut at blank lines: the run posts the first part and the others, in order, in its thread, since the chat send tool takes at most 5,000 characters.
 
 A rejected judgment or analysis is corrected once from the checker's message. A second rejection ends the run with one message starting `degraded: judgment rejected`, and writes neither state nor run record.
 
@@ -490,6 +490,7 @@ python3 runtime/recap.py seed          --from STORED --digest NAME --out STATE
 
 - The model writes only `judgment.json`, from `features.json` and `rules.json`. `judge` rejects a judgment the features do not allow (exit 3, with the key path).
 - `apply` writes the next state, the summary and the run record. A report-only run (`--since` or `--report-only`) leaves the state byte-identical. The state and the record hold no message text.
+- `message` writes a message longer than 4,000 characters in parts, `MESSAGE` then `<stem>.2<ext>` and so on, cut at blank lines; the run posts the first part and the others, in order, in its thread.
 - The template saves the state on the `claude/state` branch before it renders the message.
 - `message` posts only when `post` is true in the summary.
 

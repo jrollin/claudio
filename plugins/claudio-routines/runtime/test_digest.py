@@ -932,5 +932,39 @@ class ScriptTest(DigestCase):
         self.assertIn("🟡 **Metric A**", self.read_bytes("digest.md").decode())
 
 
+LONG = "Risk text that runs long enough to fill a chat message quickly " * 4
+
+
+def long_entry(index):
+    return entry(
+        f"metric-{index}", title=f"Metric {index}", risk=LONG.strip(), reason=[{"claim": LONG.strip(), "tag": "measured"}],
+        mitigation=["Review the threshold of the monitor"], action="Check the source of the change",
+    )
+
+
+class PartsTest(DigestCase):
+    def parts(self):
+        names = [f"digest.md", *(f"digest.{number}.md" for number in range(2, 100) if os.path.exists(self.path(f"digest.{number}.md")))]
+        return [self.read_bytes(name).decode() for name in names]
+
+    def test_writes_a_digest_that_fits_in_one_file(self):
+        self.render_new(entry("metric-a"))
+
+        self.assertFalse(os.path.exists(self.path("digest.2.md")))
+
+    def test_writes_a_long_digest_in_parts_within_the_cap(self):
+        self.render_new(*[long_entry(index) for index in range(14)])
+
+        parts = self.parts()
+        self.assertEqual((len(parts) > 1, [len(part) for part in parts if len(part.rstrip("\n")) > state.MESSAGE_PART_CAP]), (True, []))
+
+    def test_cuts_a_long_digest_between_its_blocks(self):
+        summary = make_summary(new=[long_entry(index) for index in range(14)])
+        self.render_documents(summary, make_next())
+
+        whole = digest.render(summary, make_next(), make_record(), make_base(), state.load_zone(fixtures.TZ))
+        self.assertEqual("\n\n".join(part.rstrip("\n") for part in self.parts()) + "\n", whole)
+
+
 if __name__ == "__main__":
     unittest.main()

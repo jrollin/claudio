@@ -583,6 +583,7 @@ THE model writes one judgment: the warnings with their fields, the checks, the d
 - [ ] The rules the model applies, the meanings of BR-54 and the warning thresholds included, are prose in the private config, per BR-33 *(AC-36.10)*
 - [ ] The model judges from the features and the rules only, and makes no provider call in this step (model eval) *(AC-36.11)*
 - [ ] The judgment may add up to 10 coverage notes, each a source label and one line on what the run did not cover and why; they show under Blind spots for this run only, per BR-64 *(AC-36.12)*
+- [ ] The model reads every record of the run before it writes, judges each stored warning again from this run's records and values, and never derives the judgment by copying the stored warnings with a script (model eval) *(AC-36.13)*
 
 ### Check the tribe judgment {#US-37}
 
@@ -688,6 +689,7 @@ THE message follows the compact chat layout the routine posted before the runtim
 - [ ] Blind spots, unread sources and the cut window share one `**Blind spots:**` line; muted changes and dropped blind spots one `**Not shown:**` line; overrides one `**Overrides:**` line; no item key appears in the text *(AC-44.6)*
 - [ ] A link label is `monitor <id>` for a monitor link and `metric` otherwise, and a Markdown link only for an `http://` or `https://` link, the label alone otherwise, with the destination's parentheses, spaces and backslashes percent-encoded *(AC-44.7)*
 - [ ] Every time is in the config timezone: a time on the run's local day shows `HH:MM`, another day `DD Mon HH:MM`, and a `since` that is not a UTC time shows as stored *(AC-44.8)*
+- [ ] A digest longer than the message part cap is written in ordered parts cut at blank lines, and the run posts the first part, then each next part in its thread, per BR-83 *(AC-44.9)*
 
 ### Run the chat recap on the runtime {#US-45}
 
@@ -747,6 +749,7 @@ THE script renders one message in the recap layout, and the run posts it to the 
 - [ ] Waiting on you is sorted blocking first, then direct conversation, direct mention, group, thread, then oldest first, with ⏰ before a late unit; a promise reads `**You** promised <what>, by <when>` *(AC-49.3)*
 - [ ] Names are the display names the chat source gives; links are built by the script from the channel and timestamps, labelled by kind (`DM`, `group DM`, `thread in #channel`, `mention in #channel`) *(AC-49.4)*
 - [ ] The message holds no state, JSON or unit key, and no text the model wrote other than checked summaries, titles and reading bullets *(AC-49.5)*
+- [ ] A recap message longer than the message part cap is written in ordered parts cut at blank lines, and the run posts the first part, then each next part in its thread, per BR-83 *(AC-49.6)*
 
 ### Move the recap configuration and state into the private repository {#US-50}
 
@@ -955,6 +958,7 @@ THE `PostToolUse` hook saves the result byte-exact, and the next `plan` saves it
 - Captures stay in a private folder that the user owns (folder 0700, files 0600), are deleted when taken or after 24 hours, and never enter git or the state branch *(BR-80)*
 - When no capture matches a printed call, the model saves that call's result by hand, as BR-66 requires *(BR-81)*
 - A relay capture mismatch line holds paths, kinds, indexes, lengths and type names only, never an argument value or a result text: the arguments carry source content and the run log outlives the run *(BR-82)*
+- A chat message stays within the send tool's limit of 5,000 characters: a script writes a longer one in ordered parts of at most 4,000 characters, and the run posts the parts in order, the first as the message and the others in its thread *(BR-83)*
 
 ## Out of Scope
 

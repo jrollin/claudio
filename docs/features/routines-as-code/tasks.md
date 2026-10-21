@@ -3,7 +3,7 @@
 ---
 feature: routines-as-code
 spec_version: 1
-total_tasks: 115
+total_tasks: 117
 phases:
   - name: "Leak guard"
     tasks: [T-1, T-2, T-3]
@@ -53,6 +53,8 @@ phases:
     tasks: [T-111, T-112, T-113, T-114]
   - name: "Stored feature cites"
     tasks: [T-115]
+  - name: "Long messages and the tribe judge"
+    tasks: [T-116, T-117]
 depends_on: []
 ---
 
@@ -1262,6 +1264,27 @@ Owner-gated: needs the release tag, the setup script paste at the cloud environm
 - **Rules**: BR-59
 - **Status**: Complete
 - **Result**: stored feature cites accepted only for values gone this run; a stored cite whose value the features hold, one of another warning, and one in details stay rejected: 5 new tests, tribe judgment (159) and runtime suites passing
+
+## Phase: Long messages and the tribe judge
+
+### T-116: Write long chat messages in parts
+- The cloud prod watch run of 2026-10-21 08:27 UTC rendered a 7,302-character digest; the chat send tool takes at most 5,000 characters, and the model split it into a thread reply by itself.
+- `state.message_parts` and `state.message_files` cut a message at blank lines into parts of at most 4,000 characters; `digest.py` and `recap.py message` write them as `<out>`, `<stem>.2<ext>` and so on; the prod watch and recap templates post the first part, then the others in its thread.
+- **Refs**: US-44, US-49, TD-75
+- **Files**: `plugins/claudio-routines/runtime/state.py` (modify), `plugins/claudio-routines/runtime/digest.py` (modify), `plugins/claudio-routines/runtime/recap_message.py` (modify), `plugins/claudio-routines/runtime/test_state.py` (modify), `plugins/claudio-routines/runtime/test_digest.py` (modify), `plugins/claudio-routines/runtime/test_recap_message.py` (modify), `plugins/claudio-routines/skills/routines/templates/prod-watch.md` (modify), `plugins/claudio-routines/skills/routines/templates/chat-recap.md` (modify), `plugins/claudio-routines/skills/routines/scripts/test_routines.py` (modify), `plugins/claudio-routines/README.md` (modify)
+- **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/skills/routines/scripts`
+- **Rules**: BR-42, BR-83
+- **Status**: Complete
+- **Result**: messages over 4,000 characters are written in parts cut at blank lines and posted in order in one thread; a message that fits keeps one byte-identical file: 15 new tests, runtime and skills script suites passing
+
+### T-117: Have the tribe judge read the run's records and judge stored warnings again
+- The cloud Connect digest run of 2026-10-21 05:49 UTC built its judgment with a script that copied every stored warning and check unchanged, and its page said no change while the chat held new threads.
+- The judge step of the tribe template asks the model to read every record of the run, to judge each stored warning again from this run's records and values, and never to derive the judgment by copying `previous` with a script.
+- **Refs**: US-36, TD-50
+- **Files**: `plugins/claudio-routines/skills/routines/templates/tribe-digest.md` (modify), `plugins/claudio-routines/skills/routines/scripts/test_routines.py` (modify)
+- **Verify**: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s plugins/claudio-routines/skills/routines/scripts`
+- **Status**: Complete
+- **Result**: three judge rules in the tribe template, checked by 3 template tests; the next cloud tribe run shows whether the model follows them (model eval, AC-36.13)
 
 ## Related Features
 

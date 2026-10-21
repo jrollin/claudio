@@ -657,5 +657,32 @@ class RecapMainMessageTest(FileCase):
             self.assertEqual((code, handle.read().startswith("degraded: judgment")), (0, True))
 
 
+class MessagePartsTest(CliTest):
+    def long_summary(self):
+        lines = [asked(at("2026-10-15T08:00:00Z", index + 1), key=f"dm-{DM}{index}", summary="asks for a long review " * 8) for index in range(40)]
+        return make_summary(waiting=lines, counts={"waiting": 40, "late": 0, "new": 0, "resolved": 0, "waiting_on_others": 0}, post=True)
+
+    def parts(self):
+        names = [f"message.md", *(f"message.{number}.md" for number in range(2, 100) if os.path.exists(self.path(f"message.{number}.md")))]
+        return [open(self.path(name), encoding="utf-8").read() for name in names]
+
+    def test_writes_a_message_that_fits_in_one_file(self):
+        self.assertEqual(self.message()[0], 0)
+        self.assertFalse(os.path.exists(self.path("message.2.md")))
+
+    def test_writes_a_long_message_in_parts_within_the_cap(self):
+        self.assertEqual(self.message(summary=self.write("long.json", self.long_summary()))[0], 0)
+
+        parts = self.parts()
+        self.assertEqual((len(parts) > 1, [part for part in parts if len(part.rstrip("\n")) > state.MESSAGE_PART_CAP]), (True, []))
+
+    def test_cuts_a_long_message_between_its_lines(self):
+        summary = self.long_summary()
+        self.assertEqual(self.message(summary=self.write("long.json", summary))[0], 0)
+
+        whole = recap_message.render(summary, HOST, PARIS, 3)
+        self.assertEqual("".join("".join(self.parts()).split()), "".join(whole.split()))
+
+
 if __name__ == "__main__":
     unittest.main()
