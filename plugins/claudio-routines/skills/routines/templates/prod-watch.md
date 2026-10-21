@@ -217,34 +217,34 @@ When the fetch of Step 2 succeeded, with or without a state file, build on the s
 
 ```bash
 git -C {{state.dir}} fetch --no-prune origin +claude/state:refs/remotes/origin/claude/state && \
-  git -C {{state.dir}} worktree add --detach <run>/store origin/claude/state && \
-  { [ ! -e <run>/store/state/prod-watch.json ] || cmp -s <run>/store/state/prod-watch.json <run>/state.json; } && \
-  mkdir -p <run>/store/state <run>/store/runs/prod-watch && \
-  cp <run>/next.json <run>/store/state/prod-watch.json && \
-  cp <run>/record.json <run>/store/runs/prod-watch/<run-at>.json && \
-  git -C <run>/store add state runs && \
-  git -C <run>/store commit -q -m "prod-watch run <run-at>" && \
-  git -C <run>/store push origin HEAD:refs/heads/claude/state
+  git -C {{state.dir}} worktree add --detach <run>/state-tree origin/claude/state && \
+  { [ ! -e <run>/state-tree/state/prod-watch.json ] || cmp -s <run>/state-tree/state/prod-watch.json <run>/state.json; } && \
+  mkdir -p <run>/state-tree/state <run>/state-tree/runs/prod-watch && \
+  cp <run>/next.json <run>/state-tree/state/prod-watch.json && \
+  cp <run>/record.json <run>/state-tree/runs/prod-watch/<run-at>.json && \
+  git -C <run>/state-tree add state runs && \
+  git -C <run>/state-tree commit -q -m "prod-watch run <run-at>" && \
+  git -C <run>/state-tree push origin HEAD:refs/heads/claude/state
 ```
 
 Only when the fetch of Step 2 found no `claude/state` branch, start it as an orphan on a throwaway local branch:
 
 ```bash
-git -C {{state.dir}} worktree add --detach <run>/store && \
-  git -C <run>/store checkout -q --orphan prod-watch-state-<run-at> && \
-  git -C <run>/store rm -r -q -f --ignore-unmatch . && \
-  mkdir -p <run>/store/state <run>/store/runs/prod-watch && \
-  cp <run>/next.json <run>/store/state/prod-watch.json && \
-  cp <run>/record.json <run>/store/runs/prod-watch/<run-at>.json && \
-  git -C <run>/store add state runs && \
-  git -C <run>/store commit -q -m "prod-watch run <run-at>" && \
-  git -C <run>/store push origin HEAD:refs/heads/claude/state
+git -C {{state.dir}} worktree add --detach <run>/state-tree && \
+  git -C <run>/state-tree checkout -q --orphan prod-watch-state-<run-at> && \
+  git -C <run>/state-tree rm -r -q -f --ignore-unmatch . && \
+  mkdir -p <run>/state-tree/state <run>/state-tree/runs/prod-watch && \
+  cp <run>/next.json <run>/state-tree/state/prod-watch.json && \
+  cp <run>/record.json <run>/state-tree/runs/prod-watch/<run-at>.json && \
+  git -C <run>/state-tree add state runs && \
+  git -C <run>/state-tree commit -q -m "prod-watch run <run-at>" && \
+  git -C <run>/state-tree push origin HEAD:refs/heads/claude/state
 ```
 
 Then, whatever the save block exited with, remove the work tree:
 
 ```bash
-git -C {{state.dir}} worktree remove --force <run>/store
+git -C {{state.dir}} worktree remove --force <run>/state-tree
 ```
 
 After the orphan save block only, delete its throwaway branch:
