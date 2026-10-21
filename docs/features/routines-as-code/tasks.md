@@ -854,7 +854,8 @@ Runs in a local session with the chat, issue tracker, document store and observa
 - **Files**: `docs/features/routines-as-code/design.md` (modify), `docs/features/routines-as-code/requirements.md` (modify), `docs/features/routines-as-code/tasks.md` (modify), `plugins/claudio-routines/skills/routines/templates/prod-watch.md` (modify), `plugins/claudio-routines/skills/routines/templates/tribe-digest.md` (modify)
 - **Verify**: `python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public && python3 scripts/leak_check.py --tree`
 - **Rules**: BR-66
-- **Status**: In Progress (templates changed; a cloud tribe run to check)
+- **Status**: Complete
+- **Result**: cloud tribe digest run of 2026-10-21 05:49 UTC on 0.5.8: no relayed result went through a shell command and no call was denied; the capture hook saved every result
 
 ### T-76: Render the Prod watch digest in the compact chat layout
 - `digest.py` takes a required `--tz` and renders the TD-57 layout: title and window line in the zone, Summary counts, item blocks with the urgency mark and ⬆️ for escalated items, one line per resolved item, still open as at most 3 titles per severity then `+N`, then the `Blind spots:`, `Not shown:` and `Overrides:` lines. The runnable template passes `--tz {{timezone}}` in Step 12.
@@ -1245,7 +1246,8 @@ Owner-gated: needs the release tag, the setup script paste at the cloud environm
 - **Verify**: `python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --private "$CLAUDIO_PRIVATE_DIR"`
 - **Blocked by**: T-113
 - **Rules**: BR-82
-- **Status**: Not Started
+- **Status**: Complete
+- **Result**: 0.5.8 released, pinned, pasted and synced to the 5 routines on 2026-10-20; the tribe digest run of 2026-10-21 05:49 UTC captured every relay result, the publish create included, with no `relay capture mismatch` line and no hand copy
 
 ## Related Features
 
