@@ -74,7 +74,10 @@ def text_leaf(authors):
 def check_cite_shape(value, path):
     if not isinstance(value, dict) or ("link" in value) == ("feature" in value):
         raise state.Rejected(f"expected a record cite with source and link, or a feature cite with feature, name and value, at {path}")
-    state.check(value, exact(FEATURE_CITE if "feature" in value else RECORD_CITE), path)
+    if "feature" not in value:
+        state.check(value, exact(RECORD_CITE), path)
+    else:
+        state.check(value, exact(FEATURE_CITE if "value" in value else tribe_state.FEATURE_CITE), path)
 
 
 def check_cites(value, path):
@@ -152,6 +155,10 @@ def stored_pairs(stored_warning):
     return {(cite["source"], cite["link"]) for cite in stored_warning.get("cites", []) if "link" in cite}
 
 
+def stored_features(stored_warning):
+    return {(cite["feature"], cite["name"]) for cite in stored_warning.get("cites", []) if "feature" in cite}
+
+
 def check_record_cite(cite, path, pairs):
     if (cite["source"], cite["link"]) in pairs:
         return
@@ -175,9 +182,18 @@ def check_feature_cite(cite, path, keys):
         raise state.Rejected(f"{path}.value: cited {judgment.shown(cite['value'])}, the features hold {judgment.shown(actual)}")
 
 
-def check_cite_list(cites, path, keys, pairs):
+def check_stored_feature_cite(cite, path, keys, stored):
+    if (cite["feature"], cite["name"]) not in stored:
+        raise state.Rejected(f"{path}.value: missing, only a cite stored with the warning omits its value")
+    if cite["name"] in keys.get(cite["feature"], {}).get("values", {}):
+        raise state.Rejected(f"{path}.value: missing, the features hold {named(cite['feature'])} {named(cite['name'])} this run")
+
+
+def check_cite_list(cites, path, keys, pairs, stored=frozenset()):
     for index, cite in enumerate(cites):
-        if "feature" in cite:
+        if "feature" in cite and "value" not in cite:
+            check_stored_feature_cite(cite, f"{path}[{index}]", keys, stored)
+        elif "feature" in cite:
             check_feature_cite(cite, f"{path}[{index}]", keys)
         else:
             check_record_cite(cite, f"{path}[{index}]", pairs)
@@ -234,9 +250,10 @@ def evidence_cites(warning):
 
 def check_evidence(key, warning, keys, pairs, previous):
     path = f"warnings.{key}"
-    known = pairs | stored_pairs(previous["warnings"].get(key, {}))
+    stored_warning = previous["warnings"].get(key, {})
+    known, stored = pairs | stored_pairs(stored_warning), stored_features(stored_warning)
     for index, item in enumerate(warning["evidence"]):
-        check_cite_list(item["cites"], f"{path}.evidence[{index}].cites", keys, known)
+        check_cite_list(item["cites"], f"{path}.evidence[{index}].cites", keys, known, stored)
     cites = evidence_cites(warning)
     if warning["confidence"] == "measured" and not any("feature" in cite for cite in cites):
         raise state.Rejected(f"{path}.evidence: a measured warning must cite a feature value")
