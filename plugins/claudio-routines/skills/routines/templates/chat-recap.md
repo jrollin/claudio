@@ -186,34 +186,34 @@ When the fetch of Step 2 succeeded, with or without a state file, build on the s
 
 ```bash
 git -C {{state.dir}} fetch --no-prune origin +claude/state:refs/remotes/origin/claude/state && \
-  git -C {{state.dir}} worktree add --detach <run>/store origin/claude/state && \
-  { [ ! -e <run>/store/state/{{digest.slug}}.json ] || cmp -s <run>/store/state/{{digest.slug}}.json <run>/state.json; } && \
-  mkdir -p <run>/store/state <run>/store/runs/{{digest.slug}} && \
-  cp <run>/applied.json <run>/store/state/{{digest.slug}}.json && \
-  cp <run>/record.json <run>/store/runs/{{digest.slug}}/<run-at>.json && \
-  git -C <run>/store add state runs && \
-  git -C <run>/store commit -q -m "{{digest.slug}} run <run-at>" && \
-  git -C <run>/store push origin HEAD:refs/heads/claude/state
+  git -C {{state.dir}} worktree add --detach <run>/state-tree origin/claude/state && \
+  { [ ! -e <run>/state-tree/state/{{digest.slug}}.json ] || cmp -s <run>/state-tree/state/{{digest.slug}}.json <run>/state.json; } && \
+  mkdir -p <run>/state-tree/state <run>/state-tree/runs/{{digest.slug}} && \
+  cp <run>/applied.json <run>/state-tree/state/{{digest.slug}}.json && \
+  cp <run>/record.json <run>/state-tree/runs/{{digest.slug}}/<run-at>.json && \
+  git -C <run>/state-tree add state runs && \
+  git -C <run>/state-tree commit -q -m "{{digest.slug}} run <run-at>" && \
+  git -C <run>/state-tree push origin HEAD:refs/heads/claude/state
 ```
 
 Only when the fetch of Step 2 found no `claude/state` branch, start it as an orphan on a throwaway local branch:
 
 ```bash
-git -C {{state.dir}} worktree add --detach <run>/store && \
-  git -C <run>/store checkout -q --orphan {{digest.slug}}-state-<run-at> && \
-  git -C <run>/store rm -r -q -f --ignore-unmatch . && \
-  mkdir -p <run>/store/state <run>/store/runs/{{digest.slug}} && \
-  cp <run>/applied.json <run>/store/state/{{digest.slug}}.json && \
-  cp <run>/record.json <run>/store/runs/{{digest.slug}}/<run-at>.json && \
-  git -C <run>/store add state runs && \
-  git -C <run>/store commit -q -m "{{digest.slug}} run <run-at>" && \
-  git -C <run>/store push origin HEAD:refs/heads/claude/state
+git -C {{state.dir}} worktree add --detach <run>/state-tree && \
+  git -C <run>/state-tree checkout -q --orphan {{digest.slug}}-state-<run-at> && \
+  git -C <run>/state-tree rm -r -q -f --ignore-unmatch . && \
+  mkdir -p <run>/state-tree/state <run>/state-tree/runs/{{digest.slug}} && \
+  cp <run>/applied.json <run>/state-tree/state/{{digest.slug}}.json && \
+  cp <run>/record.json <run>/state-tree/runs/{{digest.slug}}/<run-at>.json && \
+  git -C <run>/state-tree add state runs && \
+  git -C <run>/state-tree commit -q -m "{{digest.slug}} run <run-at>" && \
+  git -C <run>/state-tree push origin HEAD:refs/heads/claude/state
 ```
 
 Then, whatever the save block exited with, remove the work tree:
 
 ```bash
-git -C {{state.dir}} worktree remove --force <run>/store
+git -C {{state.dir}} worktree remove --force <run>/state-tree
 ```
 
 After the orphan save block only, delete its throwaway branch:

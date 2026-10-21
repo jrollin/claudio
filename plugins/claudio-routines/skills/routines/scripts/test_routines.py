@@ -3001,6 +3001,12 @@ class ShippedFilesTest(Case):
     def test_shipped_templates_pass_the_public_lint(self):
         self.assertEqual(run("lint", "--public")[:2], (0, ""))
 
+    def test_no_template_saves_the_state_in_the_folder_of_the_read_store(self):
+        read_store = "<run>/" + runtime_module("collect").STORE_DIR
+        names = ("prod-watch.md", "tribe-digest.md", "chat-recap.md", "weekly-status.md")
+        clashing = [name for name in names if re.search(re.escape(read_store) + r"(?![-\w])", read(os.path.join(SHIPPED_TEMPLATES, name)))]
+        self.assertEqual(clashing, [])
+
     def test_the_runnable_templates_and_the_setup_script_are_not_marked(self):
         names = ("prod-watch.md", "tribe-digest.md", "chat-recap.md", "weekly-status.md", "setup-env.sh")
         marked = [lint.is_marked(read(os.path.join(SHIPPED_TEMPLATES, name))) for name in names]
@@ -3598,7 +3604,7 @@ class ShippedFilesTest(Case):
     def test_every_runnable_template_fetches_the_state_branch_again_before_building_the_save(self):
         expected = [
             "git -C {{state.dir}} fetch --no-prune origin +claude/state:refs/remotes/origin/claude/state && \\",
-            "git -C {{state.dir}} worktree add --detach <run>/store origin/claude/state && \\",
+            "git -C {{state.dir}} worktree add --detach <run>/state-tree origin/claude/state && \\",
         ]
         for name in ("prod-watch", "tribe-digest", "chat-recap", "weekly-status"):
             with self.subTest(template=name):
@@ -3634,11 +3640,11 @@ class ShippedFilesTest(Case):
     def test_prod_watch_save_blocks_end_with_the_push(self):
         self.assertEqual(
             [block[-1].strip() for block in self.save_blocks()],
-            ["git -C <run>/store push origin HEAD:refs/heads/claude/state"] * 2,
+            ["git -C <run>/state-tree push origin HEAD:refs/heads/claude/state"] * 2,
         )
 
     def test_prod_watch_removes_the_worktree_after_saving(self):
-        self.assertIn("worktree remove --force <run>/store", self.prod_watch_step("Save the state"))
+        self.assertIn("worktree remove --force <run>/state-tree", self.prod_watch_step("Save the state"))
 
     def test_prod_watch_failed_push_is_reported_as_state_not_saved(self):
         self.assertIn("state not saved", self.prod_watch_step("Save the state"))
@@ -4492,7 +4498,7 @@ class WeeklyTemplateTest(RenderedTemplate, unittest.TestCase):
     def test_the_save_copies_the_next_state_and_the_run_record(self):
         block = self.step("Save the state")
         self.assertEqual(
-            ("cp <run>/next.json <run>/store/state/weekly-status.json" in block, "cp <run>/record.json <run>/store/runs/weekly-status/<run-at>.json" in block),
+            ("cp <run>/next.json <run>/state-tree/state/weekly-status.json" in block, "cp <run>/record.json <run>/state-tree/runs/weekly-status/<run-at>.json" in block),
             (True, True),
         )
 
