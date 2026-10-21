@@ -1675,6 +1675,18 @@ A degraded run's message is one line that starts with `degraded:` and names the 
 
 **Rationale**: the harness hands the exact result to a hook, so no model turn carries the bytes. The folder, the ownership check and the session-folder check keep the hook from reading or writing outside its own data, and the hand copy stays as the fallback for any miss. The mismatch line says why a call was missed without printing a value.
 
+### TD-75: Chat messages in parts
+
+**Choice**: `state.message_parts(text, cap)` cuts a message longer than `MESSAGE_PART_CAP` (4,000 characters) into ordered parts, at the blank line before the block that overflows, then at a line, then at the cap for a line longer than it; a message that fits stays one part, byte for byte. `digest.py` and `recap.py message` write the first part to `--out` and the next ones beside it, `<stem>.2<ext>`, `<stem>.3<ext>` and so on (AC-44.9, AC-49.6, BR-83). The prod watch and recap templates post the first part as the message and each next part, in order, as a reply in its thread.
+- The chat send tool takes at most 5,000 characters per message; the 1,000 left cover the `state not saved` line and the environment check lines the model adds.
+- The tribe and weekly messages stay under the cap by construction (a page link, a 220-word judgment) and keep one file.
+
+**Alternatives considered**:
+- Let the model split a long message: rejected, the template forbids it from reordering or rewording the text, and a split it chooses is not reproducible.
+- Cap the items shown: rejected, a busy run would hide new items.
+
+**Rationale**: the script decides every byte of the message (BR-42), and a long run keeps all its items.
+
 ## Implementation Considerations
 
 ### Data Model

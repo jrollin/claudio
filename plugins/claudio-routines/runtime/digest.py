@@ -250,7 +250,7 @@ def check_still_open_keys(summary, document):
 
 def rendered(summary, document, record, base, zone):
     try:
-        return render(summary, document, record, base, zone).encode("utf-8")
+        return render(summary, document, record, base, zone)
     except OverflowError as error:
         raise state.InputError(f"--tz {zone.key}: a time of the message is out of range ({error})") from error
 
@@ -262,7 +262,7 @@ def run(args):
     record = load_input(args.record, "record", check_record)
     base = load_input(args.base, "base", check_base)
     check_still_open_keys(summary, document)
-    state.write_all([(args.out, rendered(summary, document, record, base, zone))])
+    state.write_all(state.message_files(args.out, rendered(summary, document, record, base, zone)))
 
 
 def build_parser():

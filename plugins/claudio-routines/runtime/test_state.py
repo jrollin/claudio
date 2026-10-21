@@ -1614,5 +1614,32 @@ class AnalysisFieldTest(CliCase):
         self.assertEqual((code, "items.metric-a.mitigation[1]" in err), (3, True))
 
 
+class MessagePartsTest(unittest.TestCase):
+    def test_keeps_a_message_that_fits_whole(self):
+        self.assertEqual(state.message_parts("aaaa\n\nbb\n", 10), ["aaaa\n\nbb\n"])
+
+    def test_cuts_at_the_blank_line_before_the_block_that_overflows(self):
+        self.assertEqual(state.message_parts("aaaa\n\nbbbb\n\ncc\n", 10), ["aaaa\n\nbbbb\n", "cc\n"])
+
+    def test_cuts_a_block_over_the_cap_at_its_lines(self):
+        self.assertEqual(state.message_parts("l1-xxxx\nl2-xxxx\nl3-xxxx\n", 15), ["l1-xxxx\nl2-xxxx\n", "l3-xxxx\n"])
+
+    def test_cuts_a_line_over_the_cap_at_the_cap(self):
+        self.assertEqual(state.message_parts("x" * 25 + "\n", 10), ["x" * 10 + "\n", "x" * 10 + "\n", "x" * 5 + "\n"])
+
+    def test_keeps_every_part_within_the_cap(self):
+        text = "\n\n".join(f"**Item {index}**\n" + "detail " * (index % 9 + 1) for index in range(60)) + "\n"
+
+        self.assertEqual([part for part in state.message_parts(text, 100) if len(part.rstrip("\n")) > 100], [])
+
+    def test_drops_no_text(self):
+        text = "\n\n".join(f"**Item {index}**\n" + "detail " * (index % 9 + 1) for index in range(60)) + "\n"
+
+        self.assertEqual("".join("".join(state.message_parts(text, 100)).split()), "".join(text.split()))
+
+    def test_names_the_next_parts_after_the_first_file(self):
+        self.assertEqual([path for path, _ in state.message_files("/run/digest.md", "a\n\nb\n", 1)], ["/run/digest.md", "/run/digest.2.md"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -3378,6 +3378,14 @@ class ShippedFilesTest(Case):
         self.assertIn("`state not saved` and the command that failed, first, when the save of Step 11 failed.", added[0])
         self.assertIn("The missing variables and connectors of Step 4, each with its source, after the text.", added[1])
 
+    def test_prod_watch_posts_a_digest_in_parts_in_its_thread(self):
+        step = self.prod_watch_step("Report the digest")
+        self.assertIn(
+            "A long digest comes in parts, each within the chat's message limit: `<run>/digest.md` holds the first, and `<run>/digest.2.md`, `<run>/digest.3.md` and so on the next ones.",
+            step,
+        )
+        self.assertIn("Post the first part as the message, then each next part, in order, as a reply in its thread.", step)
+
     def test_prod_watch_model_writes_no_digest_text(self):
         step = self.prod_watch_step("Report the digest")
         self.assertIn("Write none of the digest text yourself: never add, remove, reorder, reword or summarize a line of the file.", step)
@@ -4039,6 +4047,24 @@ class TribeTemplateTest(unittest.TestCase):
     CALL = re.compile(r"/(?:tribe|collect)\.py ([a-z-]+)")
     ORDER = ["init", "window", "features", "judge", "apply", "render", "publish-plan", "publish-parse", "message"]
 
+    def test_judge_reads_every_record_of_the_run(self):
+        self.assertIn(
+            "- Read every record of `keys` (`kind` `record`) before you write: a record of this run may open a warning, change a stored one, add or settle a check, or bring a decision.",
+            self.step("Judge"),
+        )
+
+    def test_judge_judges_each_stored_warning_again(self):
+        self.assertIn(
+            "- Judge each stored warning again from this run's records and values: keep a field as stored only when nothing in this run bears on it.",
+            self.step("Judge"),
+        )
+
+    def test_judge_never_copies_the_stored_warnings_by_script(self):
+        self.assertIn(
+            "- Write the judgment from your own reading: a script may print the features or save the file you composed, never derive warnings, checks or details by copying `previous`.",
+            self.step("Judge"),
+        )
+
     def raw(self):
         return read(self.PATH)
 
@@ -4313,6 +4339,14 @@ class RenderedTemplate:
 
 class RecapTemplateTest(RenderedTemplate, unittest.TestCase):
     PATH = os.path.join(SHIPPED_TEMPLATES, "chat-recap.md")
+
+    def test_posts_a_message_in_parts_in_its_thread(self):
+        step = self.step("Report the message")
+        self.assertIn(
+            "A long message comes in parts, each within the chat's message limit: `<run>/message.txt` holds the first, and `<run>/message.2.txt`, `<run>/message.3.txt` and so on the next ones.",
+            step,
+        )
+        self.assertIn("Post the first part as the message, then each next part, in order, as a reply in its thread.", step)
     SLUG = "chat-recap"
     SCRIPTS = ("recap", "collect")
     CALL = re.compile(r"/(?:recap|collect)\.py ([a-z-]+)")
