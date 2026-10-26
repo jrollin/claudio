@@ -10,6 +10,7 @@ from datetime import datetime, time, timedelta
 from urllib.parse import urlsplit
 
 import config_tree
+import days
 import providers
 import recap_state
 import recap_window
@@ -513,15 +514,18 @@ def read_session(args, provider, source, transport, store_dir):
         store.check_store_dir(store_dir, f"places.{args.place}.store_dir")
     root = os.path.join(os.path.abspath(args.run), STORE_DIR)
     run = os.path.basename(os.path.normpath(os.path.abspath(args.run)))
+    layer = None if store_dir is None else days.DayLayer(store_dir)
     return store.ReadSession(
-        root, source["provider"], run, args.source, provider["adapter"], transport, runtime=store.runtime_commit(), shared=store_dir
+        root, source["provider"], run, args.source, provider["adapter"], transport, runtime=store.runtime_commit(), shared=store_dir, days=layer
     )
 
 
 def replay_session(args, provider, source, transport, reads):
     root = os.path.join(os.path.abspath(args.run), STORE_DIR)
     run = os.path.basename(os.path.normpath(os.path.abspath(args.run)))
-    return store.ReplaySession(root, source["provider"], run, args.source, provider["adapter"], transport, reads, runtime=store.runtime_commit())
+    return store.ReplaySession(
+        root, source["provider"], run, args.source, provider["adapter"], transport, reads, runtime=store.runtime_commit(), days=days.DayLayer(root)
+    )
 
 
 def reuses_reads(max_age):
@@ -531,7 +535,8 @@ def reuses_reads(max_age):
 
 
 def counted(collection, source, session):
-    return {**collection, "reads": session.counts()} if reuses_reads(source.get("max_age")) else collection
+    reuses = reuses_reads(source.get("max_age")) or source.get("closed_days") is True
+    return {**collection, "reads": session.counts()} if reuses else collection
 
 
 def write_manifest(args, session):

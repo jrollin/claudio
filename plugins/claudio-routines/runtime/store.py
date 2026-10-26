@@ -44,6 +44,7 @@ LONE_SURROGATE = re.compile(r"[\ud800-\udfff]")
 REPLACEMENT = "�"
 UTC_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 GIT_TIMEOUT = 10
+DAY_FETCH = "days"
 DAY_SECONDS = 86400
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -68,7 +69,7 @@ READ_SPEC = {
 MANIFEST_SPEC = {"schema": SCHEMA_ONE, "sources": {"*": {"reads": [state.TEXT], "fetched": COUNT, "reused": COUNT}}}
 
 StoredRead = collections.namedtuple("StoredRead", "folder stored span fetch_id document")
-Reuse = collections.namedtuple("Reuse", "read rows")
+Reuse = collections.namedtuple("Reuse", "read rows spans")
 
 
 class PagePending(Exception):
@@ -238,11 +239,11 @@ def existing_folder(path):
     return path
 
 
-def in_git_repository(path, label):
+def run_git(path, arguments, label):
     environment = {key: value for key, value in os.environ.items() if key not in GIT_LOCATORS}
     try:
-        result = subprocess.run(
-            ["git", "-C", existing_folder(path), "rev-parse", "--git-dir"],
+        return subprocess.run(
+            ["git", "-C", existing_folder(path), *arguments],
             capture_output=True,
             text=True,
             timeout=GIT_TIMEOUT,
@@ -250,12 +251,24 @@ def in_git_repository(path, label):
             env={**environment, "LC_ALL": "C", "LANGUAGE": "C"},
         )
     except (OSError, subprocess.SubprocessError) as error:
-        raise state.InputError(f"{label}: cannot run git to check that the folder lies outside every repository") from error
+        raise state.InputError(f"{label}: cannot run git to check where the folder lies") from error
+
+
+def in_git_repository(path, label):
+    result = run_git(path, ["rev-parse", "--git-dir"], label)
     if result.returncode == 0:
         return True
     if "not a git repository" in result.stderr:
         return False
     raise state.InputError(f"{label}: cannot tell whether the folder lies inside a git repository")
+
+
+def is_git_ignored(path, label):
+    # The trailing separator lets a directory pattern match a folder not created yet.
+    result = run_git(path, ["check-ignore", "--quiet", "--", os.path.join(os.path.abspath(path), "")], label)
+    if result.returncode in (0, 1):
+        return result.returncode == 0
+    raise state.InputError(f"{label}: cannot tell whether git ignores the folder")
 
 
 def check_store_dir(path, label):
@@ -271,8 +284,8 @@ def check_store_dir(path, label):
         raise state.InputError(f"{label}: is not a folder")
     if info is not None and info.st_uid != os.getuid():
         raise state.InputError(f"{label}: belongs to another user")
-    if in_git_repository(path, label):
-        raise state.InputError(f"{label}: lies inside a git working tree, keep the store outside every repository")
+    if in_git_repository(path, label) and not is_git_ignored(path, label):
+        raise state.InputError(f"{label}: lies inside a git working tree that does not ignore it, ignore the folder or keep the store outside every repository")
 
 
 def check_read(document):
@@ -368,7 +381,7 @@ def list_reads(root, folder, needed=None):
 
 
 class ReadSession:
-    def __init__(self, root, provider, run, source, adapter, transport, clock=None, runtime=None, shared=None):
+    def __init__(self, root, provider, run, source, adapter, transport, clock=None, runtime=None, shared=None, days=None):
         if transport not in PAGE_SUFFIXES:
             raise state.Rejected(f"store: unknown transport {transport}")
         if not is_safe(run) or not is_safe(source):
@@ -377,6 +390,8 @@ class ReadSession:
         self.provider = provider
         self.base = os.path.join(root, folder_part("provider", provider))
         self.shared = shared
+        self.days = days
+        self._own_days = set()
         self.shared_base = None if shared is None else os.path.join(shared, folder_part("provider", provider))
         self.run = run
         self.source = source
@@ -428,7 +443,7 @@ class ReadSession:
             if not linked:
                 read = self.link_in(read)
             self._used.setdefault(read.stored, read.fetch_id)
-            reused.append(Reuse(read, rows))
+            reused.append(Reuse(read, rows, [read.span]))
         return sorted(reused, key=lambda use: (use.read.document["fetched_at"], use.read.fetch_id))
 
     def is_fresh(self, read, minutes, window_end):
@@ -476,6 +491,44 @@ class ReadSession:
             rename_read(staging, final)
         finally:
             shutil.rmtree(staging, ignore_errors=True)
+        self.file_by_day(final, handle.stored)
+
+    def file_by_day(self, folder, stored):
+        if self.days is None:
+            return
+        # A published read stays valid when the day layer cannot take it: days.py build files it later.
+        try:
+            written = self.days.merge(folder, load_document(folder))
+        except Exception as error:
+            print(f"days: cannot file {stored} by day: {rejection(error)}", file=sys.stderr)
+            return
+        self._own_days.update(self.days.stored(day) for day in written)
+
+    def closed_days(self, kind, entity, needed, window_end):
+        """Closed-day reuses, each read from the run's own copy so that a replay sees the same rows."""
+        if self.days is None:
+            return []
+        reused = []
+        for stored in self.day_candidates(kind, dict(entity), needed, window_end):
+            folder = self.day_copy(stored)
+            found = None if folder is None else self.days.use(folder, self.transport)
+            if found is None:
+                continue
+            self._used.setdefault(stored, DAY_FETCH)
+            reused.append(Reuse(None, *found))
+        return reused
+
+    def day_candidates(self, kind, entity, needed, window_end):
+        return self.days.closed_folders(self.provider, kind, entity, needed, window_end)
+
+    def day_copy(self, stored):
+        local = os.path.join(self.root, *stored.split("/"))
+        if self.days.holds(local):
+            return local
+        # A day this run filed itself would let a replay reuse what the run fetched.
+        if stored in self._own_days:
+            return None
+        return self.days.link(stored, self.root)
 
     def used(self):
         return list(self._used)
@@ -577,9 +630,15 @@ def request_label(request):
 
 
 class ReplaySession(ReadSession):
-    def __init__(self, root, provider, run, source, adapter, transport, reads, runtime=None):
-        super().__init__(root, provider, run, source, adapter, transport, runtime=runtime)
+    def __init__(self, root, provider, run, source, adapter, transport, reads, runtime=None, days=None):
+        super().__init__(root, provider, run, source, adapter, transport, runtime=runtime, days=days)
         self.recorded = frozenset(reads)
+
+    def day_candidates(self, kind, entity, needed, window_end):
+        return [stored for stored in super().day_candidates(kind, entity, needed, window_end) if stored in self.recorded]
+
+    def day_copy(self, stored):
+        return os.path.join(self.root, *stored.split("/"))
 
     def candidates(self, kind, entity, needed):
         return [read for read in self.reads(kind, entity, needed) if read.stored in self.recorded], []

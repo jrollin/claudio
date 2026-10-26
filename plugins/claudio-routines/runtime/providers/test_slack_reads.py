@@ -5,6 +5,7 @@ import tempfile
 import unittest
 import urllib.parse
 
+import days
 import state
 import store
 from providers import _slack_reads as reads
@@ -149,6 +150,31 @@ class RowsTest(unittest.TestCase):
     def test_refuses_an_unknown_kind(self):
         with self.assertRaises(state.Rejected):
             reads.to_rows("channel", [ITEM])
+
+
+class DayRowTest(unittest.TestCase):
+    def test_files_a_history_row_by_its_ts(self):
+        row = {"ts": "1793059199.999999", "author": "U0A", "text": "hi", "thread_ts": None, "name": "", "bot": False}
+
+        self.assertEqual(reads.day_row("history", {"channel": "C0A"}, row), ("1793059199.999999", "1793059199.999999"))
+
+    def test_files_a_thread_row_by_its_ts(self):
+        row = {"ts": "1793059200.000100", "author": "U0A", "text": "hi", "name": "", "bot": False}
+
+        self.assertEqual(reads.day_row("thread", {"channel": "C0A", "root": "1793000000.000100"}, row), ("1793059200.000100", "1793059200.000100"))
+
+    def test_files_a_search_hit_by_its_message_ts_keyed_by_channel(self):
+        item = {"ts": "1793000000.000200", "author": "U0A", "text": "hi", "thread_ts": None, "name": "", "bot": False}
+        row = {"channel": "C0B", "name": "b", "kind": None, "participants": [], "root": None, "kind_type": None, "item": item}
+
+        self.assertEqual(reads.day_row("search", {"search": "mentions"}, row), ("1793000000.000200", "C0B:1793000000.000200"))
+
+    def test_files_a_reaction_by_the_message_it_reacts_to(self):
+        self.assertEqual(reads.day_row("reactions", {"channel": "C0A", "message": "1793000000.000300"}, {"user": "U0B"}), ("1793000000.000300", "U0B"))
+
+    def test_refuses_a_kind_not_filed_by_day(self):
+        with self.assertRaises(state.Rejected):
+            reads.day_row("members", {"channel": "C0A"}, {"id": "U0A"})
 
 
 class RelayParseTest(unittest.TestCase):
@@ -498,6 +524,78 @@ class ApiReuseTest(ReuseCase):
         api, _ = self.api(opener, max_age={"people": 1440})
 
         self.assertEqual((api.user_name("U1"), opener.requests), ("Ada Example", []))
+
+
+class ClosedDayReuseTest(ReuseCase):
+    DAY = 1759968000
+    NEXT = DAY + 86400
+
+    def filed(self, key, rows, transport="mcp"):
+        root = os.path.join(self.tmp.name, "other", transport)
+        session = store.ReadSession(
+            root, "chat", SHARED_RUN, "channels", "slack", transport, clock=lambda: STORED_AT, runtime=RUNTIME, shared=self.shared, days=days.DayLayer(self.shared)
+        )
+        handle = session.open(*key)
+        handle.page({"tool": "stored"}, fetch=lambda: b"stored page")
+        handle.finish("complete", None, rows)
+
+    def filing_session(self, transport="mcp"):
+        root = os.path.join(self.tmp.name, "run", "store")
+        return store.ReadSession(root, "chat", RUN, "team-chat", "slack", transport, clock=lambda: "2025-10-11T08:00:00Z", runtime=RUNTIME, shared=self.shared, days=days.DayLayer(self.shared))
+
+    def closing(self, window_end=None, closed_days=True, session=None):
+        freshness = reads.Freshness(0, self.NEXT if window_end is None else window_end, closed_days)
+        return reads.RelayReads(session or self.filing_session(), freshness)
+
+    def filed_day(self):
+        self.filed(reads.history_key(CHANNEL, self.DAY, self.NEXT), reads.to_rows("history", [ITEM]))
+
+    def test_needs_no_call_for_a_closed_day_already_filed(self):
+        self.filed_day()
+
+        self.assertEqual(self.closing().history(CHANNEL, START, self.NEXT), [ITEM])
+
+    def test_reads_only_the_span_after_a_filed_closed_day(self):
+        self.filed_day()
+
+        pending = self.pending(lambda: self.closing(window_end=self.NEXT + 3600).history(CHANNEL, START, self.NEXT + 600))
+
+        self.assertEqual((pending.arguments["oldest"], pending.arguments["latest"]), (str(self.NEXT), str(self.NEXT + 600)))
+
+    def test_rereads_a_day_that_is_not_closed(self):
+        self.filed_day()
+
+        pending = self.pending(lambda: self.closing(window_end=self.NEXT - 1).history(CHANNEL, START, self.NEXT))
+
+        self.assertEqual(pending.arguments["oldest"], str(START))
+
+    def test_rereads_a_closed_day_when_closed_day_reuse_is_off(self):
+        self.filed_day()
+
+        pending = self.pending(lambda: self.closing(closed_days=False).history(CHANNEL, START, self.NEXT))
+
+        self.assertEqual(pending.arguments["oldest"], str(START))
+
+    def test_reuses_the_root_and_replies_of_a_thread_on_a_closed_day(self):
+        self.filed(reads.thread_key(CHANNEL, ROOT_TS, None, self.NEXT), reads.to_rows("thread", [THREAD_ROOT, REPLY]))
+
+        self.assertEqual(self.closing().thread(CHANNEL, ROOT_TS, None, self.NEXT), [THREAD_ROOT, REPLY])
+
+    def test_never_reuses_reactions_from_the_day_layer(self):
+        self.filed(reads.reactions_key(CHANNEL, ITEM.ts), reads.to_rows("reactions", ["U1"]))
+
+        pending = self.pending(lambda: self.closing().reactions(CHANNEL, ITEM.ts))
+
+        self.assertEqual(pending.tool, REACTIONS_TOOL)
+
+    def test_an_api_source_rereads_a_closed_day_a_connector_filed(self):
+        self.filed_day()
+        opener = FakeOpener(FakeResponse(json.dumps({"ok": True, "messages": [], "has_more": False}).encode("utf-8")))
+        api = reads.ApiReads(self.filing_session("api"), make_client(opener, sleeps=[]), _Calls(5), reads.Freshness(0, self.NEXT, True))
+
+        api.history(CHANNEL, START, self.NEXT)
+
+        self.assertEqual(len(opener.requests), 1)
 
 
 class MaxAgeTest(unittest.TestCase):

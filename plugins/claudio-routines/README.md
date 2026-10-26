@@ -139,7 +139,7 @@ Routine files and routines inline under `routines` in `config.json` are both acc
 | `places.<place>.runtime_dir` | Where the setup script installs the runtime in that place: absolute, at least two levels below the root, no `.` or `..` component, last component starting with `claudio-runtime` (for example `/opt/claudio-runtime`) |
 | `places.<place>.state_dir` | Absolute path of the private repository checkout in that place |
 | `places.<place>.runs_dir` | Optional. Absolute folder where a run of that place creates its run folder, `<runs_dir>/<slug>/<UTC start time>-<random>`; `/tmp` without it. Raw results hold source content, so keep it in a folder git ignores (for example `/srv/claudio-runs`) |
-| `places.<place>.store_dir` | Optional. Absolute folder of the shared read store of that place, outside every git working tree (for example `/srv/claudio-store`): the runs of the place file their chat reads under `<store_dir>/provider=<key>/` and reuse the fresh ones (see Shared store). Leave it unset on the cloud place |
+| `places.<place>.store_dir` | Optional. Absolute folder of the shared read store of that place, outside every git working tree or inside one that ignores it (for example `/srv/claudio-store`, or a `store-local/` folder listed in the private repository's `.gitignore`): the runs of the place file their chat reads under `<store_dir>/provider=<key>/` and reuse the fresh ones (see Shared store). Leave it unset on the cloud place |
 | `places.<place>.injected_hosts` | Optional. List of plain host names (such as `api.example.test`) whose credentials the place's proxy adds, for example the cloud environment's network secrets. An `api` provider whose `api.base_url` host is listed is usable there without its credential variables, and the client sends no credential header. The code host's host is refused |
 | `providers.<name>` | One provider; sources point at it by `<name>` |
 | `providers.<name>.adapter` | Module name of its adapter under `runtime/providers/` |
@@ -195,6 +195,7 @@ A source also holds the options of its provider's role:
 | Document store | `created_by` | A user id (`me` for the connected user), in place of `page_id` and `pages`: over `mcp` only, the pages that user created in the window, without their blocks; `exclude_paths` drops pages whose path starts with one of its prefixes |
 | Chat channel | `channels` | A non-empty list of channels; the replies of each thread whose root lies in the window are read too |
 | Chat channel | `max_age` | Optional, 0 by default: the minutes before the window end within which a stored read is reused instead of fetched (see Shared store). An integer for every read kind, or an object with `default`, `history`, `thread`, `reactions` and `people` (members and user names), a missing kind taking `default`. Searches are always fetched |
+| Chat channel | `closed_days` | Optional, false by default: with `true`, channel history and thread reads take the closed UTC days already filed in the day layer of the place's `store_dir`, whatever their fetch age, and fetch only the gaps (see Day layer) |
 | Code host | `repos` | A non-empty list of `owner/name` repositories |
 | Code host | `query` | Optional search query; a source with a non-empty one is not read, since neither transport takes a search query |
 | Issue tracker | `filter` | The saved filter id, digits only; a source sets `filter` or `jql`, not both |
@@ -227,7 +228,7 @@ Config checks:
 - `places.cloud` and `places.local` are both required.
 - `places.<place>.runtime_dir`, `places.<place>.state_dir` and, when present, `places.<place>.runs_dir` and `places.<place>.store_dir` match `^(/[A-Za-z0-9._-]+)+/?$`, with no `.` or `..` component, since the template uses them unquoted in shell commands.
 - `places.<place>.runs_dir` and `places.<place>.store_dir` are strings: a relative path or another type fails the config check, naming the key.
-- `collect.py sources` exits 2 naming `places.<place>.store_dir` when that folder is a link, belongs to another user or lies inside a git working tree.
+- `collect.py sources` exits 2 naming `places.<place>.store_dir` when that folder is a link, belongs to another user or lies inside a git working tree that does not ignore it (`git check-ignore` on the folder path with a trailing `/`, so a `store-local/` pattern covers a folder not created yet).
 - A chat source's `max_age` is a non-negative integer, or an object of the keys above with such values: anything else, or an unknown key, fails the load, naming the key path and never the value.
 - A search named `.` or `..` fails the load, since its name becomes a store folder.
 - `places.<place>.injected_hosts` is a list of plain host names matching `^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*$`: another type, a URL or a host with a port fails the config check, naming `places.<place>.injected_hosts`. A code host provider read over `api` at that place whose host is listed fails it too.
@@ -693,6 +694,59 @@ WHERE channel = 'C0123';
 
 `hive_types_autocast = false` keeps the chat ts values as text.
 
+### Day layer
+
+With `places.<place>.store_dir` set, each complete read a run publishes is also filed by message day, under `<store_dir>/days/`. The [store-by-day spec](../../docs/features/store-by-day/) holds the rules.
+
+```text
+<store_dir>/days/provider=<key>/
+  kind=history/year=YYYY/month=MM/day=DD/channel=<channel>/
+  kind=thread/year=YYYY/month=MM/day=DD/channel=<channel>/root=<root ts>/
+  kind=search/year=YYYY/month=MM/day=DD/search=<search name>/
+  kind=reactions/year=YYYY/month=MM/day=DD/channel=<channel>/message=<message ts>/
+```
+
+- The day is the UTC day of the message ts; a reply goes to its own day, a reaction set to the day of its message. Member and user reads are not filed.
+- Each day folder holds `records.jsonl` (the read's rows plus `fetch_id`, `fetched_at` and `transport`, ordered by ts) and `coverage.json` (the spans covered that day, per transport, or the newest fetch of a reaction set).
+- One row per message: the newer fetch wins; a read filed again replaces its own rows, so a reparse followed by `build` fixes the day.
+- A span covering a day with no message still writes that day, with coverage and no row: "read, nothing said" differs from "never read".
+- `failed` and `partial` reads are not filed. Read folders are unchanged.
+- Merges hold `days/.lock`; `records.jsonl` is written before `coverage.json`, each by an atomic rename, so coverage never claims more than the rows hold.
+- A filing error never fails the run: it prints `days: cannot file <read> by day: <reason>` to stderr, and `build` repairs it.
+- The day layer is durable: `store.py prune` never touches it.
+
+A chat source with `closed_days: true` reuses closed days:
+- A day is closed when it ends at or before the window end. Only `history` and `thread` reads are reused this way; reactions keep `max_age`, searches are always fetched.
+- The covered spans of closed days count as fresh whatever their age; the gaps are fetched, as with `max_age`.
+- Trust rule: an `api` source takes `api` spans only, and skips a day folder holding any row fetched over `mcp`.
+- A source skips a day folder its own reads filed during the run, unless it reused that folder earlier in the run.
+- A reused day folder is linked into `<run>/store/days/` and listed in the manifest as `days/...`, so the run replays alone, from that copy.
+- Messages edited or deleted after the stored fetch are not seen.
+- The collection and run record hold `reads`, as with `max_age`.
+
+Commands, from `runtime/`:
+
+```text
+python3 days.py build --root STORE_DIR [--provider P] [--kind K] [--from UTC_TIME] [--to UTC_TIME]
+python3 days.py show  --root STORE_DIR --date YYYY-MM-DD [--to YYYY-MM-DD] [--provider P] [--kind K] [--channel C] [--records]
+python3 days.py prune --root STORE_DIR --older-than-days N [--dry-run]
+```
+
+- `build` files every complete read under the root, with no network: the backfill of reads published before the day layer, and the repair after a `reparse`. It prints `<provider> <kind> reads <N> days <M>`, and is idempotent.
+- `show` prints, per day, one line per entity: `full`, `partial` followed by its uncovered spans (`<from>_<to>`), or `read <fetch time>` for a reaction set; an entity never read is absent. `--records` prints the rows instead, as JSON lines with the path values added.
+- `prune` deletes the day folders whose day ended more than N days ago, whatever their fetch time, and prints `<provider> deleted <N> kept <M>`. A run's linked copy survives.
+- A malformed date, an end before the start, or a root that is not a folder exits 2.
+
+DuckDB, one table per kind, the path values as columns:
+
+```sql
+SELECT year, month, day, channel, ts, author, text
+FROM read_json('<store_dir>/days/provider=chat/kind=history/*/*/*/*/records.jsonl',
+               hive_partitioning = true,
+               hive_types_autocast = false)
+WHERE year = '2026' AND month = '10' AND day = '26';
+```
+
 ## Offline replay
 
 A run folder holds its window, its state, its raw results, its run store, its manifest and its judgment, so the run's result can be rebuilt offline to test a change to a parser, an evaluator or the digest.
@@ -800,8 +854,11 @@ Record text written by other people (messages, titles) reaches a model that hold
 | A source is not read with `partial: call cap` | Its relay loop reached 50 calls | Narrow the source's queries, or set its transport to `api` for that place |
 | `replay` exits 3 with `a read the run did not make` | The walk asks a read the run's manifest does not list: the config, the window or the walk changed since the run | Replay with the config and the runtime of the run; to check a parser change alone, use `store.py reparse` |
 | `replay` exits 2 with `holds no manifest.json` | The run folder holds a store-backed source but no manifest: it was written by a runtime without the read store, or the run stopped before its collections | Replay it with the runtime tag that wrote it |
-| `collect.py sources` exits 2 naming `places.<place>.store_dir` | The folder is a link, belongs to another user, or lies inside a git working tree | Point `store_dir` at a folder you own, outside every repository |
+| `collect.py sources` exits 2 naming `places.<place>.store_dir` | The folder is a link, belongs to another user, or lies inside a git working tree that does not ignore it | Point `store_dir` at a folder you own, outside every repository, or add the folder to that repository's `.gitignore` |
 | A source with `max_age` still fetches its whole span | No stored read is eligible: older than `max_age`, fetched after the window end by another run, not complete, a connector read for an `api` source, or another provider key | Read the `read.json` of the stored reads, or raise `max_age` for that kind |
 | `store_dir` keeps growing | Only `prune` deletes reads | Run `store.py prune --root <store_dir> --older-than-days N` |
+| `<store_dir>/days` keeps growing | `store.py prune` leaves the day layer alone | Run `days.py prune --root <store_dir> --older-than-days N` |
+| A run prints `days: cannot file <read> by day` | The day layer could not take the read; the read is published | Fix the cause, then run `days.py build --root <store_dir>` |
+| A source with `closed_days` still fetches a past day | The day is not closed at the window end, no read filed it, its coverage has gaps, or it holds an `mcp` row for an `api` source | Run `days.py show --root <store_dir> --date <day>` |
 | A source is not read with `plan not done` | The relay loop stopped before `plan` returned `done`: a missing connector, or the run stopped relaying | Fix the connector, then run again |
 | `plan` prints the same call again after the model made it | The hook captured nothing for it: the session did not start in `$CLAUDIO_PRIVATE_DIR`, so Claude Code never loaded the hook, or the hook is not in `.claude/settings.json`, `CLAUDIO_RUNTIME_DIR` is wrong for the place, the capture folder is a link or belongs to another user, or the arguments differ from the printed ones (`plan` then prints a `relay capture mismatch` line) | Read `errors.log` in the capture folder and the `relay capture mismatch` line of the error output: it names the paths where the call differs, never their values, and a line that names identity paths such as `channel_id` or `message_ts` usually points at another source's capture when several sources relay in parallel (a known false positive). Fix the hook settings, or save that result by hand as the template says |

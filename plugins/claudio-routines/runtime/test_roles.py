@@ -3167,6 +3167,23 @@ class StoreDirConfigTest(ConfigCase):
         self.assertNotIn("private-store-name", self.config_error(store_config("private-store-name")))
 
 
+def closing_config(closed_days):
+    config = make_config()
+    routine_sources(config)["chat"]["closed_days"] = closed_days
+    return config
+
+
+class ClosedDaysConfigTest(ConfigCase):
+    def test_accepts_closed_day_reuse_turned_on(self):
+        self.assertIsNone(roles.validate_config(closing_config(True), ROUTINE, "local", role_of))
+
+    def test_accepts_closed_day_reuse_turned_off(self):
+        self.assertIsNone(roles.validate_config(closing_config(False), ROUTINE, "local", role_of))
+
+    def test_rejects_a_value_that_is_not_a_boolean(self):
+        self.assert_config_error(closing_config("yes"), CHAT_PATH + ".closed_days")
+
+
 class MaxAgeConfigTest(ConfigCase):
     def test_accepts_minutes_for_every_kind(self):
         self.assertIsNone(roles.validate_config(aging_config(60), ROUTINE, "local", role_of))

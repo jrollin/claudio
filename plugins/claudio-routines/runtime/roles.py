@@ -181,6 +181,7 @@ ROLE_OPTIONS = {
         "owner": Omittable(TEXT),
         "searches": Omittable(ListOf(ANY, non_empty=True)),
         "reactions": Omittable(BOOLEAN),
+        "closed_days": Omittable(BOOLEAN),
         "search_page_cap": Omittable(Rule(lambda value: is_integer(value) and value >= 1, "must be an integer of at least 1")),
         "call_cap": Omittable(Rule(lambda value: is_integer(value) and 1 <= value <= CALL_CAP_MAX, f"must be an integer from 1 to {CALL_CAP_MAX}")),
         "max_age": Omittable(

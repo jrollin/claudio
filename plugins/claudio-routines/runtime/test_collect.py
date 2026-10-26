@@ -16,6 +16,7 @@ import providers
 import relay_capture
 import roles
 import state
+import days
 import store
 from support import RELAY_START_NS, isolate_relay, publication_values
 from providers._http import PAGE_CAP, PartialRead, SourceUnreadable
@@ -529,6 +530,12 @@ class SourcesStoreDirTest(CollectTestCase):
 
     def test_accepts_a_store_dir_outside_every_repository(self):
         self.assertEqual(self.sources_with(self.path("store"))[0], 0)
+
+    def test_accepts_a_git_ignored_store_dir_inside_a_working_tree(self):
+        subprocess.run(["git", "init", "--quiet", self.path("repository")], check=True)
+        with open(self.path("repository/.gitignore"), "w", encoding="utf-8") as handle:
+            handle.write("store-local/\n")
+        self.assertEqual(self.sources_with(self.path("repository/store-local"))[0], 0)
 
     def test_refuses_a_store_dir_inside_a_git_working_tree(self):
         subprocess.run(["git", "init", "--quiet", self.path("repository")], check=True)
@@ -2126,6 +2133,14 @@ class StoreRelayTest(TribeChatCase):
         self.parse(source="team-chat")
         self.assertTrue(os.path.isfile(self.shared_read(call)))
 
+    def test_files_a_published_read_by_day_in_the_store_dir(self):
+        self.config["places"]["cloud"]["store_dir"] = self.path("shared")
+        call = self.first_call()
+        answer_planned({"calls": [call]}, CHAT_LISTING)
+        self.plan(source="team-chat")
+        self.parse(source="team-chat")
+        self.assertTrue(os.path.isdir(self.path(os.path.join("shared", days.DAYS_DIR, "provider=chat", "kind=history"))))
+
     def test_keeps_the_reads_in_the_run_store_without_a_store_dir(self):
         call = self.first_call()
         answer_planned({"calls": [call]}, CHAT_LISTING)
@@ -2250,6 +2265,34 @@ class StoreReplayTest(StoreRelayTest):
     def test_counts_a_partial_reuse_in_the_collection(self):
         self.reuse_another_runs_read(first_end=WINDOW_END - 1800)
         self.assertEqual(self.collection()["reads"], {"fetched": 1, "reused": 1})
+
+    def reuse_a_closed_day(self, closed_days=True):
+        day_end = (WINDOW_END // 86400 + 1) * 86400
+        self.config["places"]["cloud"]["store_dir"] = self.path("shared")
+        self.window = {**self.window, "to_ts": day_end}
+        self.relay_run("first", self.path("first.json"))
+        self.config["routines"][ROUTINE]["sources"]["team-chat"]["closed_days"] = closed_days
+        self.reuse_run("plan", self.path("plan.json"), RUN)
+        self.relay_run(RUN, self.path("collection.json"))
+
+    def test_a_later_run_reuses_a_closed_day_without_a_call(self):
+        self.reuse_a_closed_day()
+        self.assertEqual((self.plan_doc()["calls"], self.collection()["reads"]), ([], {"fetched": 0, "reused": 1}))
+
+    def test_lists_the_reused_day_in_the_manifest(self):
+        self.reuse_a_closed_day()
+        self.assertTrue(self.manifest()["sources"]["team-chat"]["reads"][0].startswith("days/provider=chat/kind=history/"))
+
+    def test_a_later_run_reads_a_closed_day_again_without_closed_day_reuse(self):
+        self.reuse_a_closed_day(closed_days=False)
+        self.assertNotEqual(self.plan_doc()["calls"], [])
+
+    def test_replays_a_source_that_reused_a_closed_day_byte_for_byte(self):
+        self.reuse_a_closed_day()
+        shutil.rmtree(self.path("shared"))
+        self.assertEqual(self.replay()[0], 0)
+        with open(self.path("collection.json"), "rb") as run, open(self.path("replayed/team-chat.json"), "rb") as replayed:
+            self.assertEqual(replayed.read(), run.read())
 
     def test_counts_reads_without_reuse_when_max_age_is_set(self):
         self.config["routines"][ROUTINE]["sources"]["team-chat"]["max_age"] = {"history": 60}

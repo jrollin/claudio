@@ -341,7 +341,7 @@ store.merge_newest(groups, key) -> [record]                # BR-5, groups ordere
 
 ### Security
 
-- `store_dir`: created 0700, files 0600, refused when it is a link, belongs to another user, or lies inside a git working tree (BR-6, AC-6.3, AC-6.4).
+- `store_dir`: created 0700, files 0600, refused when it is a link, belongs to another user, or lies inside a git working tree that does not ignore it (BR-6, AC-6.3, AC-6.4).
 - Path parts come from tool output (channel ids from search hits, user ids, ts): each must match a strict pattern (ids `[A-Z0-9]{1,32}`, ts `[0-9]{1,16}\.[0-9]{1,9}`) before it reaches a path, else the read fails with `invalid entity id`. No `/`, `.` or `..` part is ever built from tool text.
 - A search name is config text (any label): its folder is the name percent-encoded with no safe character, and a name `.` or `..` fails the config load.
 - Trust: an `api` source never reads records parsed from connector text (BR-7), so a forged connector message cannot reach it through the store.

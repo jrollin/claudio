@@ -14,6 +14,7 @@ import unittest
 from datetime import datetime, timezone
 from unittest import mock
 
+import days
 import state
 import store
 from providers import slack
@@ -674,6 +675,107 @@ class SharedStoreCase(StoreCase):
         return os.path.join(self.shared, f"provider={provider}", store.INCOMING)
 
 
+class DayHookTest(SharedStoreCase):
+    def filing(self):
+        return store.ReadSession(self.root, "chat", RUN, "channels", "slack", "mcp", clock=lambda: FETCHED_AT, shared=self.shared, days=days.DayLayer(self.shared))
+
+    def test_files_a_published_read_by_day(self):
+        self.finished(self.filing())
+
+        self.assertTrue(os.path.isfile(os.path.join(self.shared, days.DAYS_DIR, "provider=chat", "kind=history", "year=2026", "month=10", "day=19", "channel=C0TRIBE1", days.RECORDS_FILE)))
+
+    def test_files_nothing_by_day_without_a_day_layer(self):
+        self.finished(self.sharing())
+
+        self.assertFalse(os.path.exists(os.path.join(self.shared, days.DAYS_DIR)))
+
+    def test_keeps_the_read_published_when_filing_by_day_fails(self):
+        os.makedirs(self.shared)
+        open(os.path.join(self.shared, days.DAYS_DIR), "w").close()
+        with contextlib.redirect_stderr(io.StringIO()) as stderr:
+            handle = self.finished(self.filing())
+
+        self.assertEqual((os.path.isfile(os.path.join(self.shared_folder(handle), store.READ_FILE)), "days:" in stderr.getvalue()), (True, True))
+
+
+class ClosedDaysTest(SharedStoreCase):
+    DAY_19 = 1792368000
+    DAY_SPAN = (str(DAY_19), str(DAY_19 + 86400))
+    STORED_DAY = f"{days.DAYS_DIR}/provider=chat/kind=history/year=2026/month=10/day=19/channel=C0TRIBE1"
+    NEEDED = (str(DAY_19 + 100), str(DAY_19 + 86400 + 100))
+    WINDOW_END = DAY_19 + 2 * 86400
+
+    def filing(self, run=OTHER_RUN, root=None):
+        return store.ReadSession(
+            root or os.path.join(self.tmp.name, "runs", run), "chat", run, "channels", "slack", "mcp", clock=lambda: FETCHED_AT, shared=self.shared, days=days.DayLayer(self.shared)
+        )
+
+    def earlier_read(self):
+        self.finished(self.filing(), span=self.DAY_SPAN)
+
+    def mine(self):
+        return self.filing(run=RUN, root=self.root)
+
+    def test_reuses_a_closed_day_another_run_filed(self):
+        self.earlier_read()
+
+        reused = self.mine().closed_days("history", HISTORY, self.NEEDED, self.WINDOW_END)
+
+        self.assertEqual([(use.rows, use.spans) for use in reused], [(RECORDS, [self.DAY_SPAN])])
+
+    def test_counts_a_reused_day_as_reused(self):
+        self.earlier_read()
+        session = self.mine()
+
+        session.closed_days("history", HISTORY, self.NEEDED, self.WINDOW_END)
+
+        self.assertEqual((session.used(), session.counts()), ([self.STORED_DAY], {"fetched": 0, "reused": 1}))
+
+    def test_links_the_reused_day_into_the_run_store(self):
+        self.earlier_read()
+
+        self.mine().closed_days("history", HISTORY, self.NEEDED, self.WINDOW_END)
+
+        self.assertTrue(os.path.isfile(os.path.join(self.root, *self.STORED_DAY.split("/"), days.RECORDS_FILE)))
+
+    def test_reuses_nothing_without_a_day_layer(self):
+        self.earlier_read()
+
+        self.assertEqual(self.sharing().closed_days("history", HISTORY, self.NEEDED, self.WINDOW_END), [])
+
+    def test_skips_a_day_its_own_publish_filed(self):
+        session = self.mine()
+        self.finished(session, span=self.DAY_SPAN)
+
+        self.assertEqual(session.closed_days("history", HISTORY, self.NEEDED, self.WINDOW_END), [])
+
+    def test_keeps_reusing_its_linked_copy_after_its_own_publish(self):
+        self.earlier_read()
+        session = self.mine()
+        session.closed_days("history", HISTORY, self.NEEDED, self.WINDOW_END)
+        self.finished(session, span=self.DAY_SPAN, records=[])
+
+        self.assertEqual([use.rows for use in session.closed_days("history", HISTORY, self.NEEDED, self.WINDOW_END)], [RECORDS])
+
+    def replaying(self, recorded):
+        return store.ReplaySession(self.root, "chat", RUN, "channels", "slack", "mcp", recorded, days=days.DayLayer(self.root))
+
+    def test_replay_reuses_the_recorded_copy(self):
+        self.earlier_read()
+        self.mine().closed_days("history", HISTORY, self.NEEDED, self.WINDOW_END)
+        shutil.rmtree(self.shared)
+
+        reused = self.replaying([self.STORED_DAY]).closed_days("history", HISTORY, self.NEEDED, self.WINDOW_END)
+
+        self.assertEqual([use.rows for use in reused], [RECORDS])
+
+    def test_replay_ignores_a_day_copy_the_run_did_not_record(self):
+        self.earlier_read()
+        self.mine().closed_days("history", HISTORY, self.NEEDED, self.WINDOW_END)
+
+        self.assertEqual(self.replaying([]).closed_days("history", HISTORY, self.NEEDED, self.WINDOW_END), [])
+
+
 class PublishTest(SharedStoreCase):
     def test_publishes_a_finished_read_to_the_shared_store(self):
         handle = self.finished(self.sharing())
@@ -908,6 +1010,28 @@ class StoreDirCheckTest(StoreCase):
 
         self.assertTrue(self.refusal(os.path.join(repository, "store", "chat")).startswith(self.LABEL + ": "))
 
+    def ignoring(self, pattern):
+        repository = os.path.join(self.tmp.name, "repository")
+        subprocess.run(["git", "init", "--quiet", repository], check=True)
+        pathlib.Path(repository, ".gitignore").write_text(pattern + "\n", encoding="utf-8")
+        return repository
+
+    def test_accepts_a_git_ignored_folder_inside_a_working_tree(self):
+        repository = self.ignoring("store-local/")
+        os.mkdir(os.path.join(repository, "store-local"), 0o700)
+
+        self.assertIsNone(store.check_store_dir(os.path.join(repository, "store-local"), self.LABEL))
+
+    def test_accepts_a_git_ignored_folder_that_does_not_exist_yet(self):
+        repository = self.ignoring("store-local/")
+
+        self.assertIsNone(store.check_store_dir(os.path.join(repository, "store-local"), self.LABEL))
+
+    def test_refuses_a_folder_git_ignores_only_in_part(self):
+        repository = self.ignoring("store-local/*.json")
+
+        self.assertTrue(self.refusal(os.path.join(repository, "store-local")).startswith(self.LABEL + ": "))
+
     def test_never_shows_the_path_in_a_refusal(self):
         pathlib.Path(self.shared).write_text("", encoding="utf-8")
 
@@ -981,6 +1105,11 @@ class EligibleTest(EligibleCase):
         self.stored()
 
         self.assertEqual([(use.read.fetch_id, use.rows) for use in self.eligible()], [(OTHER_RUN + ".channels", RECORDS)])
+
+    def test_gives_the_span_of_a_reused_read(self):
+        self.stored()
+
+        self.assertEqual([use.spans for use in self.eligible()], [[SPAN]])
 
     def test_reuses_nothing_with_a_max_age_of_zero(self):
         self.stored()

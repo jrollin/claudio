@@ -104,7 +104,7 @@ THE runs of that place save their Slack reads under `<store_dir>/provider=<key>/
 **Acceptance Criteria:**
 - [ ] `store_dir` follows the path rules of `runs_dir`; anything else fails the config check, naming `places.<place>.store_dir` *(AC-6.1)*
 - [ ] Without `store_dir`, the store root stays `<run>/store`; the cloud place leaves it unset *(AC-6.2)*
-- [ ] A `store_dir` inside a git working tree makes `collect.py sources` exit 2, naming the key, per BR-6 *(AC-6.3)*
+- [ ] A `store_dir` inside a git working tree that does not ignore it makes `collect.py sources` exit 2, naming the key, per BR-6 *(AC-6.3)*
 - [ ] Folders are created with mode 0700 and files with 0600; a store folder that is a link or belongs to another user is refused *(AC-6.4)*
 - [ ] Two runs writing at the same time never expose a partial read, per BR-3 *(AC-6.5)*
 - [ ] A run hard-links, or copies when the filesystems differ, every file of the reads in its manifest into `<run>/store`, so its run folder replays alone (US-5) *(AC-6.6)*
@@ -153,7 +153,7 @@ THE command deletes the reads fetched before that age, and every kept run folder
 - A read becomes visible when its `read.json` exists, and its pages and `records.jsonl` are written before it *(BR-3)*
 - Phase 1 changes no byte of any collection, feature, state, run record, digest or message, for the same raw responses *(BR-4)*
 - When two reads hold the same message ts, the record of the newer fetch wins *(BR-5)*
-- The store holds text written by other people: it lives outside every git working tree and is never pushed, as routines-as-code BR-70 requires of raw results *(BR-6)*
+- The store holds text written by other people: it lives outside every git working tree, or inside one that ignores it, and is never pushed, as routines-as-code BR-70 requires of raw results *(BR-6)*
 - An `api` source reuses only reads made over `api`; an `mcp` source reuses reads of either transport *(BR-7)*
 - Only complete reads are reused *(BR-8)*
 - Search pages are never reused *(BR-9)*
@@ -177,6 +177,7 @@ THE command deletes the reads fetched before that age, and every kept run folder
 ## Open Questions
 
 None open. Settled before design:
+- Amended 2026-10-26 (owner): a `store_dir` inside a working tree is accepted when git ignores it, as `runs_dir` already is, so the store can sit under the private repository (store-by-day).
 - Store lifetime: per run (phase 1) and a persistent local store (phase 2) (owner, 2026-10-20).
 - Transports: `api` and `mcp` both (owner, 2026-10-20).
 - Freshness: set per source and per data kind by its reader, `max_age` 0 by default (owner, 2026-10-20).

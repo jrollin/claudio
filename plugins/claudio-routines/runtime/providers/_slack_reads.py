@@ -56,10 +56,11 @@ SLACK_ID = re.compile(r"[A-Z0-9]{1,32}")
 MESSAGE_TS = re.compile(r"[0-9]{1,16}\.[0-9]{1,9}")
 RECORD_KEYS = ("response", "error")
 ERROR_KEYS = ("class", "message", "status")
+CLOSED_KINDS = ("history", "thread")
 AGE_KEYS = {"history": "history", "thread": "thread", "reactions": "reactions", "members": "people", "users": "people"}
 
 ReadKey = collections.namedtuple("ReadKey", "kind entity span")
-Freshness = collections.namedtuple("Freshness", "max_age window_end")
+Freshness = collections.namedtuple("Freshness", "max_age window_end closed_days", defaults=(False,))
 
 MESSAGE_ROW = {"ts": state.TEXT, "author": state.TEXT, "text": state.TEXT, "name": state.TEXT, "bot": state.BOOLEAN}
 THREADED_ROW = {**MESSAGE_ROW, "thread_ts": state.Nullable(state.TEXT)}
@@ -168,6 +169,21 @@ ROW_READERS = {
     "members": lambda entity, row: row["id"],
     "users": lambda entity, row: row["name"],
 }
+
+
+DAY_KINDS = {"history": "span", "thread": "span", "search": "span", "reactions": "snapshot"}
+DAY_ROWS = {
+    "history": lambda entity, row: (row["ts"], row["ts"]),
+    "thread": lambda entity, row: (row["ts"], row["ts"]),
+    "search": lambda entity, row: (row["item"]["ts"], f"{row['channel']}:{row['item']['ts']}"),
+    "reactions": lambda entity, row: (entity["message"], row["user"]),
+}
+
+
+def day_row(kind, entity, row):
+    if kind not in DAY_ROWS:
+        raise state.Rejected(f"slack read: kind {kind} is not filed by day")
+    return DAY_ROWS[kind](entity, row)
 
 
 def to_rows(kind, records):
@@ -328,11 +344,12 @@ def _needed(key, item):
 
 
 def _gap_spans(key, reused):
+    spans = [span for use in reused for span in use.spans]
     if key.kind != "thread":
-        return store.gaps(key.span, [use.read.span for use in reused])
+        return store.gaps(key.span, spans)
     root = dict(key.entity)["root"]
     after_root = lambda span: (max(span[0], root, key=decimal.Decimal), span[1])
-    gaps = store.gaps(after_root(key.span), [after_root(use.read.span) for use in reused])
+    gaps = store.gaps(after_root(key.span), [after_root(span) for span in spans])
     return [(gaps[0][0], key.span[1])] if gaps else []
 
 
@@ -342,10 +359,15 @@ class _Reads:
         self.freshness = freshness
 
     def _reused(self, key):
-        age = 0 if self.freshness is None else minutes(self.freshness.max_age, key.kind)
-        if age <= 0:
+        if self.freshness is None:
             return []
-        return self.session.eligible(key.kind, key.entity, key.span, age, self.freshness.window_end)
+        found = []
+        if self.freshness.closed_days and key.kind in CLOSED_KINDS:
+            found.extend(self.session.closed_days(key.kind, key.entity, key.span, self.freshness.window_end))
+        age = minutes(self.freshness.max_age, key.kind)
+        if age > 0:
+            found.extend(self.session.eligible(key.kind, key.entity, key.span, age, self.freshness.window_end))
+        return found
 
     def _spanned(self, key, fresh, gap_read):
         reused = self._reused(key)

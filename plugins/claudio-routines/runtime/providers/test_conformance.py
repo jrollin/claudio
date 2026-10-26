@@ -48,6 +48,14 @@ class ConformanceTest(unittest.TestCase):
 
         self.assertEqual(missing, [])
 
+    def test_every_day_filing_adapter_exposes_both_day_hooks(self):
+        unpaired = [name for name, module in adapters().items() if hasattr(module, "DAY_KINDS") != callable(getattr(module, "day_row", None))]
+
+        self.assertEqual(unpaired, [])
+
+    def test_slack_files_messages_by_day_and_reactions_as_snapshots(self):
+        self.assertEqual(adapters()["slack"].DAY_KINDS, {"history": "span", "thread": "span", "search": "span", "reactions": "snapshot"})
+
     def test_slack_files_its_reads_in_the_store(self):
         self.assertIs(adapters()["slack"].STORE, True)
 

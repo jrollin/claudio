@@ -22,6 +22,8 @@ ROOT_TS = re.compile(r"[0-9]{1,16}\.[0-9]{1,9}")
 
 parse_read = _slack_reads.parse_read
 to_rows = _slack_reads.to_rows
+DAY_KINDS = _slack_reads.DAY_KINDS
+day_row = _slack_reads.day_row
 
 
 def api_client(provider, opener=None, environ=None, sleep=None):
@@ -42,7 +44,7 @@ def fetch(source, window, cursor, entries, session):
 
 
 def _freshness(source, window):
-    return Freshness(source.get("max_age"), window["to_ts"])
+    return Freshness(source.get("max_age"), window["to_ts"], source.get("closed_days", False))
 
 
 def _channels(source):
