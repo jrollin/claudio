@@ -172,6 +172,9 @@ class DayRowTest(unittest.TestCase):
     def test_files_a_reaction_by_the_message_it_reacts_to(self):
         self.assertEqual(reads.day_row("reactions", {"channel": "C0A", "message": "1793000000.000300"}, {"user": "U0B"}), ("1793000000.000300", "U0B"))
 
+    def test_dates_a_reaction_set_by_its_message_without_a_row(self):
+        self.assertEqual(reads.snapshot_ts("reactions", {"channel": "C0A", "message": "1793000000.000300"}), "1793000000.000300")
+
     def test_refuses_a_kind_not_filed_by_day(self):
         with self.assertRaises(state.Rejected):
             reads.day_row("members", {"channel": "C0A"}, {"id": "U0A"})

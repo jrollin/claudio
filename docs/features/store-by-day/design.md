@@ -135,7 +135,7 @@ graph LR
 
 ### TD-10: Provider-neutral store code, adapter hooks
 
-**Choice**: an adapter declares `DAY_KINDS = {kind: "span" | "snapshot"}` and `day_row(kind, entity, row) -> (ts, key)`. An adapter without `DAY_KINDS` gets no day layer.
+**Choice**: an adapter declares `DAY_KINDS = {kind: "span" | "snapshot"}` and `day_row(kind, entity, row) -> (ts, key)`, plus `snapshot_ts(kind, entity) -> ts` when it has a snapshot kind, so a snapshot with no row still has a day. An adapter without `DAY_KINDS` gets no day layer.
 **Alternatives considered**:
 - Slack logic inside `days.py`: rejected, the next provider would fork it.
 **Rationale**: the next provider that moves to the read store adds two hooks.

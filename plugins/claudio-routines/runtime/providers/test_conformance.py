@@ -53,6 +53,11 @@ class ConformanceTest(unittest.TestCase):
 
         self.assertEqual(unpaired, [])
 
+    def test_every_adapter_with_a_snapshot_kind_dates_it_without_a_row(self):
+        missing = [name for name, module in adapters().items() if "snapshot" in getattr(module, "DAY_KINDS", {}).values() and not callable(getattr(module, "snapshot_ts", None))]
+
+        self.assertEqual(missing, [])
+
     def test_slack_files_messages_by_day_and_reactions_as_snapshots(self):
         self.assertEqual(adapters()["slack"].DAY_KINDS, {"history": "span", "thread": "span", "search": "span", "reactions": "snapshot"})
 

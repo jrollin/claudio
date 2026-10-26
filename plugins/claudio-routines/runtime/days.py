@@ -105,6 +105,8 @@ class DayLayer:
         found = {}
         if style == SPAN and span is not None:
             found = {day: [] for day in span_days((span["from"], span["to"]))}
+        if style == SNAPSHOT:
+            found = {day_of(adapter.snapshot_ts(document["kind"], entity)): []}
         for row in rows:
             ts, _ = adapter.day_row(document["kind"], entity, row)
             found.setdefault(day_of(ts), []).append(row)

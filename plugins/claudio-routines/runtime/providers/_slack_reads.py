@@ -176,8 +176,15 @@ DAY_ROWS = {
     "history": lambda entity, row: (row["ts"], row["ts"]),
     "thread": lambda entity, row: (row["ts"], row["ts"]),
     "search": lambda entity, row: (row["item"]["ts"], f"{row['channel']}:{row['item']['ts']}"),
-    "reactions": lambda entity, row: (entity["message"], row["user"]),
+    "reactions": lambda entity, row: (snapshot_ts("reactions", entity), row["user"]),
 }
+SNAPSHOT_TS = {"reactions": "message"}
+
+
+def snapshot_ts(kind, entity):
+    if kind not in SNAPSHOT_TS:
+        raise state.Rejected(f"slack read: kind {kind} is not a snapshot filed by day")
+    return entity[SNAPSHOT_TS[kind]]
 
 
 def day_row(kind, entity, row):

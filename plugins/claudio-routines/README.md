@@ -709,7 +709,7 @@ With `places.<place>.store_dir` set, each complete read a run publishes is also 
 - The day is the UTC day of the message ts; a reply goes to its own day, a reaction set to the day of its message. Member and user reads are not filed.
 - Each day folder holds `records.jsonl` (the read's rows plus `fetch_id`, `fetched_at` and `transport`, ordered by ts) and `coverage.json` (the spans covered that day, per transport, or the newest fetch of a reaction set).
 - One row per message: the newer fetch wins; a read filed again replaces its own rows, so a reparse followed by `build` fixes the day.
-- A span covering a day with no message still writes that day, with coverage and no row: "read, nothing said" differs from "never read".
+- A span covering a day with no message still writes that day, with coverage and no row, and so does a message with no reaction: "read, nothing said" differs from "never read".
 - `failed` and `partial` reads are not filed. Read folders are unchanged.
 - Merges hold `days/.lock`; `records.jsonl` is written before `coverage.json`, each by an atomic rename, so coverage never claims more than the rows hold.
 - A filing error never fails the run: it prints `days: cannot file <read> by day: <reason>` to stderr, and `build` repairs it.

@@ -24,6 +24,7 @@ parse_read = _slack_reads.parse_read
 to_rows = _slack_reads.to_rows
 DAY_KINDS = _slack_reads.DAY_KINDS
 day_row = _slack_reads.day_row
+snapshot_ts = _slack_reads.snapshot_ts
 
 
 def api_client(provider, opener=None, environ=None, sleep=None):

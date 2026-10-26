@@ -36,6 +36,7 @@ THE store merges the read's records into the day folders of the UTC days its rec
 - [ ] A `search` hit lands under `kind=search/year=/month=/day=/search=<search name>/`, by the hit's message ts *(AC-1.3)*
 - [ ] A `reactions` read lands under `kind=reactions/year=/month=/day=/channel=<channel>/message=<message ts>/`, by the day of the message it reacts to *(AC-1.4)*
 - [ ] `members` and `users` reads get no day folder *(AC-1.5)*
+- [ ] A `reactions` read with no reaction still writes its message's day folder, holding its snapshot coverage and no record *(AC-1.12)*
 - [ ] A message at `1793059199.999999` (2026-10-26T23:59:59Z) lands in `day=26`, one at `1793059200.000000` in `day=27` *(AC-1.6)*
 - [ ] A `failed` or `partial` read adds nothing to the day layer *(AC-1.7)*
 - [ ] A `history`, `thread` or `search` read covering a day with no record still writes that day's folder, holding its coverage and no record (US-3) *(AC-1.8)*

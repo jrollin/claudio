@@ -112,6 +112,13 @@ class FileByDayTest(DayCase):
         folder = f"provider=chat/kind=reactions/year=2026/month=10/day=26/channel=C0TRIBE1/message={DAY_26 + 30}.000100"
         self.assertEqual([row["user"] for row in self.rows(folder)], ["U0BOB"])
 
+    def test_files_an_empty_reaction_set_under_the_day_of_its_message(self):
+        entity = (("channel", "C0TRIBE1"), ("message", f"{DAY_26 + 30}.000100"))
+        self.merged([], kind="reactions", entity=entity, span=None)
+
+        folder = f"provider=chat/kind=reactions/year=2026/month=10/day=26/channel=C0TRIBE1/message={DAY_26 + 30}.000100"
+        self.assertEqual((self.rows(folder), self.coverage(folder)["snapshot"]["fetch_id"]), ([], f"{RUN}.channels"))
+
     def test_files_no_members_read(self):
         self.merged([{"id": "U0BOB"}], kind="members", span=None)
 
