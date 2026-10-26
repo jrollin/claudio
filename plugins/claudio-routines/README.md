@@ -715,6 +715,27 @@ With `places.<place>.store_dir` set, each complete read a run publishes is also 
 - A filing error never fails the run: it prints `days: cannot file <read> by day: <reason>` to stderr, and `build` repairs it.
 - The day layer is durable: `store.py prune` never touches it.
 
+The other providers have no read store: their collections are filed by day instead, after `collect.py fetch` or `parse` writes them, when the place sets `store_dir` (never on a replay, never for a source not read):
+
+```text
+<store_dir>/days/provider=<key>/kind=<record kind>/year=YYYY/month=MM/day=DD/
+```
+
+| Adapter | Kinds | Day | Key |
+|---|---|---|---|
+| issue tracker | `issues` | `updated` | issue key |
+| code host | `pull_requests`, `issues` | `updated_at` | repository and number |
+| code host | `activity` | `at` | repository, number, kind, author, time |
+| document store | `pages` (with their blocks) | `last_edited` | page id |
+| observability | `monitors`, `discovered` | window end | monitor id |
+| observability | `transitions` | `last_ts_ms` | routine, source, monitor |
+| observability | `metrics` | window end | routine, source, entry key |
+
+- Rows carry `fetch_id`, `fetched_at`, `routine`, `source` and `transport`; the newest fetch wins per key, so a day holds each issue, pull request or page once, as last seen.
+- Transitions and metrics depend on the routine's window and query pack, so their key holds the routine and source: two routines never overwrite each other.
+- `coverage.json` lists the fetches of the day (`fetches`), no span: a collection covers its source's scope, not the whole provider, so these days are never reused. `show` prints `fetches <N> newest <time>`.
+- A filing error prints `days: cannot file <source> by day: <reason>` to stderr; the collection is written and the run goes on. `days.py build` files reads only, so a missed collection day is filed again only by a later run.
+
 A chat source with `closed_days: true` reuses closed days:
 - A day is closed when it ends at or before the window end. Only `history` and `thread` reads are reused this way; reactions keep `max_age`, searches are always fetched.
 - The covered spans of closed days count as fresh whatever their age; the gaps are fetched, as with `max_age`.

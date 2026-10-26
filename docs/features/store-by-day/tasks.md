@@ -3,7 +3,7 @@
 ---
 feature: store-by-day
 spec_version: 1
-total_tasks: 8
+total_tasks: 10
 phases:
   - name: "Day layer"
     tasks: [T-1, T-2, T-3, T-4]
@@ -11,6 +11,8 @@ phases:
     tasks: [T-5, T-6]
   - name: "Closed-day reuse"
     tasks: [T-7, T-8]
+  - name: "Other providers"
+    tasks: [T-9, T-10]
 depends_on: [provider-store]
 ---
 
@@ -110,6 +112,30 @@ Paths are under `plugins/claudio-routines/` unless they start with `docs/`. Veri
 - **Verify**: `python3 -m unittest discover -s plugins/claudio-routines/runtime`
 - **Blocked by**: T-3, T-7
 - **Rules**: BR-5, BR-6, BR-7
+- **Status**: Complete
+
+## Phase 4: Other providers
+
+### T-9: Day mapping of the other adapters and collection filing
+- **Scope**:
+  - `DAY_RECORDS` in `jira.py`, `github.py`, `notion.py`, `datadog.py`; conformance: each kind names a key
+  - `DayLayer.file_collection`: day by field or window end, scoped keys, newest fetch wins, `fetches` coverage; `show` prints collection days
+  - Tests: each provider's kinds, scoped keys, unread collection, newest wins, show line
+- **Refs**: US-8, TD-11
+- **Files**: `runtime/days.py` (modify), `runtime/test_days.py` (modify), `runtime/providers/jira.py` (modify), `runtime/providers/github.py` (modify), `runtime/providers/notion.py` (modify), `runtime/providers/datadog.py` (modify), `runtime/providers/test_conformance.py` (modify)
+- **Verify**: `python3 -m unittest discover -s plugins/claudio-routines/runtime -p 'test_days.py'`
+- **Rules**: BR-3, BR-11, BR-12, BR-13
+- **Status**: Complete
+
+### T-10: File collections at collect time
+- **Scope**:
+  - `collect.py fetch` and `parse` file a read non-chat collection when `store_dir` is set; a failure prints and the source stays written; replay files nothing
+  - Tests: an issue tracker fetch files by day, no `store_dir` files nothing, replay files nothing; READMEs updated
+- **Refs**: US-8, TD-11
+- **Files**: `runtime/collect.py` (modify), `runtime/test_collect.py` (modify), `README.md` (modify), `runtime/providers/README.md` (modify)
+- **Verify**: `python3 -m unittest discover -s plugins/claudio-routines/runtime`
+- **Blocked by**: T-9
+- **Rules**: BR-10, BR-13
 - **Status**: Complete
 
 ## Related Features

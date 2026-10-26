@@ -58,6 +58,19 @@ class ConformanceTest(unittest.TestCase):
 
         self.assertEqual(missing, [])
 
+    def test_every_collection_day_mapping_names_a_key_and_a_day_field(self):
+        broken = [
+            (name, kind)
+            for name, module in adapters().items()
+            for kind, rule in getattr(module, "DAY_RECORDS", {}).items()
+            if not rule.get("key") or "day" not in rule
+        ]
+
+        self.assertEqual(broken, [])
+
+    def test_every_adapter_without_a_read_store_files_its_collections_by_day(self):
+        self.assertEqual([name for name, module in adapters().items() if not getattr(module, "STORE", False) and not hasattr(module, "DAY_RECORDS")], [])
+
     def test_slack_files_messages_by_day_and_reactions_as_snapshots(self):
         self.assertEqual(adapters()["slack"].DAY_KINDS, {"history": "span", "thread": "span", "search": "span", "reactions": "snapshot"})
 

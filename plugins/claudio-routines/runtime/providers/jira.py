@@ -20,6 +20,7 @@ QUERY_MARGIN = 86400
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%S%z"
 QUERY_TIME_FORMAT = "%Y-%m-%d %H:%M"
 RESULT_TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+DAY_RECORDS = {"issues": {"day": "updated", "key": ["key"]}}
 REFUSALS = {400: "or its query rejected", 403: "not found or forbidden", 404: "not found or forbidden"}
 
 

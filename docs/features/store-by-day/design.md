@@ -140,6 +140,14 @@ graph LR
 - Slack logic inside `days.py`: rejected, the next provider would fork it.
 **Rationale**: the next provider that moves to the read store adds two hooks.
 
+### TD-11: File collections, not reads, for the other providers
+
+**Choice**: after `collect.py fetch` or `parse` writes a non-chat collection, `DayLayer.file_collection` files its records by day. An adapter declares `DAY_RECORDS = {kind: {"day": field or None, "key": [fields], "scoped": bool}}`; `day` None means the window end. Rows carry `fetch_id`, `fetched_at`, `routine` and `source`; coverage lists the fetches (`fetches`), no span.
+**Alternatives considered**:
+- A read store per provider like Slack: rejected for now (owner, 2026-10-26), four times the size of provider-store, and the observability connector reads everything in one script call.
+- Partition by source: rejected, the same issue or pull request would be stored once per routine; only window-scoped kinds add routine and source to their key.
+**Rationale**: every provider becomes queryable by date with one data mapping per adapter and no change to how adapters read.
+
 ## Implementation Considerations
 
 ### Data Model
@@ -239,6 +247,7 @@ sequenceDiagram
 | `plugins/claudio-routines/runtime/test_collect.py` | modify | Day layer wiring, manifest and replay |
 | `plugins/claudio-routines/runtime/roles.py` | modify | `closed_days` chat key |
 | `plugins/claudio-routines/runtime/test_roles.py` | modify | `closed_days` validation |
+| `plugins/claudio-routines/runtime/providers/jira.py`, `github.py`, `notion.py`, `datadog.py` | modify | `DAY_RECORDS` mapping |
 | `plugins/claudio-routines/README.md` | modify | Day layer section, `closed_days`, `days.py`, DuckDB query |
 | `plugins/claudio-routines/runtime/providers/README.md` | modify | Day hooks of a store adapter |
 | `docs/features/store-by-day/*.md` | new | This spec |

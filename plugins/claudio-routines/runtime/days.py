@@ -18,8 +18,19 @@ RECORDS_FILE = "records.jsonl"
 COVERAGE_FILE = "coverage.json"
 LOCK_FILE = ".lock"
 DAY_SECONDS = 86400
-META_KEYS = ("fetch_id", "fetched_at", "transport")
+META_KEYS = ("fetch_id", "fetched_at", "transport", "routine", "source")
 SPAN, SNAPSHOT = "span", "snapshot"
+UTC_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+KEY_JOIN = "\x1f"
+
+
+def record_ts(record, rule, window_end):
+    value = None if rule["day"] is None else record.get(rule["day"])
+    if value is None:
+        return window_end
+    if isinstance(value, int):
+        return decimal.Decimal(value) / 1000
+    return int(datetime.strptime(value, UTC_FORMAT).replace(tzinfo=timezone.utc).timestamp())
 
 
 def day_of(ts):
@@ -128,16 +139,40 @@ class DayLayer:
             if stored is None or stored["fetch_id"] == meta["fetch_id"] or recency(meta) > recency(stored):
                 held, coverage = incoming, {**coverage, "snapshot": meta}
         else:
-            held = newest_per_key(adapter, kind, entity, [row for row in held if row["fetch_id"] != meta["fetch_id"]] + incoming)
+            key_of = lambda row: adapter.day_row(kind, entity, row)[1]
+            held = newest_per_key([row for row in held if row["fetch_id"] != meta["fetch_id"]] + incoming, key_of)
             span = document["span"]
             spans = dict(coverage["spans"])
             spans[meta["transport"]] = merged_spans([*spans.get(meta["transport"], []), clipped((span["from"], span["to"]), day)])
             coverage = {**coverage, "spans": spans}
-        ordered = sorted(held, key=lambda row: row_order(adapter, kind, entity, row))
-        store.make_folders(folder)
-        state.write_all([(os.path.join(folder, RECORDS_FILE), store.dump_lines(ordered))])
-        state.write_all([(os.path.join(folder, COVERAGE_FILE), state.dump(coverage))])
-        return folder
+        ordered = sorted(held, key=lambda row: (decimal.Decimal(adapter.day_row(kind, entity, row)[0]), adapter.day_row(kind, entity, row)[1], recency(row)))
+        return write_day(folder, ordered, coverage)
+
+    def file_collection(self, collection, adapter, routine, run, fetched_at):
+        """Files a collection's records by day; collection days are never reused, so they carry fetches, not spans."""
+        mapping = getattr(adapter, "DAY_RECORDS", None)
+        if mapping is None or not collection["read"]:
+            return []
+        meta = {"fetch_id": f"{run}.{collection['source']}", "fetched_at": fetched_at, "routine": routine, "source": collection["source"], "transport": collection["transport"]}
+        found = {}
+        for kind in sorted(mapping):
+            for record in collection["records"].get(kind) or []:
+                ts = record_ts(record, mapping[kind], collection["window"]["to_ts"])
+                found.setdefault((kind, day_of(ts)), []).append({**record, **meta})
+        with self.locked():
+            return [self.merge_collection_day(collection["provider"], kind, mapping[kind], day, rows, meta) for (kind, day), rows in sorted(found.items())]
+
+    def merge_collection_day(self, provider, kind, rule, day, rows, meta):
+        folder = self.folder(provider, kind, {}, day)
+        key_of = lambda row: collection_key(rule, row)
+        held = store.load_records(folder) if os.path.isfile(os.path.join(folder, RECORDS_FILE)) else []
+        kept = newest_per_key([row for row in held if row["fetch_id"] != meta["fetch_id"]] + rows, key_of)
+        ordered = sorted(kept, key=lambda row: (key_of(row), recency(row)))
+        coverage = load_coverage(folder) or {"schema": SCHEMA, "provider": provider, "kind": kind, "entity": {}, "day": day_text(day), "spans": {}, "snapshot": None, "fetches": []}
+        fetches = {fetch["fetch_id"]: fetch for fetch in coverage["fetches"]}
+        fetches[meta["fetch_id"]] = {key: meta[key] for key in ("fetch_id", "fetched_at", "routine", "source")}
+        coverage = {**coverage, "fetches": sorted(fetches.values(), key=recency)}
+        return write_day(folder, ordered, coverage)
 
     def stored(self, folder):
         return os.path.relpath(folder, os.path.dirname(self.base)).replace(os.sep, "/")
@@ -175,15 +210,22 @@ class DayLayer:
         return target
 
 
-def row_order(adapter, kind, entity, row):
-    ts, key = adapter.day_row(kind, entity, row)
-    return (decimal.Decimal(ts), key, recency(row))
+def write_day(folder, rows, coverage):
+    store.make_folders(folder)
+    state.write_all([(os.path.join(folder, RECORDS_FILE), store.dump_lines(rows))])
+    state.write_all([(os.path.join(folder, COVERAGE_FILE), state.dump(coverage))])
+    return folder
 
 
-def newest_per_key(adapter, kind, entity, rows):
+def collection_key(rule, row):
+    scope = [row["routine"], row["source"]] if rule.get("scoped") else []
+    return KEY_JOIN.join(str(part) for part in [*scope, *(row[field] for field in rule["key"])])
+
+
+def newest_per_key(rows, key_of):
     kept = {}
     for row in rows:
-        _, key = adapter.day_row(kind, entity, row)
+        key = key_of(row)
         if key not in kept or recency(row) > recency(kept[key]):
             kept[key] = row
     return list(kept.values())
@@ -284,6 +326,8 @@ def is_selected(coverage, args):
 
 
 def coverage_text(coverage, day):
+    if coverage.get("fetches"):
+        return f"fetches {len(coverage['fetches'])} newest {coverage['fetches'][-1]['fetched_at']}"
     if coverage["snapshot"] is not None:
         return f"read {coverage['snapshot']['fetched_at']}"
     needed = (str(day * DAY_SECONDS), str((day + 1) * DAY_SECONDS))
@@ -306,7 +350,8 @@ def show_day(base, day, args):
             for row in store.load_records(folder):
                 print(json.dumps({**row, **path_values(coverage, day)}, sort_keys=True, ensure_ascii=False))
             continue
-        print(f"{day_text(day)} {coverage['provider']} {coverage['kind']} {entity_text(coverage['entity'])} {coverage_text(coverage, day)}")
+        parts = [day_text(day), coverage["provider"], coverage["kind"], entity_text(coverage["entity"]), coverage_text(coverage, day)]
+        print(" ".join(part for part in parts if part))
 
 
 def run_show(args):

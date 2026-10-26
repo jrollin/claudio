@@ -1,4 +1,5 @@
 import contextlib
+import glob
 import io
 import json
 import os
@@ -1744,6 +1745,41 @@ class RelayTestCase(CollectTestCase):
         return [call["id"] for call in self.plan_doc()["calls"]]
 
 
+class CollectionDaysTest(RelayTestCase):
+    def setUp(self):
+        super().setUp()
+        self.obs.DAY_RECORDS = {"monitors": {"day": None, "key": ["id"]}}
+        self.doc.DAY_RECORDS = {"pages": {"day": None, "key": ["id"]}}
+
+    def sharing(self):
+        self.config["places"]["cloud"]["store_dir"] = self.path("shared")
+
+    def filed(self, provider, kind):
+        return glob.glob(self.path(os.path.join("shared", days.DAYS_DIR, f"provider={provider}", f"kind={kind}", "*", "*", "*", days.RECORDS_FILE)))
+
+    def test_files_a_fetched_collection_by_day(self):
+        self.sharing()
+        self.fetch()
+        self.assertEqual(len(self.filed("obs", "monitors")), 1)
+
+    def test_files_a_relayed_collection_by_day(self):
+        self.sharing()
+        self.loop()
+        self.parse()
+        self.assertEqual(len(self.filed("docs", "pages")), 1)
+
+    def test_files_nothing_without_a_store_dir(self):
+        self.fetch()
+        self.assertFalse(os.path.exists(self.path("shared")))
+
+    def test_keeps_the_collection_when_filing_by_day_fails(self):
+        self.sharing()
+        os.makedirs(self.path("shared"))
+        open(self.path(os.path.join("shared", days.DAYS_DIR)), "w").close()
+        code, _, err = self.fetch()
+        self.assertEqual((code, os.path.isfile(self.path("collection.json")), "days: cannot file monitors by day" in err), (0, True, True))
+
+
 class RelayParsePreferenceTest(RelayTestCase):
     SKIPPED = [{"transport": "api", "missing": [DOC_TOKEN_VAR]}]
 
@@ -1834,6 +1870,13 @@ class ReplayTest(RelayTestCase):
     def bytes_of(self, name, folder="replayed"):
         with open(self.path(f"{folder}/{name}.json"), "rb") as handle:
             return handle.read()
+
+    def test_files_nothing_by_day_on_a_replay(self):
+        self.record_run()
+        self.config["places"]["cloud"]["store_dir"] = self.path("shared")
+        self.obs.DAY_RECORDS = {"monitors": {"day": None, "key": ["id"]}}
+        self.replay()
+        self.assertFalse(os.path.exists(self.path("shared")))
 
     def test_writes_one_collection_per_source_in_the_out_folder(self):
         self.record_run()

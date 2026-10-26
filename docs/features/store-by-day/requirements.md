@@ -125,6 +125,21 @@ THE store deletes the day folders whose day ended more than N days before now
 - [ ] A run folder's linked day records survive the prune, and the run still replays *(AC-7.4)*
 - [ ] A non-positive N exits 2 *(AC-7.5)*
 
+### File every other provider's collection by day {#US-8}
+
+WHEN a run with `store_dir` writes the collection of a source whose adapter has no read store (issue tracker, code host, document store, observability)
+THE store merges the collection's records into day folders, one per record kind
+
+**Acceptance Criteria:**
+- [ ] Issues land at `days/provider=<key>/kind=issues/year=/month=/day=/` by `updated`, keyed by issue key *(AC-8.1)*
+- [ ] Pull requests and code-host issues land by `updated_at`, keyed by repository and number *(AC-8.2)*
+- [ ] Pages land by `last_edited`, keyed by page id, with their blocks *(AC-8.3)*
+- [ ] Monitors land on the day of the window end, keyed by monitor id; transitions by `last_ts_ms`, and metrics on the window end day, both keyed by routine, source and their own key (BR-12) *(AC-8.4)*
+- [ ] Each row names its fetch id, fetch time, routine and source; the newest fetch wins per key (BR-3) *(AC-8.5)*
+- [ ] A collection with `read` false, a replay, and a chat collection file nothing *(AC-8.6)*
+- [ ] A filing failure prints `days: cannot file <source> by day: <reason>` and never fails the source *(AC-8.7)*
+- [ ] `show` prints a collection day as `fetches <N> newest <time>`; `prune` and DuckDB treat it like any day folder *(AC-8.8)*
+
 ## Business Rules
 
 - A record's day is the UTC calendar day of its message ts; a reactions read takes the day of its message *(BR-1)*
@@ -136,12 +151,16 @@ THE store deletes the day folders whose day ended more than N days before now
 - A source reuses only the day layer of its own provider key *(BR-7)*
 - The day layer is durable: pruning reads never removes day records; only `days.py prune` deletes day folders *(BR-8)*
 - No reader sees a partly written day file, and a day folder's coverage never claims a span its records do not yet hold *(BR-9)*
+- A collection record's day is the UTC day of its own time field, or of the window end for a record that is a state as of the run (monitors, metrics) *(BR-11)*
+- A record whose meaning depends on the routine's own window or query (transitions, metrics) is keyed by routine and source too, so two routines never overwrite each other *(BR-12)*
+- Collection days carry no coverage spans: a collection covers its source's scope, not the whole provider, so they are never reused by a routine *(BR-13)*
 - The day layer holds text written by other people and stays outside every git working tree, or inside one that ignores it, never pushed, as provider-store BR-6 requires *(BR-10)*
 
 ## Out of Scope
 
 - Cloud runs and any store shared between machines or places
-- The other providers (issue tracker, code host, document store, observability): they get the day layer when they move to the read store, with this layout
+- Fetch reuse for the other providers: their collections are filed by day (US-8) but never reused; a full read store per provider stays a later spec
+- Rebuilding collection days from stored data: collections are filed when collected only, `days.py build` files reads
 - `members` and `users` reads: snapshots with no message day
 - `partial` reads in the day layer
 - Detecting edits or deletions on closed days
@@ -162,4 +181,5 @@ None open. Settled before requirements:
 - Lookup is both a `days.py` command and closed-day reuse in routines (owner, 2026-10-26)
 - Kinds: `history`, `thread`, `reactions`, `search` (owner, 2026-10-26)
 - Day layer is a durable archive with its own prune (owner, 2026-10-26)
+- Other providers: day layer of collections, no fetch reuse (owner, 2026-10-26)
 - `store_dir` may sit inside the private repository when git ignores it; provider-store BR-6 amended (owner, 2026-10-26)

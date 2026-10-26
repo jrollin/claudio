@@ -8,6 +8,7 @@ import unittest
 from unittest import mock
 
 import days
+import providers
 import store
 
 DAY_26 = 1792972800
@@ -360,6 +361,103 @@ class LinkTest(DayCase):
             self.cli("prune", "--root", self.store_dir, "--older-than-days", "1")
 
         self.assertTrue(os.path.isfile(os.path.join(run_store, days.DAYS_DIR, *HISTORY_DIR.split("/"), days.RECORDS_FILE)))
+
+
+def collection(provider, role, records, source="issues-src", read=True, to_ts=DAY_26 + 3600):
+    return {"source": source, "role": role, "provider": provider, "transport": "api", "window": {"from_ts": DAY_26 - 86400, "to_ts": to_ts}, "read": read, "records": records}
+
+
+def issue(key="CONN-1", updated="2026-10-26T09:00:00Z", status="Open"):
+    return {"key": key, "title": "t", "type": "Bug", "status": status, "priority": None, "created": "2026-10-20T09:00:00Z", "updated": updated, "link": "l", "in_open_sprint": False}
+
+
+def pull(number=7, updated_at="2026-10-26T10:00:00Z", repo="acme/app", state="open"):
+    return {"repo": repo, "number": number, "title": "t", "author": "a", "state": state, "draft": False, "created_at": "2026-10-20T09:00:00Z", "updated_at": updated_at, "merged_at": None, "link": "l"}
+
+
+class CollectionCase(DayCase):
+    def filed(self, adapter, document, routine="connect-digest", run=RUN, at=FETCHED_AT):
+        return self.layer.file_collection(document, providers.load(adapter), routine, run, at)
+
+    def kind_rows(self, provider, kind, day="26"):
+        return self.rows(f"provider={provider}/kind={kind}/year=2026/month=10/day={day}")
+
+
+class FileCollectionTest(CollectionCase):
+    def test_files_an_issue_by_its_update_day(self):
+        self.filed("jira", collection("issues", "issue_tracker", {"issues": [issue(updated="2026-10-27T01:00:00Z")]}))
+
+        self.assertEqual([row["key"] for row in self.kind_rows("issues", "issues", "27")], ["CONN-1"])
+
+    def test_keeps_the_newest_fetch_of_an_issue(self):
+        self.filed("jira", collection("issues", "issue_tracker", {"issues": [issue(status="Open")]}))
+        self.filed("jira", collection("issues", "issue_tracker", {"issues": [issue(status="Done")]}), run=LATER_RUN, at=LATER_AT)
+
+        self.assertEqual([row["status"] for row in self.kind_rows("issues", "issues")], ["Done"])
+
+    def test_keys_a_pull_request_by_repository_and_number(self):
+        records = {"pull_requests": [pull(repo="acme/app"), pull(repo="acme/web")], "issues": []}
+        self.filed("github", collection("code", "code_host", records))
+
+        self.assertEqual(sorted(row["repo"] for row in self.kind_rows("code", "pull_requests")), ["acme/app", "acme/web"])
+
+    def test_files_code_activity_by_its_time(self):
+        activity = {"repo": "acme/app", "number": 7, "kind": "review", "author": "a", "at": "2026-10-26T11:00:00Z", "state": "APPROVED", "text": ""}
+        self.filed("github", collection("code", "code_host", {"pull_requests": [], "issues": [], "activity": [activity]}))
+
+        self.assertEqual([row["kind"] for row in self.kind_rows("code", "activity")], ["review"])
+
+    def test_files_a_page_with_its_blocks_by_its_edit_day(self):
+        page = {"id": "p1", "title": "Plan", "last_edited": "2026-10-26T08:00:00Z", "link": "l", "blocks": [{"type": "paragraph", "text": "hi", "rows": None}]}
+        self.filed("notion", collection("documents", "document_store", {"pages": [page]}))
+
+        self.assertEqual(self.kind_rows("documents", "pages")[0]["blocks"], page["blocks"])
+
+    def test_files_monitor_states_on_the_window_end_day(self):
+        monitor = {"id": "42", "name": "api", "state": "Alert", "priority": None, "link": "l"}
+        records = {"monitors": [monitor], "transitions": [], "discovered": [], "discovery": None}
+        self.filed("datadog", collection("observability", "observability", records, to_ts=DAY_27 + 60))
+
+        self.assertEqual([row["id"] for row in self.kind_rows("observability", "monitors", "27")], ["42"])
+
+    def test_files_a_transition_by_its_last_event(self):
+        records = {"monitors": [], "transitions": [{"monitor": "42", "count": 3, "first_ts_ms": DAY_26 * 1000, "last_ts_ms": (DAY_26 + 100) * 1000}], "discovered": [], "discovery": None}
+        self.filed("datadog", collection("observability", "observability", records, to_ts=DAY_27 + 60))
+
+        self.assertEqual([row["count"] for row in self.kind_rows("observability", "transitions")], [3])
+
+    def test_keeps_the_metric_of_each_routine_apart(self):
+        metric = {"key": "latency", "value": 1.5, "hourly": [], "groups": []}
+        self.filed("datadog", collection("observability", "observability", {"metrics": [metric]}, source="metrics"), routine="connect-digest")
+        self.filed("datadog", collection("observability", "observability", {"metrics": [{**metric, "value": 9.0}]}, source="metrics"), routine="prod-watch", run=LATER_RUN, at=LATER_AT)
+
+        self.assertEqual(sorted(row["value"] for row in self.kind_rows("observability", "metrics")), [1.5, 9.0])
+
+    def test_names_the_fetch_routine_and_source_of_a_row(self):
+        self.filed("jira", collection("issues", "issue_tracker", {"issues": [issue()]}))
+
+        row = self.kind_rows("issues", "issues")[0]
+        self.assertEqual((row["fetch_id"], row["fetched_at"], row["routine"], row["source"]), (f"{RUN}.issues-src", FETCHED_AT, "connect-digest", "issues-src"))
+
+    def test_files_nothing_for_a_source_not_read(self):
+        self.filed("jira", collection("issues", "issue_tracker", {"issues": []}, read=False))
+
+        self.assertFalse(os.path.exists(os.path.join(self.store_dir, days.DAYS_DIR, "provider=issues")))
+
+    def test_files_nothing_for_an_adapter_without_a_day_mapping(self):
+        self.assertEqual(self.filed("slack", collection("chat", "chat", {"messages": []})), [])
+
+    def test_lists_the_fetches_of_a_day(self):
+        self.filed("jira", collection("issues", "issue_tracker", {"issues": [issue()]}))
+        self.filed("jira", collection("issues", "issue_tracker", {"issues": [issue()]}), run=LATER_RUN, at=LATER_AT)
+
+        fetches = self.coverage("provider=issues/kind=issues/year=2026/month=10/day=26")["fetches"]
+        self.assertEqual([fetch["fetch_id"] for fetch in fetches], [f"{RUN}.issues-src", f"{LATER_RUN}.issues-src"])
+
+    def test_shows_a_collection_day_by_its_fetches(self):
+        self.filed("jira", collection("issues", "issue_tracker", {"issues": [issue()]}))
+
+        self.assertEqual(self.cli("show", "--root", self.store_dir, "--date", "2026-10-26")[1], f"2026-10-26 issues issues fetches 1 newest {FETCHED_AT}\n")
 
 
 class BuildTest(DayCase):

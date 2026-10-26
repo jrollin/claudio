@@ -111,6 +111,7 @@ INLINE = re.compile(
 ENTITY = re.compile(r"&(?:#[0-9]+|#[xX][0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]*);")
 EMPTY_BLOCK = "empty-block"
 DIVIDER = "---"
+DAY_RECORDS = {"pages": {"day": "last_edited", "key": ["id"]}}
 
 
 def api_client(provider, opener=None, environ=None, sleep=None):

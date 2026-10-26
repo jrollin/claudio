@@ -50,6 +50,13 @@ STATE_CAP = 50
 EVENT_MONITOR_CAP = 50
 ERROR_CLASS = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]{0,63}")
 NO_DATAPOINTS = "no datapoints"
+# A null day files a state as of the run on the window end day; window-scoped kinds key by routine and source too.
+DAY_RECORDS = {
+    "monitors": {"day": None, "key": ["id"]},
+    "discovered": {"day": None, "key": ["id"]},
+    "transitions": {"day": "last_ts_ms", "key": ["monitor"], "scoped": True},
+    "metrics": {"day": None, "key": ["key"], "scoped": True},
+}
 TREND_AGGREGATORS = {
     "max": max,
     "min": min,

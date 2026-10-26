@@ -26,6 +26,11 @@ SEARCH_PATH = "/search/issues"
 REPOSITORY_URL = re.compile(r"/repos/([^/]+/[^/]+)$")
 BOT_SUFFIX = "[bot]"
 TEXT_CAP = 1000
+DAY_RECORDS = {
+    "pull_requests": {"day": "updated_at", "key": ["repo", "number"]},
+    "issues": {"day": "updated_at", "key": ["repo", "number"]},
+    "activity": {"day": "at", "key": ["repo", "number", "kind", "author", "at"]},
+}
 
 
 def api_client(provider, opener=None, environ=None, sleep=None):

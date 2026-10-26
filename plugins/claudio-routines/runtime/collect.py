@@ -460,6 +460,18 @@ def write_collection(args, collection):
     state.write_all([(args.out, state.dump(cleaned(collection)))])
 
 
+def file_by_day(args, provider, collection, store_dir):
+    if store_dir is None:
+        return
+    run = os.path.basename(os.path.normpath(os.path.abspath(args.run)))
+    # The collection is already written: a day layer that cannot take it never fails the source.
+    try:
+        store.check_store_dir(store_dir, f"places.{args.place}.store_dir")
+        days.DayLayer(store_dir).file_collection(cleaned(collection), providers.load(provider["adapter"]), args.routine, run, store.utc_now())
+    except Exception as error:
+        print(f"days: cannot file {args.source} by day: {store.rejection(error)}", file=sys.stderr)
+
+
 def open_records(directory):
     try:
         os.makedirs(directory, exist_ok=True)
@@ -562,7 +574,9 @@ def run_fetch(args):
         return 0
     directory = raw_directory(args.run, draft.base["role"], args.source)
     open_records(directory)
-    write_collection(args, fetch_collection(provider, source, window, draft, lambda adapter: recording_client(adapter, provider, directory, args.source, injected)))
+    collection = fetch_collection(provider, source, window, draft, lambda adapter: recording_client(adapter, provider, directory, args.source, injected))
+    write_collection(args, collection)
+    file_by_day(args, provider, collection, store_dir)
     return 0
 
 
@@ -835,7 +849,9 @@ def run_parse(args):
         write_manifest(args, session)
         return 0
     directory = getattr(args, "responses", None) or raw_directory(args.run, draft.base["role"], args.source)
-    write_collection(args, parse_collection(args, provider, source, window, draft, directory))
+    collection = parse_collection(args, provider, source, window, draft, directory)
+    write_collection(args, collection)
+    file_by_day(args, provider, collection, store_dir)
     return 0
 
 

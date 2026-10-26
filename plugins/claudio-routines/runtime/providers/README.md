@@ -66,6 +66,7 @@ One module per vendor reads one role through `_http.py`. This file lists, per ve
 ## datadog
 
 - Role: observability.
+- Day layer: `DAY_RECORDS` files `monitors` and `discovered` on the window end day by monitor id, `transitions` by `last_ts_ms` and `metrics` on the window end day, both keyed by routine and source too (see Day layer in the plugin README).
 - Calls: `GET /api/v1/monitor/{id}`, `GET /api/v2/events` and, when the source sets `discovery_query`, `GET /api/v1/monitor/search` for the `monitors` kind, `POST /api/v2/query/scalar` and `POST /api/v2/query/timeseries` for the `metrics` kind.
 - Connector: a `monitors` source plans the `aggregate_events` call first (Events below), then one code script; a `metrics` source plans the script alone. The script runs the reads through the connector's `@datadog/datadog-api-client` (`getMonitor`, `searchMonitors`, `queryScalarData`, `queryTimeseriesData`), and `parse` normalizes its payload with the same functions as the `api` transport. The discovery query, the monitor ids and the lookback spans sit inside the script's digested parameters.
 - Events: the alert events are aggregated where they are read, over the events inside the window (bounds included). `records.transitions` holds `{monitor, count, first_ts_ms, last_ts_ms}` per numeric monitor id, sorted by id (shorter ids first); the cursor `events_ts_ms` is the newest event time, kept forward-only.
@@ -136,6 +137,7 @@ An API key carries no scopes: it names the organization, and the application key
 ## github
 
 - Role: code host.
+- Day layer: `DAY_RECORDS` files `pull_requests` and `issues` by `updated_at`, keyed by repository and number, and `activity` by `at` (see Day layer in the plugin README).
 - Calls: `GET /repos/{owner}/{repo}/pulls` then `GET /repos/{owner}/{repo}/issues` for each repository listed in the source's `repos`, following the `Link` header's `rel="next"` page.
 - Version: every call sends `X-GitHub-Api-Version: 2022-11-28` and `Accept: application/vnd.github+json`, pinned in the module.
 - Issues disabled: a repository whose issue list answers HTTP 410 reads as having no issues.
@@ -195,6 +197,7 @@ The host adds the mandatory Metadata: Read-only permission to every fine-grained
 ## jira
 
 - Role: issue tracker.
+- Day layer: `DAY_RECORDS` files `issues` by `updated`, keyed by issue key (see Day layer in the plugin README).
 - Calls: `POST /rest/api/3/search/jql` with a JSON body (`jql`, `fields`, `maxResults` 100, and `nextPageToken` after the first page), once per page, following `nextPageToken` until `isLast`. A read stops at 20 pages (`partial: page cap`); the updated read and the open sprint read each have their own cap.
 - Fields: `summary`, `issuetype`, `status`, `priority`, `created` and `updated`. No assignee or reporter is requested or kept: records hold no person.
 - Source: a source sets exactly one of `filter` (a saved filter id) and `jql` (non-blank JQL text); `open_sprints: true` needs `filter`, and config load refuses it with `jql`. With `jql`, the first clause is `(<jql>)` in place of `filter = <filter>`, so the updated read selects `(<jql>) AND (<query>) AND updated >= "<date>" ORDER BY key ASC`, on both transports. The `jql` must not hold an `ORDER BY`.
@@ -249,6 +252,7 @@ Create the API token for a user who can browse the projects of the filter and ca
 ## notion
 
 - Role: document store.
+- Day layer: `DAY_RECORDS` files `pages`, blocks included, by `last_edited`, keyed by page id (see Day layer in the plugin README).
 - Calls: `GET /v1/pages/{page_id}` for the page, and `GET /v1/blocks/{id}/children` for its blocks, the blocks nested under them and the rows of each table; `POST /v1/search` for a source with `edited_by`; the connector's `notion-search` for a source with `created_by`.
 - Request cap: a source makes at most 50 requests over the api transport, counting the page, each page of blocks (nested ones included) and each page of table rows. A source that needs more is not read (`partial: request cap`).
 - Nesting: over the `api` transport, the children of a block that has them are read depth first, in page order, up to 4 levels below the page; deeper children are not read, without an error. A text block keeps its record and is followed by its children's, a `toggle` and a `callout` read as `paragraph`, a synced block adds its original's children (a reference reads the block it is synced from), a `column_list` and a `column` add only their children, and `child_page`, `child_database`, `link_to_page` and any other type stay `other` with their children unread. The connector does not read nested blocks.
