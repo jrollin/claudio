@@ -144,7 +144,7 @@ class DayLayer:
             span = document["span"]
             spans = dict(coverage["spans"])
             spans[meta["transport"]] = merged_spans([*spans.get(meta["transport"], []), clipped((span["from"], span["to"]), day)])
-            coverage = {**coverage, "spans": spans}
+            coverage = {**coverage, "spans": spans, "fetch_ids": sorted({*coverage.get("fetch_ids", []), meta["fetch_id"]})}
         ordered = sorted(held, key=lambda row: (decimal.Decimal(adapter.day_row(kind, entity, row)[0]), adapter.day_row(kind, entity, row)[1], recency(row)))
         return write_day(folder, ordered, coverage)
 
@@ -179,6 +179,10 @@ class DayLayer:
 
     def holds(self, folder):
         return os.path.isfile(os.path.join(folder, COVERAGE_FILE))
+
+    def filed_by(self, stored, fetch_id):
+        coverage = load_coverage(os.path.join(os.path.dirname(self.base), *stored.split("/")))
+        return coverage is not None and fetch_id in coverage.get("fetch_ids", [])
 
     def closed_folders(self, provider, kind, entity, needed, window_end):
         found = []

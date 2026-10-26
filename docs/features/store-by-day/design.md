@@ -165,7 +165,7 @@ Day record (one JSON line, keys sorted): the adapter row as the read holds it, p
 
 ```json
 {"schema": 1, "provider": "chat", "kind": "history", "entity": {"channel": "C1"}, "day": "2026-10-26",
- "spans": {"mcp": [["1792972800", "1793059200"]]}, "snapshot": null}
+ "spans": {"mcp": [["1792972800", "1793059200"]]}, "fetch_ids": ["<run>.<source>"], "snapshot": null}
 ```
 
 For `reactions`, `spans` is `{}` and `snapshot` is `{"fetch_id": ..., "fetched_at": ..., "transport": ...}`.

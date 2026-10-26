@@ -391,7 +391,6 @@ class ReadSession:
         self.base = os.path.join(root, folder_part("provider", provider))
         self.shared = shared
         self.days = days
-        self._own_days = set()
         self.shared_base = None if shared is None else os.path.join(shared, folder_part("provider", provider))
         self.run = run
         self.source = source
@@ -498,11 +497,9 @@ class ReadSession:
             return
         # A published read stays valid when the day layer cannot take it: days.py build files it later.
         try:
-            written = self.days.merge(folder, load_document(folder))
+            self.days.merge(folder, load_document(folder))
         except Exception as error:
             print(f"days: cannot file {stored} by day: {rejection(error)}", file=sys.stderr)
-            return
-        self._own_days.update(self.days.stored(day) for day in written)
 
     def closed_days(self, kind, entity, needed, window_end):
         """Closed-day reuses, each read from the run's own copy so that a replay sees the same rows."""
@@ -525,8 +522,8 @@ class ReadSession:
         local = os.path.join(self.root, *stored.split("/"))
         if self.days.holds(local):
             return local
-        # A day this run filed itself would let a replay reuse what the run fetched.
-        if stored in self._own_days:
+        # A relay run plans in a new process each step, so its own filing is read back from the coverage.
+        if self.days.filed_by(stored, self.fetch_id):
             return None
         return self.days.link(stored, self.root)
 

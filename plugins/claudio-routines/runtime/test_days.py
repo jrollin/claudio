@@ -251,6 +251,12 @@ class CoverageTest(DayCase):
 
         self.assertEqual(self.coverage(HISTORY_DIR)["spans"], {"api": [[str(DAY_26 + 50), str(DAY_26 + 200)]], "mcp": [[str(DAY_26), str(DAY_26 + 100)]]})
 
+    def test_lists_the_fetches_that_covered_a_day(self):
+        self.merged([])
+        self.merged([], run=LATER_RUN, at=LATER_AT)
+
+        self.assertEqual(self.coverage(HISTORY_DIR)["fetch_ids"], [f"{RUN}.channels", f"{LATER_RUN}.channels"])
+
     def test_records_the_newest_reactions_read_without_span(self):
         entity = (("channel", "C0TRIBE1"), ("message", f"{DAY_26 + 30}.000100"))
         self.merged([{"user": "U0BOB"}], kind="reactions", entity=entity, span=None)

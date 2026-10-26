@@ -749,6 +749,11 @@ class ClosedDaysTest(SharedStoreCase):
 
         self.assertEqual(session.closed_days("history", HISTORY, self.NEEDED, self.WINDOW_END), [])
 
+    def test_skips_a_day_its_own_publish_filed_in_an_earlier_process(self):
+        self.finished(self.mine(), span=self.DAY_SPAN)
+
+        self.assertEqual(self.mine().closed_days("history", HISTORY, self.NEEDED, self.WINDOW_END), [])
+
     def test_keeps_reusing_its_linked_copy_after_its_own_publish(self):
         self.earlier_read()
         session = self.mine()

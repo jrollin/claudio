@@ -707,7 +707,7 @@ With `places.<place>.store_dir` set, each complete read a run publishes is also 
 ```
 
 - The day is the UTC day of the message ts; a reply goes to its own day, a reaction set to the day of its message. Member and user reads are not filed.
-- Each day folder holds `records.jsonl` (the read's rows plus `fetch_id`, `fetched_at` and `transport`, ordered by ts) and `coverage.json` (the spans covered that day, per transport, or the newest fetch of a reaction set).
+- Each day folder holds `records.jsonl` (the read's rows plus `fetch_id`, `fetched_at` and `transport`, ordered by ts) and `coverage.json` (the spans covered that day, per transport, with the `fetch_ids` that covered them, or the newest fetch of a reaction set).
 - One row per message: the newer fetch wins; a read filed again replaces its own rows, so a reparse followed by `build` fixes the day.
 - A span covering a day with no message still writes that day, with coverage and no row, and so does a message with no reaction: "read, nothing said" differs from "never read".
 - `failed` and `partial` reads are not filed. Read folders are unchanged.
@@ -740,7 +740,7 @@ A chat source with `closed_days: true` reuses closed days:
 - A day is closed when it ends at or before the window end. Only `history` and `thread` reads are reused this way; reactions keep `max_age`, searches are always fetched.
 - The covered spans of closed days count as fresh whatever their age; the gaps are fetched, as with `max_age`.
 - Trust rule: an `api` source takes `api` spans only, and skips a day folder holding any row fetched over `mcp`.
-- A source skips a day folder its own reads filed during the run, unless it reused that folder earlier in the run.
+- A source skips a day folder whose `fetch_ids` name its own fetch (`<run>.<source>`), unless it reused that folder earlier in the run; the check reads the coverage, so it holds across the separate `plan` processes of a relay run.
 - A reused day folder is linked into `<run>/store/days/` and listed in the manifest as `days/...`, so the run replays alone, from that copy.
 - Messages edited or deleted after the stored fetch are not seen.
 - The collection and run record hold `reads`, as with `max_age`.
