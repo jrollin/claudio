@@ -2892,6 +2892,10 @@ class SkillSeedTest(unittest.TestCase):
         section = self.text[self.text.index("## Lint\n"):self.text.index("## Sync\n")]
         self.assertEqual([part in section for part in ("`settings-missing`", "`settings-invalid`", "`deny-missing:<entry>`")], [True] * 3)
 
+    def test_run_section_requires_a_session_in_the_private_repository(self):
+        section = self.text[self.text.index("## Run\n"):self.text.index("## Seed\n")]
+        self.assertIn("The session must start in `CLAUDIO_PRIVATE_DIR`", section)
+
 
 class TribeLintTest(PinnedClaudioCase):
     def lint_public(self, text):

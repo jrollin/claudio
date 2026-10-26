@@ -375,11 +375,8 @@ Hook settings, in `$CLAUDIO_PRIVATE_DIR/.claude/settings.json` beside `permissio
 
 - The default path stands for `places.cloud.runtime_dir`: write the configured value there.
 - `|| true` keeps the hook silent when the runtime path is wrong: Python exits 2 for a missing script, and Claude Code shows the error of a `PostToolUse` hook that exits 2 to the model.
-- A local run sets `CLAUDIO_RUNTIME_DIR` to `places.local.runtime_dir` through `env` in `$CLAUDIO_PRIVATE_DIR/.claude/settings.local.json`, the local settings file that Claude Code keeps out of git:
-
-```json
-{ "env": { "CLAUDIO_RUNTIME_DIR": "<places.local.runtime_dir>" } }
-```
+- A local run exports `CLAUDIO_RUNTIME_DIR` as `places.local.runtime_dir` in the shell that starts Claude Code, for example `export CLAUDIO_RUNTIME_DIR=<places.local.runtime_dir>` in the shell profile.
+- Claude Code reads the hook only from the project of the session: start the local session in `$CLAUDIO_PRIVATE_DIR`. From any other directory the hook never runs, so `plan` prints each call again.
 
 ## Judgment
 
@@ -807,4 +804,4 @@ Record text written by other people (messages, titles) reaches a model that hold
 | A source with `max_age` still fetches its whole span | No stored read is eligible: older than `max_age`, fetched after the window end by another run, not complete, a connector read for an `api` source, or another provider key | Read the `read.json` of the stored reads, or raise `max_age` for that kind |
 | `store_dir` keeps growing | Only `prune` deletes reads | Run `store.py prune --root <store_dir> --older-than-days N` |
 | A source is not read with `plan not done` | The relay loop stopped before `plan` returned `done`: a missing connector, or the run stopped relaying | Fix the connector, then run again |
-| `plan` prints the same call again after the model made it | The hook captured nothing for it: the hook is not in `.claude/settings.json`, `CLAUDIO_RUNTIME_DIR` is wrong for the place, the capture folder is a link or belongs to another user, or the arguments differ from the printed ones (`plan` then prints a `relay capture mismatch` line) | Read `errors.log` in the capture folder and the `relay capture mismatch` line of the error output: it names the paths where the call differs, never their values, and a line that names identity paths such as `channel_id` or `message_ts` usually points at another source's capture when several sources relay in parallel (a known false positive). Fix the hook settings, or save that result by hand as the template says |
+| `plan` prints the same call again after the model made it | The hook captured nothing for it: the session did not start in `$CLAUDIO_PRIVATE_DIR`, so Claude Code never loaded the hook, or the hook is not in `.claude/settings.json`, `CLAUDIO_RUNTIME_DIR` is wrong for the place, the capture folder is a link or belongs to another user, or the arguments differ from the printed ones (`plan` then prints a `relay capture mismatch` line) | Read `errors.log` in the capture folder and the `relay capture mismatch` line of the error output: it names the paths where the call differs, never their values, and a line that names identity paths such as `channel_id` or `message_ts` usually points at another source's capture when several sources relay in parallel (a known false positive). Fix the hook settings, or save that result by hand as the template says |

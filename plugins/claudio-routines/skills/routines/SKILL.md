@@ -105,6 +105,8 @@ Pushes one routine's rendered prompt and cron. Never push without the owner's ex
 Runs one routine in this session for the local place, with the same template, state branch and runtime as a cloud run. Without `--post`, the run reports only: it pushes its run record, leaves the state unchanged and prints the digest.
 
 1. Run `R check-private`. On exit 2, stop and show its message.
+   - The session must start in `CLAUDIO_PRIVATE_DIR`: Claude Code reads the relay hook from that repository's `.claude/settings.json` only in a session started there. In any other session, stop and tell the owner to restart it in the private repository.
+   - The shell that starts the session must export `CLAUDIO_RUNTIME_DIR` as `places.local.runtime_dir`, or the relay hook captures nothing.
 2. Read `places.local.runtime_dir`, `places.local.state_dir` and `runtime.sha` from the private `config.json` (a routine may sit in `config/routines/<slug>.json` beside it), then run `git -C <runtime_dir> rev-parse HEAD` and `git -C <runtime_dir> status --porcelain --ignored`.
    - `rev-parse` fails or prints another hash than `runtime.sha`, or `status` prints anything: tell the owner to run `R setup-script --place local` and run its output, then stop.
    - `places.local.state_dir` does not resolve to the private repository path of the Preconditions (compare the `realpath` of both): tell the owner to set `places.local.state_dir` to that path, then stop.
