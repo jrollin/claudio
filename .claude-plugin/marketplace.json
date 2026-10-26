@@ -1,7 +1,7 @@
 {
   "name": "claudio-power",
   "description": "Spec-driven development, engineering craft, and tooling skills for Claude Code",
-  "version": "2.18.6",
+  "version": "2.18.7",
   "owner": {
     "name": "Julien Rollin"
   },
