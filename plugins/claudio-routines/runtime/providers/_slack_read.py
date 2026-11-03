@@ -12,6 +12,7 @@ REPLIES_PATH = "/api/conversations.replies"
 API_PAGE_SIZE = 200
 RELAY_PAGE_SIZE = 30
 RELAY_THREAD_PAGE_SIZE = 20
+RELAY_BATCH = 10
 SKIPPED_SUBTYPES = frozenset(("channel_join", "channel_leave"))
 FAILED_CHANNEL_CODES = ("channel_not_found", "is_archived", "not_in_channel")
 THREAD_NOT_FOUND = "thread_not_found"
@@ -34,7 +35,8 @@ THREAD_MARKER = re.compile(r"Thread: [1-9][0-9]* repl(?:y|ies) \(latest: .+\)")
 NEXT_CURSOR = re.compile(r"use cursor: `([^`]+)`")
 NO_MORE = "There are no more messages available."
 THREAD_NO_MORE = "There are no more messages in this thread."
-METADATA_OPEN = ("Reactions: ", "Files: ")
+REACTIONS_LINE = "Reactions: "
+METADATA_OPEN = (REACTIONS_LINE, "Files: ")
 THREAD_PARENT = "=== THREAD PARENT MESSAGE ==="
 THREAD_REPLIES = re.compile(r"=== THREAD REPLIES \(([0-9]+) total\) ===")
 REPLY_HEADER = re.compile(r"--- Reply [0-9]+ of ([0-9]+) ---")
@@ -45,7 +47,7 @@ PARENT_LINES = 4
 BOT_MARK = re.compile(r"\s*\[BOT\]\s*$")
 EMAIL_TAIL = re.compile(r"\s*<?[^\s<>]+@[^\s<>]+>?$")
 
-Item = collections.namedtuple("Item", "channel ts thread_ts author text name bot", defaults=("", False))
+Item = collections.namedtuple("Item", "channel ts thread_ts author text name bot reactions", defaults=("", False, None))
 Read = collections.namedtuple("Read", "channel history replies failure lost")
 
 
@@ -73,6 +75,37 @@ class _Pending(Exception):
         self.call_id = call_id
         self.tool = tool
         self.arguments = arguments
+
+    @property
+    def calls(self):
+        return [self]
+
+
+class _PendingBatch(_Pending):
+    def __init__(self, calls):
+        super().__init__(calls[0].call_id, calls[0].tool, calls[0].arguments)
+        self._calls = calls
+
+    @property
+    def calls(self):
+        return self._calls
+
+
+class _Gather:
+    """Collects the missing reads of independent items, so that one plan lists them together."""
+
+    def __init__(self):
+        self.pending = {}
+
+    def add(self, error):
+        for call in error.calls:
+            self.pending.setdefault(call.call_id, call)
+        if len(self.pending) >= RELAY_BATCH:
+            self.flush()
+
+    def flush(self):
+        if self.pending:
+            raise _PendingBatch(list(self.pending.values())[:RELAY_BATCH])
 
 
 class _Calls:
@@ -104,11 +137,22 @@ def _cited_replies(channel, roots, history, read):
     return found, lost
 
 
+def _read_replies(reads, channel, history, start, to):
+    gather, replies = _Gather(), []
+    for root in _roots(history):
+        try:
+            replies.extend(reads.replies(channel, root, start, to))
+        except _Pending as pending:
+            gather.add(pending)
+    gather.flush()
+    return replies
+
+
 def _channel_read(reads, channel, window, stored, roots):
     start, to = _start(window, stored, channel), window["to_ts"]
     try:
         history = _in_span(reads.history(channel, start, to), start, to)
-        replies = [reply for root in _roots(history) for reply in reads.replies(channel, root, start, to)]
+        replies = _read_replies(reads, channel, history, start, to)
     except ChannelFailed as failure:
         return Read(channel, [], [], failure.code, {})
     found, lost = _cited_replies(channel, roots, history, lambda root: reads.cited(channel, root, window["from_ts"], to))
@@ -239,20 +283,21 @@ def _parenthesized(text):
 
 
 def _relay_message(channel, header, ts_line, body):
-    kept, root = _without_metadata(body)
+    kept, root, reacted = _without_metadata(body)
     ts = MESSAGE_TS.fullmatch(ts_line).group(1)
     author, name, bot = _header_parts(header)
-    return Item(channel, ts, ts if root else None, author, "\n".join(kept), name, bot)
+    return Item(channel, ts, ts if root else None, author, "\n".join(kept), name, bot, reacted)
 
 
 def _without_metadata(body):
-    kept, root = list(body), False
+    kept, root, reacted = list(body), False, False
     while kept and not kept[-1].strip():
         kept.pop()
     while kept and _is_metadata(kept[-1]):
         root = root or THREAD_MARKER.fullmatch(kept[-1].rstrip()) is not None
+        reacted = reacted or kept[-1].startswith(REACTIONS_LINE)
         kept.pop()
-    return kept, root
+    return kept, root, reacted
 
 
 def _is_metadata(line):
@@ -332,9 +377,9 @@ def _reply_starts(lines, first, total, root, to, seen_ts):
 
 
 def _thread_reply(channel, root, lines, start, ts, end):
-    kept, _ = _without_metadata(lines[start + 4 : end])
+    kept, _, reacted = _without_metadata(lines[start + 4 : end])
     author, name, bot = _who_parts(lines[start + 1][len(FROM_OPEN) :])
-    return Item(channel, ts, root, author, "\n".join(kept), name, bot)
+    return Item(channel, ts, root, author, "\n".join(kept), name, bot, reacted)
 
 
 def _next_cursor(tool, call_id, info, last_pages):

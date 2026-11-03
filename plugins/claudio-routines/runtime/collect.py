@@ -699,9 +699,10 @@ def store_plan_step(adapter, source, window, draft, session, connector):
     step = adapter_step(adapter, source, window, draft, session, connector)
     if step["done"]:
         return ended(step["partial"])
-    if session.saved_pages() >= source.get("call_cap", CALL_CAP):
+    room = source.get("call_cap", CALL_CAP) - session.saved_pages()
+    if room <= 0:
         return ended(CALL_CAP_PARTIAL)
-    fresh = [call for call in step["calls"] if not os.path.exists(session.page_path(call["id"]))]
+    fresh = [call for call in step["calls"] if not os.path.exists(session.page_path(call["id"]))][:room]
     if not fresh:
         return ended(NO_NEW_CALL)
     return {"done": False, "partial": None, "calls": fresh}

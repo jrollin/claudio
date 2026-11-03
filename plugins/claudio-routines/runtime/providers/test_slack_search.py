@@ -9,11 +9,13 @@ import roles
 import state
 import store
 from providers import _http, slack
+from providers._slack_read import RELAY_BATCH
 from providers.slack_support import (
     RUN,
     live,
     ordered,
     relay_through,
+    save_planned,
     store_session,
     BASE,
     CONNECTOR,
@@ -90,6 +92,10 @@ def named_message(name, user, ts, *lines):
 def conversation_page(channel, *entries, names=None):
     names = names or {OWNER: "Owner Name", BOT: "Bot App"}
     return relay_page(channel, *(named_message(names.get(user, "Peer Name"), user, ts, text) for user, ts, text in entries))
+
+
+def shown(entries):
+    return [(user, ts, f"{text}\nReactions: +1 (1)") for user, ts, text in entries]
 
 
 def empty_response(call):
@@ -433,7 +439,7 @@ class SearchReactionsTest(unittest.TestCase):
     ]
 
     def reactions_calls(self, entries):
-        responses = {"team-chat-1": search_text(hit("D1", "DM", PEER, entries[0][1])), "team-chat-2": conversation_page("D1", *entries)}
+        responses = {"team-chat-1": search_text(hit("D1", "DM", PEER, entries[0][1])), "team-chat-2": conversation_page("D1", *shown(entries))}
         seen, _, _ = drive(search_source(reactions=True), responses)
         return [arguments["message_ts"] for tool, arguments in seen if tool == REACTIONS_TOOL]
 
@@ -452,7 +458,7 @@ class SearchReactionsTest(unittest.TestCase):
 
     def reacted(self, name):
         entries = [(PEER, "1792395000.000100", "question")]
-        responses = {"team-chat-1": search_text(hit("D1", "DM", PEER, entries[0][1])), "team-chat-2": conversation_page("D1", *entries), "team-chat-3": saved(name)}
+        responses = {"team-chat-1": search_text(hit("D1", "DM", PEER, entries[0][1])), "team-chat-2": conversation_page("D1", *shown(entries)), "team-chat-3": saved(name)}
         return search_parse(search_source(reactions=True), responses)["records"]["units"][0]["messages"][0]
 
     def test_parses_an_owner_reaction_to_owner_reacted_true(self):
@@ -468,7 +474,7 @@ class SearchReactionsTest(unittest.TestCase):
 
     def reaction_entries(self, text):
         entries = [(PEER, "1792395000.000100", "question")]
-        responses = {"team-chat-1": search_text(hit("D1", "DM", PEER, entries[0][1])), "team-chat-2": conversation_page("D1", *entries), "team-chat-3": text}
+        responses = {"team-chat-1": search_text(hit("D1", "DM", PEER, entries[0][1])), "team-chat-2": conversation_page("D1", *shown(entries)), "team-chat-3": text}
         return search_parse(search_source(reactions=True), responses)
 
     def test_a_reactions_text_that_is_neither_header_nor_no_reaction_text_is_a_failed_entry(self):
@@ -1277,7 +1283,7 @@ class SearchRelayStoreTest(SearchStoreCase):
 
     def test_marks_an_unreadable_reactions_read_failed(self):
         entries = [(PEER, "1792395000.000100", "question")]
-        responses = {"team-chat-1": search_text(hit("D1", "DM", PEER, entries[0][1])), "team-chat-2": conversation_page("D1", *entries), "team-chat-3": "{}"}
+        responses = {"team-chat-1": search_text(hit("D1", "DM", PEER, entries[0][1])), "team-chat-2": conversation_page("D1", *shown(entries)), "team-chat-3": "{}"}
         session, _ = self.run_store(search_source(reactions=True), responses)
 
         relative = f"kind=reactions/channel=D1/message=1792395000.000100/read={RUN}.team-chat"
@@ -1327,6 +1333,133 @@ class SearchApiStoreTest(SearchStoreCase):
         _, session, _ = self.fetch_store({**users, "U2": error_doc("user_not_found")})
 
         self.assertEqual(session.open("users", (("user", "U2"),), None).records(), [{"name": ""}])
+
+
+BATCH_SEARCHES = [{"name": f"s{number}", "filters": "is:dm", "since": "window"} for number in range(1, 13)]
+BATCH_TS = {"D1": "1792395000.000100", "D2": "1792395100.000100"}
+
+
+def batch_answer(call):
+    tool, arguments = call["tool"], call["arguments"]
+    if tool == SEARCH_TOOL:
+        return search_text(*(hit(channel, "DM", PEER, ts) for channel, ts in BATCH_TS.items()))
+    if tool == TOOL:
+        channel = arguments["channel_id"]
+        return conversation_page(channel, (PEER, BATCH_TS[channel], "question\nReactions: +1 (1)"))
+    if tool == REACTIONS_TOOL:
+        return saved("reactions_none.json")
+    raise AssertionError(tool)
+
+
+class SearchRelayBatchTest(SearchStoreCase):
+    def plan(self, session, source):
+        return slack.plan(source, SEARCH_WINDOW, {}, [], session, CONNECTOR)
+
+    def answer_all(self, session, step, answer=batch_answer):
+        for call in step["calls"]:
+            save_planned(session, call, answer(call))
+
+    def after_searches(self, source):
+        session = self.session()
+        self.answer_all(session, self.plan(session, source))
+        return session
+
+    def test_plans_the_first_page_of_every_search_together(self):
+        step = self.plan(self.session(), search_source(*BATCH_SEARCHES[:3]))
+
+        self.assertEqual([call["tool"] for call in step["calls"]], [SEARCH_TOOL] * 3)
+        self.assertEqual([call["id"].split("/")[1] for call in step["calls"]], ["search=s1", "search=s2", "search=s3"])
+
+    def test_plans_at_most_the_batch_size_calls_together(self):
+        step = self.plan(self.session(), search_source(*BATCH_SEARCHES))
+
+        self.assertEqual(len(step["calls"]), RELAY_BATCH)
+
+    def test_plans_the_conversation_reads_of_every_unit_together(self):
+        source = search_source()
+        session = self.after_searches(source)
+
+        step = self.plan(session, source)
+
+        self.assertEqual([(call["tool"], call["arguments"]["channel_id"]) for call in step["calls"]], [(TOOL, "D1"), (TOOL, "D2")])
+
+    def test_plans_the_thread_reads_of_every_thread_unit_together(self):
+        source = search_source()
+        session = self.session()
+        hits = [hit("C1", "#dev", PEER, "1792396000.000100", thread="1792395000.000100"), hit("C2", "#ops", PEER, "1792396100.000100", thread="1792395100.000100")]
+        save_planned(session, self.plan(session, source)["calls"][0], search_text(*hits))
+
+        step = self.plan(session, source)
+
+        self.assertEqual([(call["tool"], call["arguments"]["message_ts"]) for call in step["calls"]], [(THREAD_TOOL, "1792395000.000100"), (THREAD_TOOL, "1792395100.000100")])
+
+    def test_plans_the_reaction_reads_of_every_unit_together(self):
+        source = search_source(reactions=True)
+        session = self.after_searches(source)
+        self.answer_all(session, self.plan(session, source))
+
+        step = self.plan(session, source)
+
+        self.assertEqual([(call["tool"], call["arguments"]["channel_id"]) for call in step["calls"]], [(REACTIONS_TOOL, "D1"), (REACTIONS_TOOL, "D2")])
+
+    def settle(self, source, batched):
+        session = self.session() if batched else store_session(self.other.name)
+        for _ in range(40):
+            step = self.plan(session, source)
+            if step["done"]:
+                return slack.parse(source, SEARCH_WINDOW, {}, [], session, {})
+            self.answer_all(session, {"calls": step["calls"] if batched else step["calls"][:1]})
+        raise AssertionError("plan did not end")
+
+    def test_gives_the_same_units_whether_calls_are_answered_together_or_one_by_one(self):
+        self.other = tempfile.TemporaryDirectory()
+        self.addCleanup(self.other.cleanup)
+        source = search_source(*BATCH_SEARCHES[:2], reactions=True)
+
+        self.assertEqual(state.dump(self.settle(source, True)), state.dump(self.settle(source, False)))
+
+
+class SearchReactionsSkipTest(unittest.TestCase):
+    TS = "1792395000.000100"
+    REPLY_TS = "1792396000.000100"
+    SHOWN = "\nReactions: +1 (1)"
+
+    def conversation(self, shown=""):
+        return {"team-chat-1": search_text(hit("D1", "DM", PEER, self.TS)), "team-chat-2": conversation_page("D1", (PEER, self.TS, "question" + shown))}
+
+    def thread(self, parent="", reply=""):
+        hits = search_text(hit("C1", "#dev", PEER, self.REPLY_TS, thread=self.TS))
+        reply_text = thread_reply(PEER, self.REPLY_TS, "Can you review?" + reply, index=1, total=1)
+        return {"team-chat-1": hits, "team-chat-2": thread_page(reply_text, root=self.TS, total=1, parent_text=("Release notes" + parent,))}
+
+    def calls(self, responses):
+        seen, _, _ = drive(search_source(reactions=True), responses)
+        return [arguments["message_ts"] for tool, arguments in seen if tool == REACTIONS_TOOL]
+
+    def test_skips_the_reactions_read_of_a_message_shown_without_reactions(self):
+        self.assertEqual(self.calls(self.conversation()), [])
+
+    def test_reads_the_reactions_of_a_message_shown_with_reactions(self):
+        self.assertEqual(self.calls(self.conversation(self.SHOWN)), [self.TS])
+
+    def test_parses_a_message_shown_without_reactions_to_owner_reacted_false(self):
+        message = search_parse(search_source(reactions=True), self.conversation())["records"]["units"][0]["messages"][0]
+
+        self.assertIs(message["owner_reacted"], False)
+
+    def test_reads_the_reactions_of_a_message_known_only_from_its_search_hit(self):
+        responses = {"team-chat-1": search_text(hit("C9", "#dev", PEER, self.TS))}
+
+        self.assertEqual(self.calls(responses), [self.TS])
+
+    def test_skips_the_reactions_read_of_a_thread_message_shown_without_reactions(self):
+        self.assertEqual(self.calls(self.thread()), [])
+
+    def test_reads_only_the_reactions_of_the_thread_reply_shown_with_reactions(self):
+        self.assertEqual(self.calls(self.thread(reply=self.SHOWN)), [self.REPLY_TS])
+
+    def test_reads_only_the_reactions_of_the_thread_parent_shown_with_reactions(self):
+        self.assertEqual(self.calls(self.thread(parent=self.SHOWN)), [self.TS])
 
 
 if __name__ == "__main__":

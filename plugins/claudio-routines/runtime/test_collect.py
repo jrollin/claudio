@@ -3220,6 +3220,44 @@ class RelayCaptureTest(RelayTestCase):
         self.assertEqual(self.plan_err_at(2), "relay capture mismatch sources-page-1: pa ge extra\n")
 
 
+class StoreBatchCapTest(unittest.TestCase):
+    CALLS = [{"id": f"kind=history/channel=D{number}/read=1_2-RUN.team-chat/page-001", "tool": "t", "arguments": {}, "digest": None} for number in range(1, 5)]
+
+    class Adapter:
+        STORE = True
+
+        def __init__(self, calls):
+            self.calls = calls
+
+        def plan(self, source, window, cursor, entries, session, connector):
+            return {"done": False, "partial": None, "calls": self.calls}
+
+    class Session:
+        def __init__(self, saved):
+            self.saved = saved
+
+        def saved_pages(self):
+            return self.saved
+
+        def page_path(self, call_id):
+            return os.path.join(os.devnull, call_id)
+
+    def plan(self, saved, cap):
+        draft = types.SimpleNamespace(cursor={}, selected=[])
+        source = {"name": "team-chat", "call_cap": cap}
+        return collect.store_plan_step(self.Adapter(self.CALLS), source, {}, draft, self.Session(saved), "Connector")
+
+    def test_lists_only_the_calls_that_fit_under_the_call_cap(self):
+        step = self.plan(saved=3, cap=5)
+
+        self.assertEqual([call["id"] for call in step["calls"]], [call["id"] for call in self.CALLS[:2]])
+
+    def test_lists_every_call_when_they_all_fit_under_the_call_cap(self):
+        step = self.plan(saved=0, cap=10)
+
+        self.assertEqual(len(step["calls"]), len(self.CALLS))
+
+
 class CallCapTest(RelayTestCase):
     def test_ends_with_a_call_cap_partial(self):
         self.doc.pages = collect.CALL_CAP + 1

@@ -1286,6 +1286,17 @@ Owner-gated: needs the release tag, the setup script paste at the cloud environm
 - **Status**: Complete
 - **Result**: three judge rules in the tribe template, checked by 3 template tests; the next cloud tribe run shows whether the model follows them (model eval, AC-36.13)
 
+### T-118: Batch the chat relay reads and skip reactions reads that show none
+- A local Slack recap of 2026-11-03 took about 13 minutes for 93 relayed calls: `plan` listed one call per step, so each call cost two model turns, and 32 of its 36 reactions reads came back empty.
+- The chat adapter lists the independent reads of a stage in one step, at most 10 (the first page of every search, then the conversation, thread and reactions reads), deduplicated by call id, and `store_plan_step` lists no more calls than `call_cap` leaves.
+- A message whose conversation or thread read of this run shows no `Reactions:` line has `owner_reacted` false without a reactions read. The flag is never stored in a row: a stored read can be older than a reaction, so a reused read keeps its reactions read.
+- The page sizes of T-110 are unchanged: a larger page would pass the model's copy safeguard less often.
+- Tests: a step lists the first page of every search, the conversation, thread and reactions reads of every unit, and at most 10 calls; answering a batch together or one by one gives the same units; `store_plan_step` truncates to the cap; a message shown without reactions skips its read and parses to `owner_reacted` false, one shown with reactions, a search-only message and a thread parent or reply keep theirs as the flag says; rows never hold the flag, so a restored record has it unknown; a unit keeps a known flag when a later copy of the message has none. On the real run of 2026-11-03, the new `plan` lists no call the old run lacked and `parse` gives the same collection, `features.json`, `base.json` and `rules.json`.
+- **Refs**: US-28, TD-21, T-110
+- **Files**: `plugins/claudio-routines/runtime/providers/_slack_read.py` (modify), `plugins/claudio-routines/runtime/providers/_slack_search.py` (modify), `plugins/claudio-routines/runtime/providers/slack.py` (modify), `plugins/claudio-routines/runtime/collect.py` (modify), `plugins/claudio-routines/runtime/providers/test_slack_search.py` (modify), `plugins/claudio-routines/runtime/providers/test_slack_reads.py` (modify), `plugins/claudio-routines/runtime/test_collect.py` (modify), `plugins/claudio-routines/runtime/providers/README.md` (modify), `plugins/claudio-routines/README.md` (modify), `docs/features/routines-as-code/design.md` (modify)
+- **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public`
+- **Status**: Complete
+
 ## Related Features
 
 - **onboarding (claudio-spec skill)**: its examples are made generic in a separate commit that lands before this feature.

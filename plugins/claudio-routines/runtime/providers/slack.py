@@ -56,8 +56,8 @@ def plan(source, window, cursor, entries, session, connector):
     try:
         _walk(source, window, _stored(cursor), session)
     except _Pending as pending:
-        call = {"id": pending.call_id, "connector": connector, "tool": pending.tool, "arguments": pending.arguments, "digest": None}
-        return {"done": False, "partial": None, "calls": [call]}
+        calls = [{"id": call.call_id, "connector": connector, "tool": call.tool, "arguments": call.arguments, "digest": None} for call in pending.calls]
+        return {"done": False, "partial": None, "calls": calls}
     except PartialRead as stop:
         return _common.ended(stop.why)
     except SourceUnreadable:

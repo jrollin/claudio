@@ -27,6 +27,8 @@ from ._slack_read import (
     ThreadNotFound,
     _api_failure,
     _channel_read,
+    _Gather,
+    _Pending,
     _error_code,
     _is_count,
     _next_cursor,
@@ -97,7 +99,8 @@ class _Unit:
         key = decimal.Decimal(item.ts)
         before = self.items.get(key)
         if before is not None:
-            item = item._replace(bot=item.bot or before.bot, name=item.name or before.name, thread_ts=item.thread_ts or before.thread_ts)
+            reactions = before.reactions if item.reactions is None else item.reactions
+            item = item._replace(bot=item.bot or before.bot, name=item.name or before.name, thread_ts=item.thread_ts or before.thread_ts, reactions=reactions)
         self.items[key] = item
 
     def ordered(self):
@@ -120,12 +123,17 @@ def _within(hit, start, to):
 
 def _search_units(source, window, reader):
     cap = source.get("search_page_cap", SEARCH_PAGE_CAP)
-    hits, lost = [], {}
+    hits, lost, gather = [], {}, _Gather()
     for search in source["searches"]:
-        found, cut = reader.search(search, _since(search, window), cap)
+        try:
+            found, cut = reader.search(search, _since(search, window), cap)
+        except _Pending as pending:
+            gather.add(pending)
+            continue
         hits.extend(found)
         if cut is not None:
             lost[f"search:{search['name']}"] = f"{PAGE_CAP_PARTIAL}: {cut} page(s) read"
+    gather.flush()
     conversations, threads, singles = _grouped(hits)
     starts = _add_rereads(source.get("rereads") or [], hits, conversations, threads)
     lost.update(_read_conversations(reader, conversations, starts))
@@ -134,8 +142,10 @@ def _search_units(source, window, reader):
     for unit in units:
         unit.items = {key: reader.named(item) for key, item in unit.items.items()}
     if source.get("reactions") is True:
+        gather = _Gather()
         for unit in units:
-            lost.update(_read_reactions(reader, unit, source["owner"]))
+            lost.update(_read_reactions(reader, unit, source["owner"], gather))
+        gather.flush()
     return [_unit_record(unit) for unit in units], lost
 
 
@@ -175,10 +185,13 @@ def _reread_unit(hit):
 
 
 def _read_conversations(reader, conversations, starts):
-    lost = {}
+    lost, gather = {}, _Gather()
     for channel, unit in list(conversations.items()):
         try:
             read = reader.conversation(channel, starts.get(channel))
+        except _Pending as pending:
+            gather.add(pending)
+            continue
         except InvalidEntity as failure:
             lost[channel] = failure.code
             del conversations[channel]
@@ -195,6 +208,7 @@ def _read_conversations(reader, conversations, starts):
         except (ChannelFailed, InvalidEntity) as failure:
             lost[channel] = failure.code
             del conversations[channel]
+    gather.flush()
     return lost
 
 
@@ -203,13 +217,15 @@ def _known_oldest(known):
 
 
 def _read_threads(reader, threads, failed, oldest):
-    lost = {}
+    lost, gather = {}, _Gather()
     for (channel, root), unit in list(threads.items()):
         if channel in failed or channel in lost:
             del threads[(channel, root)]
             continue
         try:
             items = reader.thread(channel, root, oldest.get((channel, root)))
+        except _Pending as pending:
+            gather.add(pending)
         except ChannelFailed as failure:
             lost[channel] = failure.code
             del threads[(channel, root)]
@@ -219,16 +235,22 @@ def _read_threads(reader, threads, failed, oldest):
         else:
             for item in items:
                 unit.add(item._replace(thread_ts=root))
+    gather.flush()
     return lost
 
 
-def _read_reactions(reader, unit, owner):
+def _read_reactions(reader, unit, owner, gather):
     messages, lost = unit.ordered(), {}
     last = max((decimal.Decimal(item.ts) for item in messages if item.author == owner), default=None)
     later = [item for item in messages if item.author != owner and (last is None or decimal.Decimal(item.ts) > last)]
     for item in later[-REACTIONS_PER_UNIT:]:
+        if item.reactions is False:
+            unit.reacted[decimal.Decimal(item.ts)] = False
+            continue
         try:
             users = reader.reactions(unit.channel, item.ts)
+        except _Pending as pending:
+            gather.add(pending)
         except (ChannelFailed, ThreadNotFound, ReactionsFailed, InvalidEntity) as failure:
             lost[f"reactions:{unit.channel}:{item.ts}"] = failure.code
         else:
@@ -407,10 +429,10 @@ def _unit_thread_page(channel, call_id, text, root, to, seen_ts):
 def _thread_parent(channel, root, lines):
     marker = _replies_line(lines, root)
     end = marker[0] if marker else _no_replies_line(lines)
-    kept, _ = _without_metadata(lines[PARENT_LINES : len(lines) if end is None else end])
+    kept, _, reacted = _without_metadata(lines[PARENT_LINES : len(lines) if end is None else end])
     who = lines[1][len(FROM_OPEN) :] if lines[1].startswith(FROM_OPEN) else ""
     author, name, bot = _who_parts(who)
-    return Item(channel, root, root, author, "\n".join(kept), name, bot)
+    return Item(channel, root, root, author, "\n".join(kept), name, bot, reacted)
 
 
 class _ApiReader:

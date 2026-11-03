@@ -350,7 +350,8 @@ Pick up:
   - With several sources relaying in parallel, a capture of another source can share the tool name. A line that names identity paths such as `channel_id` or `message_ts` usually points at that capture, not at a retyped call: a known false positive.
 
 Model:
-- The model makes each call of `calls` once and runs `plan` again.
+- The model makes each call of `calls` once and runs `plan` again. When `calls` lists several calls, they are independent: the model makes them in parallel in one message.
+- A chat source lists up to 10 independent reads in one step: the first page of each search, then the history reads, the thread reads and the reactions reads of the units found. A step never lists more calls than `call_cap` leaves.
 - When `plan` prints again a call the model already made, the hook missed its result. The model then saves that result by hand at the call's `path`, unchanged, after creating its folder: it copies the file when the harness saved the result to one, else it writes the text with the Write tool, never in a shell command. It then runs `plan` again.
 - A `relay capture mismatch` line in the error output of `plan` says how the call the model made differs from the printed one. It is a diagnostic only: the model never makes that call again, and saves its result by hand as above.
 
@@ -650,6 +651,7 @@ With `places.<place>.store_dir` set, the runs of that place share their reads:
 - A channel history fetches only the gaps of its span that the reused reads leave, one read per gap. A thread is read from the end of its covered part.
 - Messages merge by ts, the newest fetch winning, then keep the needed span.
 - Reactions, members and user names reuse the newest fresh read whole.
+- A reactions read is skipped for a message whose history or thread read of this run shows no `Reactions:` line: its `owner_reacted` is false. A message known only from a search hit, or from a stored read reused from an earlier fetch, keeps its reactions read: the flag is never stored, because a stored read can be older than a reaction.
 - A reused read is linked into `<run>/store` and listed in the manifest, so the run folder replays alone.
 - A reused read spends no call of `call_cap` or of the page caps.
 - Records that another runtime commit parsed are reparsed from their pages before use, with no network.

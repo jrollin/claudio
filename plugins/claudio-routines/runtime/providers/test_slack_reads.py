@@ -12,7 +12,7 @@ from providers import _slack_reads as reads
 from providers import slack
 from providers._errors import PartialRead, SourceUnreadable
 from providers._slack_read import HISTORY_PATH, ChannelFailed, Item, _api_page, _Calls, _Pending, _relay_page
-from providers._slack_search import MEMBERS_PATH, REACTIONS_TOOL, SEARCH_TOOL, Hit, _search_page, _search_types, _unit_thread_page
+from providers._slack_search import MEMBERS_PATH, REACTIONS_TOOL, SEARCH_TOOL, Hit, _search_page, _search_types, _Unit, _unit_thread_page
 from providers.slack_support import CONNECTOR, ROOT_TS, STORED, WINDOW, fixture, one_channel, relay_message, relay_page
 from providers.test_http import FakeOpener, FakeResponse, make_client
 
@@ -104,6 +104,20 @@ class KeyTest(unittest.TestCase):
         self.assertNotIn("secret", str(caught.exception))
 
 
+class UnitMergeTest(unittest.TestCase):
+    def merged(self, *items):
+        unit = _Unit(HIT)
+        for item in items:
+            unit.add(item)
+        return unit.ordered()[0]
+
+    def test_keeps_a_known_reactions_flag_when_a_later_copy_does_not_carry_it(self):
+        self.assertIs(self.merged(ITEM._replace(reactions=False), ITEM).reactions, False)
+
+    def test_takes_the_reactions_flag_of_a_later_copy_that_carries_it(self):
+        self.assertIs(self.merged(ITEM, ITEM._replace(reactions=True)).reactions, True)
+
+
 class RowsTest(unittest.TestCase):
     def test_leaves_the_channel_out_of_a_history_row(self):
         self.assertEqual(
@@ -113,6 +127,16 @@ class RowsTest(unittest.TestCase):
 
     def test_restores_a_history_record_from_its_row(self):
         self.assertEqual(reads.from_rows("history", {"channel": CHANNEL}, reads.to_rows("history", [ITEM, ROOT])), [ITEM, ROOT])
+
+    def test_leaves_the_reactions_flag_out_of_a_row_because_a_stored_read_can_be_older_than_a_reaction(self):
+        item = ITEM._replace(reactions=False)
+
+        self.assertEqual(reads.to_rows("history", [item]), reads.to_rows("history", [ITEM]))
+
+    def test_restores_a_record_whose_reactions_are_unknown(self):
+        restored = reads.from_rows("history", {"channel": CHANNEL}, reads.to_rows("history", [ITEM._replace(reactions=False)]))
+
+        self.assertIsNone(restored[0].reactions)
 
     def test_leaves_the_channel_and_thread_out_of_a_thread_row(self):
         self.assertEqual(reads.to_rows("thread", [ROOT]), [{"author": "U1", "bot": False, "name": "Ada Example", "text": "Release notes", "ts": ROOT_TS}])
