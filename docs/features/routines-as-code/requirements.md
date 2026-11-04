@@ -637,9 +637,13 @@ WHEN the digest page is written
 THE renderer writes the chat message, and the model posts it unchanged to the digest channel, per BR-42
 
 **Acceptance Criteria:**
-- [ ] The message holds the summary, the important points, the blind spots in one line and the page link *(AC-40.1)*
+- [ ] The message holds the run line, a counts line (urgent with its High count, new, moved, resolved, ticked), the sections `Do now`, `This week` and `Later`, the blind spots in one line and the page link; a section with no line is left out *(AC-40.1)*
 - [ ] A run that failed the structure check posts one `degraded` message instead *(AC-40.2)*
 - [ ] A local run posts only with `--post`, per BR-26 *(AC-40.3)*
+- [ ] `Do now` lists the urgent warnings, most severe first, then new before moved before unchanged, each with its severity and its mitigation leads after `Next:`; it shows at most 5 and counts the rest as `+N more urgent` *(AC-40.4)*
+- [ ] `This week` lists the decisions with their deadlines, then the checks of the group `This week`, newest first, at most 5, and counts the rest as `+N more checks` *(AC-40.5)*
+- [ ] `Later` counts the warnings that are not urgent by `when`, counts the checks of the month-end and investigate groups, and names the new warnings that are not urgent and the resolved warnings, at most 3 names each then `+N` *(AC-40.6)*
+- [ ] A baseline run says so on the counts line and names no new or resolved warning *(AC-40.7)*
 
 ### Run a tribe digest on the runtime {#US-41}
 

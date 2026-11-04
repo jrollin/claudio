@@ -10,19 +10,23 @@ from tribe_support import (
 
 LINK = "https://example.test/pages/"
 RUN = "Run: regular run, window 2026-03-11 08:30 UTC to 2026-03-12 08:30 UTC, 2 of 3 sources read."
+COUNTS = "2 urgent (1 High), 1 new, 1 moved, 1 resolved, 1 ticked."
 EXPECTED_SECTIONS = {
-    "": ["# Sample digest : 2026-03-12", RUN],
-    "## Since last run": [
-        "- New: Queue latency above target, Medium, now.",
-        "- Resolved: Cache hit ratio below target, under every threshold for 2 runs.",
-        "- Ticked: Check the retry policy of the importer.",
+    "": ["# Sample digest : 2026-03-12", RUN, COUNTS],
+    "## Do now": [
+        "- High: Worker pool near its ceiling. Next: add a second pool for batch jobs; cap the concurrency of nightly imports; alert at 85 percent of the pool.",
+        "- Medium: Queue latency above target. Next: move long jobs to their own queue; spread out the nightly burst.",
     ],
-    "## Important": [
-        "- Urgent: Queue latency above target, Medium, now, runway none, 140 s of 120 s.",
-        "- Urgent: Worker pool near its ceiling, High, now, runway none at peak, 94 of 100 slots.",
-        "- Moved: Primary volume filling up, severity from Low to Medium.",
+    "## This week": [
         "- Decision: Second worker pool for batch jobs, before the month-end.",
         "- Decision: Freeze window for the spring release, 2026-03-20.",
+        "- Check: Find what moved the queue latency.",
+        "- Check: Read the worker pool quota.",
+    ],
+    "## Later": [
+        "- 2 within months, 1 watch.",
+        "- Checks: 2 before the month-end, 1 to investigate.",
+        "- Resolved: Cache hit ratio below target.",
     ],
     "tail": [
         "Blind spots: alerts-feed (alerts feed returned no data since 2026-03-09), metrics-trend (metrics trend read failed), Mobile app, Issue tracker, 1 more not listed.",
@@ -63,16 +67,19 @@ class MessageCase(PublishCase):
 
 
 class PeriodTests(MessageCase):
-    def test_a_runway_a_decision_deadline_and_a_ticked_check_ending_with_a_period_keep_one_period(self):
+    def test_a_lead_a_decision_deadline_and_a_check_ending_with_a_period_keep_one_period(self):
         warnings = copy.deepcopy(self.summary_doc["warnings"])
         for warning in warnings.values():
-            warning["runway"] = "none yet."
+            warning["mitigation"] = ["add a worker.", "cap the imports."]
+        checks = {"read-quota": {"group": "This week", "since": "2026-03-06T08:30:00Z", "text": "Read the quota.", "topic": "Capacity"}}
         self.use_summary(
             warnings=warnings,
+            checks=checks,
             decisions=[{"decision": "Freeze the release", "deadline": "Friday.", "options": "none", "topic": "Release"}],
-            done=[{"key": "retry-policy", "text": "Check the retry policy."}],
         )
-        self.assertNotIn("..", self.sent())
+        text = self.sent()
+        self.assertNotIn("..", text)
+        self.assertNotIn(".;", text)
 
 
 class SectionTests(MessageCase):
@@ -91,17 +98,21 @@ class SectionTests(MessageCase):
         self.use_config(lambda routine: routine["page"].update({"link": "https://docs.example.com/p/{{id}}/view"}))
         self.assertIn(f"\nPage: https://docs.example.com/p/{NEW_PAGE}/view\n", self.sent())
 
-    def test_a_baseline_run_names_no_comparison(self):
+    def test_a_baseline_run_names_no_comparison_and_no_change(self):
         self.use_summary(baseline=True)
         text = self.sent()
         self.assertIn("Run: baseline run, window", text)
-        self.assertEqual(sections(text)["## Since last run"], ["- Baseline run: no earlier digest to compare with."])
+        self.assertEqual(
+            sections(text)[""][2], "2 urgent (1 High). Baseline run: no earlier digest to compare with."
+        )
+        self.assertNotIn("Resolved:", text)
 
-    def test_a_run_without_important_points_has_no_important_section(self):
-        self.use_summary(warnings={}, moved=[], decisions=[], resolved=[], done=[])
+    def test_a_run_with_nothing_to_act_on_has_no_action_section(self):
+        self.use_summary(warnings={}, checks={}, moved=[], decisions=[], resolved=[], done=[])
         text = self.sent()
-        self.assertNotIn("## Important", text)
-        self.assertNotIn("## Since last run", text)
+        for heading in ("## Do now", "## This week", "## Later"):
+            self.assertNotIn(heading, text)
+        self.assertEqual(sections(text)[""][2], "0 urgent, 0 new, 0 moved, 0 resolved.")
 
     def test_no_blind_spot_is_said_in_one_line(self):
         self.use_summary(blind_spots=[], blind_spots_dropped=0, coverage_notes=[])
@@ -140,64 +151,176 @@ class SectionTests(MessageCase):
         self.assertIn("\nWeekly heading: not written, tried again on the next run.\n", text)
 
 
-class ImportantPointTests(MessageCase):
-    def important(self, **fields):
+class ActionCase(MessageCase):
+    def section(self, heading, **fields):
         self.use_summary(**fields)
-        return sections(self.sent()).get("## Important", [])
+        return sections(self.sent()).get(heading, [])
 
     def warnings_with(self, key, **fields):
         warnings = copy.deepcopy(self.summary_doc["warnings"])
         warnings[key].update(fields)
         return warnings
 
-    def test_a_monitor_warning_that_is_new_is_an_important_point(self):
-        lines = self.important(warnings=self.warnings_with("queue-latency", metric="monitor-1001"), moved=[], decisions=[])
-        self.assertIn("- Monitor: Queue latency above target, new.", lines)
+    def urgent_warnings(self, count, change="same"):
+        template = self.summary_doc["warnings"]["queue-latency"]
+        return {f"urgent-{index:02d}": {**template, "title": f"Urgent {index:02d}", "change": change} for index in range(count)}
 
-    def test_a_monitor_warning_that_moved_is_an_important_point(self):
-        warnings = self.warnings_with("disk-growth", metric="monitor-1001")
-        self.assertIn("- Monitor: Primary volume filling up, moved.", self.important(warnings=warnings))
+    def checks(self, count, group="This week"):
+        return {
+            f"check-{index:02d}": {"group": group, "since": f"2026-03-{index + 1:02d}T08:30:00Z", "text": f"Check {index:02d}", "topic": "Capacity"}
+            for index in range(count)
+        }
 
-    def test_a_monitor_warning_with_no_change_is_not_an_important_point(self):
-        warnings = self.warnings_with("restore-untested", metric="monitor-1001")
-        self.assertNotIn("- Monitor: Backup restore never tested, same.", self.important(warnings=warnings))
 
-    def test_a_metric_warning_that_is_not_a_monitor_is_not_a_monitor_point(self):
-        lines = self.important(warnings=self.warnings_with("queue-latency", metric="queue"))
-        self.assertEqual([line for line in lines if line.startswith("- Monitor:")], [])
+class CountsLineTests(ActionCase):
+    def counts(self, **fields):
+        self.use_summary(**fields)
+        return sections(self.sent())[""][2]
 
-    def test_a_severity_move_is_an_important_point(self):
-        self.assertIn("- Moved: Primary volume filling up, severity from Low to Medium.", self.important())
+    def test_the_counts_line_names_the_urgent_new_moved_resolved_and_ticked_counts(self):
+        self.assertEqual(self.counts(), COUNTS)
 
-    def test_a_when_move_is_an_important_point(self):
-        moved = [{"key": "disk-growth", "field": "when", "from": "watch", "to": "within months"}]
-        self.assertIn("- Moved: Primary volume filling up, when from watch to within months.", self.important(moved=moved))
+    def test_a_warning_that_moved_in_two_fields_counts_once(self):
+        moved = [
+            {"key": "disk-growth", "field": "severity", "from": "Low", "to": "Medium"},
+            {"key": "disk-growth", "field": "status", "from": "open", "to": "in progress"},
+        ]
+        self.assertIn(", 1 moved,", self.counts(moved=moved))
 
-    def test_a_status_move_is_not_an_important_point(self):
-        moved = [{"key": "disk-growth", "field": "status", "from": "open", "to": "in progress"}]
-        self.assertEqual([line for line in self.important(moved=moved) if line.startswith("- Moved:")], [])
+    def test_no_ticked_check_leaves_the_ticked_count_out(self):
+        self.assertEqual(self.counts(done=[]), "2 urgent (1 High), 1 new, 1 moved, 1 resolved.")
 
-    def test_a_runway_under_14_days_is_an_urgent_point(self):
-        lines = self.important(warnings=self.warnings_with("restore-untested", runway="about 10 days"), moved=[], decisions=[])
-        self.assertIn("- Urgent: Backup restore never tested, Low, watch, runway about 10 days.", lines)
+    def test_no_high_urgent_warning_leaves_the_high_count_out(self):
+        warnings = self.warnings_with("worker-pool-ceiling", severity="Medium")
+        self.assertTrue(self.counts(warnings=warnings).startswith("2 urgent, 1 new"))
 
-    def test_a_runway_of_14_days_is_not_an_urgent_point(self):
-        lines = self.important(warnings=self.warnings_with("freeze-overlap", runway="2 weeks"), moved=[], decisions=[])
+
+class DoNowTests(ActionCase):
+    def do_now(self, **fields):
+        return self.section("## Do now", **fields)
+
+    def test_an_urgent_warning_is_a_line_with_its_severity_and_all_its_leads(self):
+        self.assertEqual(self.do_now(), EXPECTED_SECTIONS["## Do now"])
+
+    def test_the_most_severe_warning_comes_first(self):
+        lines = self.do_now(warnings=self.warnings_with("queue-latency", severity="Low"))
+        self.assertEqual([line.split(".")[0] for line in lines], ["- High: Worker pool near its ceiling", "- Low: Queue latency above target"])
+
+    def test_a_new_warning_comes_before_an_unchanged_one_of_the_same_severity(self):
+        lines = self.do_now(warnings=self.warnings_with("queue-latency", severity="High"))
+        self.assertEqual([line.split(".")[0] for line in lines], ["- High: Queue latency above target", "- High: Worker pool near its ceiling"])
+
+    def test_a_moved_warning_comes_before_an_unchanged_one_of_the_same_severity(self):
+        warnings = {**self.urgent_warnings(1), "urgent-zz": {**self.urgent_warnings(1)["urgent-00"], "title": "Moved one", "change": "moved"}}
+        self.assertEqual([line.split(".")[0] for line in self.do_now(warnings=warnings)], ["- Medium: Moved one", "- Medium: Urgent 00"])
+
+    def test_a_warning_without_leads_has_no_next_step(self):
+        warnings = self.warnings_with("queue-latency", mitigation=[])
+        self.assertIn("- Medium: Queue latency above target.", self.do_now(warnings=warnings))
+
+    def test_a_runway_under_14_days_is_urgent(self):
+        warnings = self.warnings_with("restore-untested", runway="about 10 days")
+        self.assertIn("- Low: Backup restore never tested. Next: run one drill on a copy of last night's backup.", self.do_now(warnings=warnings))
+
+    def test_a_runway_of_14_days_is_not_urgent(self):
+        lines = self.do_now(warnings=self.warnings_with("freeze-overlap", runway="2 weeks"))
         self.assertEqual([line for line in lines if "Release freeze" in line], [])
 
-    def test_a_runway_of_months_is_not_an_urgent_point(self):
-        warnings = self.warnings_with("disk-growth", runway="about 5 months at +9 percent a month")
-        self.assertEqual([line for line in self.important(warnings=warnings) if "Primary volume" in line and "Urgent" in line], [])
+    def test_a_runway_of_months_is_not_urgent(self):
+        lines = self.do_now(warnings=self.warnings_with("disk-growth", runway="about 5 months at +9 percent a month"))
+        self.assertEqual([line for line in lines if "Primary volume" in line], [])
+
+    def test_urgent_warnings_past_the_cap_are_counted_not_listed(self):
+        lines = self.do_now(warnings=self.urgent_warnings(7))
+        self.assertEqual((len(lines), lines[-1]), (6, "- +2 more urgent, see the page."))
+
+    def test_urgent_warnings_up_to_the_cap_have_no_overflow_line(self):
+        lines = self.do_now(warnings=self.urgent_warnings(5))
+        self.assertEqual((len(lines), any("more urgent" in line for line in lines)), (5, False))
+
+    def test_no_urgent_warning_has_no_do_now_section(self):
+        warnings = copy.deepcopy(self.summary_doc["warnings"])
+        for key in ("queue-latency", "worker-pool-ceiling"):
+            warnings[key]["when"] = "watch"
+        self.assertEqual(self.do_now(warnings=warnings), [])
+
+
+class ThisWeekTests(ActionCase):
+    def this_week(self, **fields):
+        return self.section("## This week", **fields)
+
+    def test_the_decisions_with_their_deadlines_come_before_the_checks_of_the_week(self):
+        self.assertEqual(self.this_week(), EXPECTED_SECTIONS["## This week"])
+
+    def test_the_newest_check_comes_first(self):
+        checks = {
+            "a-old": {"group": "This week", "since": "2026-03-02T08:30:00Z", "text": "Older one", "topic": "Capacity"},
+            "b-new": {"group": "This week", "since": "2026-03-11T08:30:00Z", "text": "Newer one", "topic": "Capacity"},
+        }
+        self.assertEqual(self.this_week(decisions=[], checks=checks), ["- Check: Newer one.", "- Check: Older one."])
+
+    def test_checks_of_the_same_age_come_in_key_order(self):
+        same = {"group": "This week", "since": "2026-03-02T08:30:00Z", "topic": "Capacity"}
+        checks = {"b-key": {**same, "text": "Second"}, "a-key": {**same, "text": "First"}}
+        self.assertEqual(self.this_week(decisions=[], checks=checks), ["- Check: First.", "- Check: Second."])
+
+    def test_checks_past_the_cap_are_counted_not_listed(self):
+        lines = self.this_week(decisions=[], checks=self.checks(7))
+        self.assertEqual((len(lines), lines[-1]), (6, "- +2 more checks, see the page."))
+
+    def test_checks_up_to_the_cap_have_no_overflow_line(self):
+        lines = self.this_week(decisions=[], checks=self.checks(5))
+        self.assertEqual((len(lines), any("more checks" in line for line in lines)), (5, False))
+
+    def test_a_check_of_another_group_is_not_listed_this_week(self):
+        self.assertEqual(self.this_week(decisions=[], checks=self.checks(2, group="Investigate")), [])
+
+    def test_no_decision_and_no_check_has_no_this_week_section(self):
+        self.assertEqual(self.this_week(decisions=[], checks={}), [])
+
+
+class LaterTests(ActionCase):
+    def later(self, **fields):
+        return self.section("## Later", **fields)
+
+    def test_the_later_section_counts_what_is_not_urgent_and_names_the_changes(self):
+        self.assertEqual(self.later(), EXPECTED_SECTIONS["## Later"])
+
+    def test_a_zero_count_is_not_listed(self):
+        warnings = self.warnings_with("disk-growth", when="watch")
+        warnings["freeze-overlap"]["when"] = "watch"
+        self.assertEqual(self.later(warnings=warnings)[0], "- 3 watch.")
+
+    def test_a_new_warning_that_is_not_urgent_is_named_before_the_resolved_ones(self):
+        lines = self.later(warnings=self.warnings_with("restore-untested", change="new"))
+        self.assertIn("- New: Backup restore never tested. Resolved: Cache hit ratio below target.", lines)
+
+    def test_names_past_the_cap_are_counted(self):
+        resolved = [{"key": f"r{index}", "title": f"Resolved {index}", "reason": "gone"} for index in range(5)]
+        lines = self.later(resolved=resolved)
+        self.assertIn("- Resolved: Resolved 0, Resolved 1, Resolved 2, +2.", lines)
+
+    def test_a_baseline_run_names_no_change(self):
+        lines = self.later(baseline=True, warnings=self.warnings_with("restore-untested", change="new"))
+        self.assertEqual([line for line in lines if "New:" in line or "Resolved:" in line], [])
+
+    def test_no_later_item_has_no_later_section(self):
+        self.assertEqual(self.later(warnings=self.urgent_warnings(2), checks={}, resolved=[]), [])
 
 
 class CleaningTests(MessageCase):
     def test_a_mention_and_control_characters_are_cleaned_in_the_message(self):
-        resolved = [{"key": "cache", "title": "Cache", "reason": "gone <@usr_aaa01> now\x07done"}]
+        warnings = copy.deepcopy(self.summary_doc["warnings"])
+        warnings["queue-latency"]["mitigation"] = ["ask <@usr_bbb02>\x07now"]
+        resolved = [{"key": "cache", "title": "Cache <@usr_aaa01>\x07done", "reason": "gone"}]
         decisions = [{"decision": "Pool\x1b[31m", "deadline": "@team soon", "options": "x", "topic": "Capacity"}]
-        self.use_summary(resolved=resolved, decisions=decisions)
+        checks = {"read-quota": {"group": "This week", "since": "2026-03-06T08:30:00Z", "text": "Read <@usr_ccc03>\x07quota", "topic": "Capacity"}}
+        self.use_summary(warnings=warnings, resolved=resolved, decisions=decisions, checks=checks)
         text = self.sent()
-        self.assertEqual(sections(text)["## Since last run"][1], "- Resolved: Cache, gone   usr_aaa01  now done.")
-        self.assertEqual([line for line in sections(text)["## Important"] if "Decision" in line], ["- Decision: Pool [31m,  team soon."])
+        found = sections(text)
+        self.assertEqual(found["## Do now"][1], "- Medium: Queue latency above target. Next: ask   usr_bbb02  now.")
+        self.assertEqual(found["## This week"], ["- Decision: Pool [31m,  team soon.", "- Check: Read   usr_ccc03  quota."])
+        self.assertEqual(found["## Later"][-1], "- Resolved: Cache   usr_aaa01  done.")
         self.assertEqual([character for character in text if character in "\x07\x1b<>@"], [])
 
 

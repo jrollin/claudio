@@ -1301,15 +1301,23 @@ Stored checks absent from the judgment are kept unchanged. The correction loop i
 
 ### TD-53: Tribe chat message
 
-**Choice**: `tribe.py message` renders the message:
-- the run kind, the new and resolved warnings, the ticked checks and the sources read out of those configured;
-- the important points: warnings past a threshold (judged `when` of `now`, since thresholds are prose rules) or with a runway under 14 days, moved severity or when, monitor changes, the decisions;
+**Choice**: `tribe.py message` renders the message from the summary, sorted so the first lines are the ones to act on:
+- the run line and a counts line: urgent warnings with the High ones, new, moved (one per warning), resolved and ticked; a baseline run says so instead;
+- `Do now`: the urgent warnings, that is a judged `when` of `now` (thresholds are prose rules) or a runway under 14 days, most severe first, then new, moved, unchanged, then key; each line holds the severity, the title and all the mitigation leads after `Next:`; at most 5 lines, the rest as `+N more urgent, see the page`;
+- `This week`: the decisions with their deadlines, then the checks of the group `This week`, newest first, at most 5, the rest as `+N more checks, see the page`;
+- `Later`: the counts of the other warnings by `when`, the counts of the month-end and investigate checks, and the names, at most 3 then `+N`, of the new warnings that are not urgent and of the resolved warnings;
 - the blind spots in one line, and the page link:
   - the line names the gap keys, then the coverage note sources, at most 8 names in all (the blind spot cap), and the names past the cap join the `N more not listed` count (BR-64).
 
+The message reads `mitigation` and `checks` from the summary the page already renders from, so the judgment and the state do not change.
+
 A degraded run's message is one line that starts with `degraded:` and names the cause (a rejected judgment, a failed structure check, a failed create). The model posts it unchanged to the digest channel when the run's post setting is `yes`, which holds in the cloud, and locally only with `--post` (BR-26, BR-42).
 
-**Rationale**: the same contract as Prod watch's digest.
+**Alternatives considered**:
+- One uncapped `Important` list with the runway of each urgent warning: rejected, a live run gave 13 urgent lines and 4,075 characters that did not say what to do.
+- Oldest checks first: rejected, the oldest unticked checks are often settled, while the newest belong to the warnings of the run.
+
+**Rationale**: the same contract as Prod watch's digest, and the recap's counts line and capped lists: the chat message says what to do now, this week and later, and the page keeps the detail.
 
 ### TD-54: Tribe template and enforced rules
 
