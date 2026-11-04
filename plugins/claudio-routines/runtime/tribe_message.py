@@ -9,8 +9,13 @@ from state import InputError
 RUNWAY = re.compile(r"(\d+(?:\.\d+)?)\s*(minute|hour|day|week|month)s?\b", re.IGNORECASE)
 UNIT_DAYS = {"minute": 1 / 1440, "hour": 1 / 24, "day": 1, "week": 7, "month": 30}
 URGENT_RUNWAY_DAYS = 14
-IMPORTANT_MOVES = ("severity", "when")
+URGENT_SHOWN = 5
+CHECKS_SHOWN = 5
+NAMES_SHOWN = 3
 CHANGES = ("new", "moved", "same")
+TOP_SEVERITY = tribe_state.SEVERITIES[-1]
+WEEK_GROUP, MONTH_END_GROUP, INVESTIGATE_GROUP = tribe_state.CHECK_GROUPS
+LATER_WHENS = ("within months", "watch")
 DEGRADED = {"judgment": "judgment rejected, no page written", "structure": "structure check failed, no page written"}
 CAUSES = tuple(DEGRADED)
 SUMMARY_FLAGS = ("summary", "config", "routine", "place")
@@ -20,14 +25,16 @@ WARNING_SPEC = {
     "severity": tribe_state.SEVERITY_LEVEL,
     "when": tribe_state.WHEN_LEVEL,
     "runway": tribe_state.LABEL,
-    "metric": tribe_state.METRIC,
     "change": tribe_state.one_of(CHANGES),
+    "mitigation": [state.TEXT],
 }
+CHECK_SPEC = {"text": state.TEXT, "group": tribe_state.CHECK_GROUP, "since": tribe_state.UTC_TIME}
 MESSAGE_SPEC = {
     **tribe_publish.SUMMARY_SPEC,
     "baseline": state.BOOLEAN,
     "window": {"from_ts": state.INTEGER, "to_ts": state.INTEGER},
     "warnings": {"*": WARNING_SPEC},
+    "checks": {"*": CHECK_SPEC},
     "moved": [{"key": state.TEXT, "field": state.TEXT, "from": state.TEXT, "to": state.TEXT}],
     "resolved": [{"title": state.TEXT, "reason": state.TEXT}],
     "done": [{"text": state.TEXT}],
@@ -51,40 +58,80 @@ def is_urgent(warning):
     return warning["when"] == "now" or (days is not None and days < URGENT_RUNWAY_DAYS)
 
 
-def is_monitor_change(warning):
-    return (warning["metric"] or "").startswith(state.MONITOR_PREFIX) and warning["change"] != "same"
+def phrase(text):
+    return clean(text).rstrip(".")
 
 
-def since_lines(summary):
+def urgent_order(entry):
+    key, warning = entry
+    return (-tribe_state.SEVERITIES.index(warning["severity"]), CHANGES.index(warning["change"]), key)
+
+
+def counts_line(summary, urgent):
+    high = sum(warning["severity"] == TOP_SEVERITY for _, warning in urgent)
+    head = f"{len(urgent)} urgent" + (f" ({high} High)" if high else "")
     if summary["baseline"]:
-        return ["- Baseline run: no earlier digest to compare with."]
-    lines = [
-        f"- New: {clean(warning['title'])}, {clean(warning['severity'])}, {clean(warning['when'])}."
-        for _, warning in sorted(summary["warnings"].items())
-        if warning["change"] == "new"
-    ]
-    lines += [tribe_page.bullet(f"Resolved: {clean(entry['title'])}, {clean(entry['reason'])}") for entry in summary["resolved"]]
-    return lines + [tribe_page.bullet(f"Ticked: {clean(entry['text'])}") for entry in summary["done"]]
+        return f"{head}. Baseline run: no earlier digest to compare with."
+    new = sum(warning["change"] == "new" for warning in summary["warnings"].values())
+    parts = [head, f"{new} new", f"{len({move['key'] for move in summary['moved']})} moved", f"{len(summary['resolved'])} resolved"]
+    if summary["done"]:
+        parts.append(f"{len(summary['done'])} ticked")
+    return ", ".join(parts) + "."
 
 
-def urgent_line(warning):
-    return tribe_page.bullet(
-        f"Urgent: {clean(warning['title'])}, {clean(warning['severity'])}, {clean(warning['when'])}, runway {clean(warning['runway'])}"
-    )
+def more_line(count, what):
+    return tribe_page.bullet(f"+{count} more {what}, see the page")
 
 
-def move_line(move, warnings):
-    title = clean(warnings[move["key"]]["title"]) if move["key"] in warnings else clean(move["key"])
-    return f"- Moved: {title}, {clean(move['field'])} from {clean(move['from'])} to {clean(move['to'])}."
+def do_now_line(warning):
+    head = f"{clean(warning['severity'])}: {phrase(warning['title'])}"
+    leads = "; ".join(phrase(lead) for lead in warning["mitigation"])
+    return tribe_page.bullet(f"{head}. Next: {leads}" if leads else head)
 
 
-def important_lines(summary):
-    warnings = summary["warnings"]
-    keys = sorted(warnings)
-    lines = [urgent_line(warnings[key]) for key in keys if is_urgent(warnings[key])]
-    lines += [move_line(move, warnings) for move in summary["moved"] if move["field"] in IMPORTANT_MOVES]
-    lines += [f"- Monitor: {clean(warnings[key]['title'])}, {clean(warnings[key]['change'])}." for key in keys if is_monitor_change(warnings[key])]
-    return lines + [tribe_page.bullet(f"Decision: {clean(entry['decision'])}, {clean(entry['deadline'])}") for entry in summary["decisions"]]
+def do_now_lines(urgent):
+    lines = [do_now_line(warning) for _, warning in urgent[:URGENT_SHOWN]]
+    return lines + ([more_line(len(urgent) - URGENT_SHOWN, "urgent")] if len(urgent) > URGENT_SHOWN else [])
+
+
+def this_week_lines(summary):
+    lines = [tribe_page.bullet(f"Decision: {clean(entry['decision'])}, {clean(entry['deadline'])}") for entry in summary["decisions"]]
+    # Newest first: fresh checks belong to this run's warnings; the stale ones stay on the page.
+    due = sorted((item for item in summary["checks"].items() if item[1]["group"] == WEEK_GROUP), key=lambda item: item[0])
+    due.sort(key=lambda item: item[1]["since"], reverse=True)
+    lines += [tribe_page.bullet(f"Check: {clean(check['text'])}") for _, check in due[:CHECKS_SHOWN]]
+    return lines + ([more_line(len(due) - CHECKS_SHOWN, "checks")] if len(due) > CHECKS_SHOWN else [])
+
+
+def names(titles):
+    shown = [phrase(title) for title in titles[:NAMES_SHOWN]]
+    return ", ".join(shown + ([f"+{len(titles) - NAMES_SHOWN}"] if len(titles) > NAMES_SHOWN else []))
+
+
+def horizon_lines(calm):
+    counts = [(sum(warning["when"] == when for _, warning in calm), when) for when in LATER_WHENS]
+    parts = [f"{count} {when}" for count, when in counts if count]
+    return [tribe_page.bullet(", ".join(parts))] if parts else []
+
+
+def later_check_lines(summary):
+    groups = ((MONTH_END_GROUP, "before the month-end"), (INVESTIGATE_GROUP, "to investigate"))
+    counts = [(sum(check["group"] == group for check in summary["checks"].values()), label) for group, label in groups]
+    parts = [f"{count} {label}" for count, label in counts if count]
+    return [tribe_page.bullet("Checks: " + ", ".join(parts))] if parts else []
+
+
+def change_lines(summary, calm):
+    if summary["baseline"]:
+        return []
+    new = [warning["title"] for _, warning in calm if warning["change"] == "new"]
+    resolved = [entry["title"] for entry in summary["resolved"]]
+    parts = [f"{label}: {names(titles)}" for label, titles in (("New", new), ("Resolved", resolved)) if titles]
+    return [tribe_page.bullet(". ".join(parts))] if parts else []
+
+
+def later_lines(summary, calm):
+    return horizon_lines(calm) + later_check_lines(summary) + change_lines(summary, calm)
 
 
 def run_line(summary):
@@ -120,10 +167,14 @@ def degraded_create(result):
 
 
 def chat_message(summary, result, title, link):
+    entries = sorted(summary["warnings"].items(), key=urgent_order)
+    urgent = [entry for entry in entries if is_urgent(entry[1])]
+    calm = [entry for entry in entries if not is_urgent(entry[1])]
     parts = [
-        f"# {clean(title)}\n{run_line(summary)}",
-        block("## Since last run", since_lines(summary)),
-        block("## Important", important_lines(summary)),
+        f"# {clean(title)}\n{run_line(summary)}\n{counts_line(summary, urgent)}",
+        block("## Do now", do_now_lines(urgent)),
+        block("## This week", this_week_lines(summary)),
+        block("## Later", later_lines(summary, calm)),
         "\n".join([blind_spots_line(summary), *page_lines(result, link)]),
     ]
     return "\n\n".join(part for part in parts if part) + "\n"
