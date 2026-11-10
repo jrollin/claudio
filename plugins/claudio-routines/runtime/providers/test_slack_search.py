@@ -504,6 +504,21 @@ class SearchReactionsTest(unittest.TestCase):
 
         self.assertIs(result["records"]["units"][0]["messages"][0]["owner_reacted"], True)
 
+    def test_lists_every_reacting_user_id_once_in_reacted_by(self):
+        text = json.dumps({"result": "Reactions on message:\n\n:eyes: \u00d7 2 \u2014 Eve (U000005), Owner Name (" + OWNER + ")\n:+1: \u00d7 2 \u2014 Ann (U000003), Eve (U000005)"})
+
+        result = self.reaction_entries(text)
+
+        self.assertEqual(result["records"]["units"][0]["messages"][0]["reacted_by"], sorted(["U000003", "U000005", OWNER]))
+
+    def test_parses_a_message_without_reactions_to_an_empty_reacted_by(self):
+        self.assertEqual(self.reacted("reactions_none.json")["reacted_by"], [])
+
+    def test_leaves_reacted_by_out_of_a_message_whose_reactions_were_not_read(self):
+        units = search_parse(search_source(), full_responses())["records"]["units"]
+
+        self.assertNotIn("reacted_by", units[0]["messages"][0])
+
 
 INFO_PATH = "/api/conversations.info"
 MEMBERS_PATH = "/api/conversations.members"

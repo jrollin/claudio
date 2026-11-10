@@ -4276,6 +4276,16 @@ class RecapRenderTest(Case):
     def test_a_recap_routine_renders_the_history_keys_it_sets(self):
         self.assertEqual(self.render(history={"drop_after_days": 30})[:2], (0, "3 3 30\n"))
 
+    def render_team(self, **changes):
+        self.TEXT = "{{history.team_late_after_working_days}}\n"
+        return self.render(**changes)[:2]
+
+    def test_a_recap_routine_renders_the_team_late_after_it_sets(self):
+        self.assertEqual(self.render_team(history={"late_after_working_days": 3, "team_late_after_working_days": 2}), (0, "2\n"))
+
+    def test_a_recap_routine_without_a_team_late_after_renders_the_owner_one(self):
+        self.assertEqual(self.render_team(history={"late_after_working_days": 4}), (0, "4\n"))
+
     def test_a_missing_lookback_exits_2_naming_its_key_path_not_a_placeholder(self):
         code, stdout, stderr = self.render(window={})
         self.assertEqual((code, stdout), (2, ""))

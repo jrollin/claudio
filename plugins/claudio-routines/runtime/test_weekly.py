@@ -548,6 +548,9 @@ class RecapFeaturesTest(FeaturesCase):
     def test_a_team_ask_unit_waits_on_the_team(self):
         self.assertEqual(self.waiting_on(status="team_ask"), "team")
 
+    def test_a_unit_waiting_on_the_owner_team_waits_on_the_team(self):
+        self.assertEqual(self.waiting_on(status="team_waiting"), "team")
+
     def test_a_handled_unit_waits_on_nobody(self):
         self.assertIsNone(self.waiting_on(status="handled"))
 

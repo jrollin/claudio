@@ -2,7 +2,7 @@
 (since Thu 09:45)
 
 **Summary**
-- 7 waiting on you (2 late), 3 new, 2 resolved, 2 you're waiting on
+- 7 waiting on you (2 late), 2 waiting on your team (1 late), 4 new, 2 resolved, 2 you're waiting on
 - Limits: search mentions cut: 10 page(s) read; one thread could not be read
 
 **Waiting on you**
@@ -13,6 +13,10 @@
 - **Other Name** asks for the quarterly numbers · since Wed 11:00 · [group in #core](https://example.test/archives/C222222/p1791968400000002)
 - **Third Name** wants a decision on the rollout order · since Mon 10:00 · [thread in #ops](https://example.test/archives/C111111/p1791792000000001?thread_ts=1791788400.000001&cid=C111111)
 - ⏰ **You** promised the retry policy check, no date given · since Tue 14:00 · [thread in #ops](https://example.test/archives/C111111/p1791892800000007?thread_ts=1791889200.000007&cid=C111111)
+
+**Waiting on your team**
+- ⏰ **Peer Name** asks which cache to use · since Mon 17:00 · [group in #archi](https://example.test/archives/C444444/p1791817200000020)
+- **Third Name** needs a review of the queue design · since Thu 17:00 · [group in #archi](https://example.test/archives/C444444/p1792076400000019)
 
 **Good to know**
 - Team ask, no answer: Who owns the on-call handover · [group in #core](https://example.test/archives/C222222/p1792062000000009)

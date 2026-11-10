@@ -16,10 +16,11 @@ DEFAULT_DROP_AFTER = 14
 PROMISE_GRACE_DAYS = 1
 SECONDS_PER_DAY = 86400
 SCAN_CAP = 1000
-SECTIONS = ("waiting", "good_to_know", "waiting_on_others", "handled")
+SECTIONS = ("waiting", "team_waiting", "good_to_know", "waiting_on_others", "handled")
 SECTION_OF = {
     "waiting": "waiting",
     "promise": "waiting",
+    "team_waiting": "team_waiting",
     "team_ask": "good_to_know",
     "announcement": "good_to_know",
     "waiting_on_others": "waiting_on_others",
@@ -28,19 +29,20 @@ SECTION_OF = {
 STATUS_OF_KIND = {
     recap_features.WAITING_ON_YOU: "waiting",
     recap_features.PROMISE: "promise",
+    recap_features.TEAM_WAITING: "team_waiting",
     recap_features.YOURE_WAITING_ON: "waiting_on_others",
     recap_features.TEAM_ASK: "team_ask",
     recap_features.ALREADY_HANDLED: "handled",
     recap_features.ANNOUNCEMENT: "announcement",
 }
 SETTLED_KINDS = (recap_features.ALREADY_HANDLED, recap_features.NOISE)
-ASKED_STATUSES = ("waiting", "team_ask")
+ASKED_STATUSES = ("waiting", "team_waiting", "team_ask")
 MAX_DAYS = 365
 NO_PEOPLE = {"participants": [], "authors": []}
 
 PEOPLE = [{"id": state.TEXT, "name": state.TEXT}]
 BASE_SPEC = {"units": {"*": {"participants": PEOPLE, "authors": PEOPLE}}}
-History = namedtuple("History", "late_after drop_after")
+History = namedtuple("History", "late_after drop_after team_late_after", defaults=(None,))
 Run = namedtuple("Run", "to_ts at zone history owner")
 
 
@@ -62,11 +64,15 @@ def days_since(moment, run):
     return recap_window.working_days_between(int(moment), run.to_ts, run.zone)
 
 
-def waiting_late(facts, run):
+def team_late_after(history):
+    return history.late_after if history.team_late_after is None else history.team_late_after
+
+
+def waiting_late(facts, run, late_after):
     if facts["unanswered_from"] is None:
         return None
     age = days_since(Decimal(facts["unanswered_from"]), run)
-    return age if age > run.history.late_after else None
+    return age if age > late_after else None
 
 
 def promise_late(first_seen, due, run):
@@ -79,7 +85,9 @@ def promise_late(first_seen, due, run):
 
 def late_age(status, facts, first_seen, due, run):
     if status == "waiting":
-        return waiting_late(facts, run)
+        return waiting_late(facts, run, run.history.late_after)
+    if status == "team_waiting":
+        return waiting_late(facts, run, team_late_after(run.history))
     return promise_late(first_seen, due, run) if status == "promise" else None
 
 
@@ -89,6 +97,8 @@ def is_resolved(kind, facts, stored):
     settled = kind in SETTLED_KINDS
     if stored["status"] == "waiting":
         return settled or facts["owner_answered"]
+    if stored["status"] == "team_waiting":
+        return settled or facts["team_answered"]
     return stored["status"] == "promise" and settled
 
 
@@ -280,6 +290,7 @@ def keys_of(sections, dropped):
     keys["resolved"] = [line["key"] for line in sections["handled"] if line["resolved"]]
     keys["new"] = sorted(line["key"] for line in shown if line["is_new"])
     keys["late"] = [line["key"] for line in sections["waiting"] if line["late"] is not None]
+    keys["team_late"] = [line["key"] for line in sections["team_waiting"] if line["late"] is not None]
     keys["dropped"] = dropped
     return keys
 
@@ -289,7 +300,7 @@ def span_of(window):
 
 
 def build_summary(previous, judged, window, run_at, sections, keys, spots):
-    counts = {name: len(keys[name]) for name in ("waiting", "late", "new", "resolved", "waiting_on_others")}
+    counts = {name: len(keys[name]) for name in ("waiting", "late", "team_waiting", "team_late", "new", "resolved", "waiting_on_others")}
     return {
         "digest": previous["digest"],
         "run_at": run_at,
@@ -301,7 +312,7 @@ def build_summary(previous, judged, window, run_at, sections, keys, spots):
         "reading": copy.deepcopy(judged["reading"]),
         "counts": counts,
         "blind_spots": spots,
-        "post": counts["waiting"] > 0 or counts["new"] > 0 or counts["resolved"] > 0,
+        "post": counts["waiting"] > 0 or counts["team_waiting"] > 0 or counts["new"] > 0 or counts["resolved"] > 0,
     }
 
 
@@ -356,6 +367,7 @@ def add_apply_arguments(parser):
     for flag in ("--state", "--features", "--base", "--judgment", "--window", "--tz", "--out", "--summary", "--record"):
         parser.add_argument(flag, required=True)
     parser.add_argument("--late-after-working-days", type=whole_days(0), default=DEFAULT_LATE_AFTER, help="working days an ask stays unanswered before it is late")
+    parser.add_argument("--team-late-after-working-days", type=whole_days(0), default=None, help="working days a team ask stays unanswered before it is late, the owner's threshold when left out")
     parser.add_argument("--drop-after-days", type=whole_days(1), default=DEFAULT_DROP_AFTER, help="days without a message before a unit leaves the state")
 
 
@@ -366,7 +378,7 @@ def run_apply(args):
     base = load_base(args.base)
     window = state.load(args.window, "window", recap_window.check_window)
     judged = recap_judgment.load_judgment(args.judgment, features_doc)
-    history = History(args.late_after_working_days, args.drop_after_days)
+    history = History(args.late_after_working_days, args.drop_after_days, args.team_late_after_working_days)
     next_state, summary, record = apply(previous, features_doc, base, judged, window, zone, history)
     try:
         recap_state.check_state(next_state)

@@ -423,9 +423,11 @@ def runtime_roles():
 def recap_values(routine):
     lifecycle = runtime_module(RUNTIME_PATH, "recap_lifecycle")
     history = routine.get("history", {})
+    late_after = history.get("late_after_working_days", lifecycle.DEFAULT_LATE_AFTER)
     return {
         "window.lookback_working_days": routine["window"]["lookback_working_days"],
-        "history.late_after_working_days": history.get("late_after_working_days", lifecycle.DEFAULT_LATE_AFTER),
+        "history.late_after_working_days": late_after,
+        "history.team_late_after_working_days": history.get("team_late_after_working_days", late_after),
         "history.drop_after_days": history.get("drop_after_days", lifecycle.DEFAULT_DROP_AFTER),
     }
 

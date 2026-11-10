@@ -1297,6 +1297,18 @@ Owner-gated: needs the release tag, the setup script paste at the cloud environm
 - **Verify**: `cd plugins/claudio-routines/runtime && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s providers -t . && cd ../../.. && for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public`
 - **Status**: Complete
 
+### T-119: Give the asks to the owner's team their own recap section
+
+- A group can land in `team`, with `members`, the user ids whose reply or reaction settles its asks; `history.team_late_after_working_days` sets its late threshold, the owner's when left out.
+- The kind `waiting on your team`, stored as `team_waiting`, is allowed on an unanswered ask to a team group that is not addressed to the owner in person; a direct conversation, a direct mention or a thread the owner took part in keeps `waiting on you`.
+- The chat source writes `reacted_by`, the user ids of a message's reactions, next to `owner_reacted`.
+- The message lists Waiting on your team after Waiting on you, and the summary line counts it when it holds a unit.
+- Tests: config validation of `team` and `members`; a member reply or reaction settles a team ask, the asker's own and a non-member's do not; a mention of the owner wins; the team threshold drives `late`; a stored team unit a member answered is resolved; counts, post flag, section order and line format; the weekly item waits on the team.
+- **Refs**: US-47, US-48, US-49, TD-60, TD-61, TD-62
+- **Files**: `plugins/claudio-routines/runtime/roles.py`, `recap_features.py`, `recap_state.py`, `recap_lifecycle.py`, `recap_message.py`, `weekly_features.py`, `providers/_slack_search.py` and their tests (modify), `plugins/claudio-routines/skills/routines/scripts/routines.py`, `skills/routines/templates/chat-recap.md` (modify), `plugins/claudio-routines/README.md`, `docs/features/routines-as-code/requirements.md`, `design.md` (modify)
+- **Verify**: `for d in scripts plugins/claudio-routines/runtime plugins/claudio-routines/skills/routines/scripts; do PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $d; done && python3 plugins/claudio-routines/skills/routines/scripts/routines.py lint --public`
+- **Status**: Complete
+
 ## Related Features
 
 - **onboarding (claudio-spec skill)**: its examples are made generic in a separate commit that lands before this feature.

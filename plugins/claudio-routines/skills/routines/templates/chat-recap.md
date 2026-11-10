@@ -1,6 +1,6 @@
 # Chat recap: {{digest.name}}
 
-Tell the owner what the chat holds for them since the last run in one chat message: asks waiting on them, late answers, team asks, what they wait on, and what got handled. Keep the run state on the `claude/state` branch of the private repository.
+Tell the owner what the chat holds for them since the last run in one chat message: asks waiting on them, asks waiting on their team, late answers, team asks, what they wait on, and what got handled. Keep the run state on the `claude/state` branch of the private repository.
 
 ## Rules
 
@@ -140,7 +140,7 @@ Read `<run>/features.json` and `<run>/rules.json`, and no other file. Write `<ru
 - `kind` is one of the unit's `allowed` kinds. `rules.json` defines each kind. The rules decide which allowed kind fits, and no fact the features hold may be contradicted.
 - `title` is at most 8 words. `summary` is one sentence of at most 200 characters.
 - The message prints a fixed opening before each summary, so a summary completes it and never repeats it:
-  - `waiting on you` and `team ask`: what the person needs, without their name, which the message prints first, e.g. `needs your re-review of the export PR`.
+  - `waiting on you`, `waiting on your team` and `team ask`: what the person needs, without their name, which the message prints first, e.g. `needs your re-review of the export PR`.
   - `promise`: what the owner promised, as the object of `You promised`, e.g. `to settle the review app priority at the daily`; the time it names goes in `due`, not in the summary.
   - `you're waiting on`: what is owed, as the object of `<name> owes`, e.g. `an impact measurement before the runtime upgrade`.
   - `already handled`, `announcement` and `noise`: a plain sentence.
@@ -169,7 +169,7 @@ Report `<run>/message.txt` unchanged, per the post setting. Report any other fai
 ## Step 8: Apply
 
 ```bash
-python3 -B {{runtime.dir}}/plugins/claudio-routines/runtime/recap.py apply --state <run>/state.json --features <run>/features.json --base <run>/base.json --judgment <run>/judgment.json --window <run>/window.json --tz {{timezone}} --late-after-working-days {{history.late_after_working_days}} --drop-after-days {{history.drop_after_days}} --out <run>/applied.json --summary <run>/summary.json --record <run>/record.json
+python3 -B {{runtime.dir}}/plugins/claudio-routines/runtime/recap.py apply --state <run>/state.json --features <run>/features.json --base <run>/base.json --judgment <run>/judgment.json --window <run>/window.json --tz {{timezone}} --late-after-working-days {{history.late_after_working_days}} --team-late-after-working-days {{history.team_late_after_working_days}} --drop-after-days {{history.drop_after_days}} --out <run>/applied.json --summary <run>/summary.json --record <run>/record.json
 ```
 
 Exit code 3 means the engine rejected the state, the features or the judgment. Report the rejection and the key path it names, and stop. Write no state. Report any other failure the same way.

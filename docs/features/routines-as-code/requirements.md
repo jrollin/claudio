@@ -730,6 +730,7 @@ THE model writes one kind and one short summary per unit, plus the reading, and 
 - [ ] A promise carries its due time, or none; it is late once that time has passed, or from the next business day when it names none *(AC-47.4)*
 - [ ] The reading holds at most 4 bullets, each citing at least one unit of the run; a bullet that changes nothing for the next 48 hours is left out, so a quiet run has none *(AC-47.5)*
 - [ ] As for the other engines, one correction is allowed; a second rejection posts the degraded message and writes no state *(AC-47.6)*
+- [ ] An ask to a group that lands in team, with no direct mention of the owner, no direct conversation and no part of the owner in the thread, gets `waiting on your team`; it never gets `waiting on you`, and a mention of the owner in person always wins *(AC-47.7)*
 
 ### Keep the unit history {#US-48}
 
@@ -741,6 +742,7 @@ THE lifecycle script updates each unit's history from the stored state and the f
 - [ ] A waiting unit unanswered for more than the configured working days is late *(AC-48.2)*
 - [ ] A stored waiting or promise unit that the owner answered, or that the judgment marks handled, is resolved and shows once under Already handled *(AC-48.3)*
 - [ ] A unit absent from the run whose last message is older than the configured days leaves the state; a unit read in the run stays *(AC-48.4)*
+- [ ] A team unit is late after its own working-day threshold, the owner's when none is set, and is resolved once a listed team member other than the asker replies to it or reacts to it *(AC-48.5)*
 
 ### Post the recap message {#US-49}
 
@@ -754,6 +756,7 @@ THE script renders one message in the recap layout, and the run posts it to the 
 - [ ] Names are the display names the chat source gives; links are built by the script from the channel and timestamps, labelled by kind (`DM`, `group DM`, `thread in #channel`, `mention in #channel`) *(AC-49.4)*
 - [ ] The message holds no state, JSON or unit key, and no text the model wrote other than checked summaries, titles and reading bullets *(AC-49.5)*
 - [ ] A recap message longer than the message part cap is written in ordered parts cut at blank lines, and the run posts the first part, then each next part in its thread, per BR-83 *(AC-49.6)*
+- [ ] Waiting on your team comes right after Waiting on you, in the same line format and order; the summary line adds `N waiting on your team (N late)` after the owner's count when at least one unit waits on the team, and such a unit makes the run post *(AC-49.7)*
 
 ### Move the recap configuration and state into the private repository {#US-50}
 

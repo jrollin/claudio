@@ -245,7 +245,7 @@ def _read_reactions(reader, unit, owner, gather):
     later = [item for item in messages if item.author != owner and (last is None or decimal.Decimal(item.ts) > last)]
     for item in later[-REACTIONS_PER_UNIT:]:
         if item.reactions is False:
-            unit.reacted[decimal.Decimal(item.ts)] = False
+            unit.reacted[decimal.Decimal(item.ts)] = (False, frozenset())
             continue
         try:
             users = reader.reactions(unit.channel, item.ts)
@@ -254,7 +254,7 @@ def _read_reactions(reader, unit, owner, gather):
         except (ChannelFailed, ThreadNotFound, ReactionsFailed, InvalidEntity) as failure:
             lost[f"reactions:{unit.channel}:{item.ts}"] = failure.code
         else:
-            unit.reacted[decimal.Decimal(item.ts)] = owner in users
+            unit.reacted[decimal.Decimal(item.ts)] = (owner in users, frozenset(users))
     return lost
 
 
@@ -276,7 +276,10 @@ def _unit_message(item, reacted):
         "text": clean_text(item.text, TEXT_CAP),
     }
     seen = reacted.get(decimal.Decimal(item.ts))
-    return record if seen is None else {**record, "owner_reacted": seen}
+    if seen is None:
+        return record
+    owner_reacted, users = seen
+    return {**record, "owner_reacted": owner_reacted, "reacted_by": sorted(users)}
 
 
 def _search_types(search):

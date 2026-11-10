@@ -15,8 +15,10 @@ OWNER = "U" + "1" * 6
 PEER = "U" + "2" * 6
 OTHER = "U" + "3" * 6
 BOT = "B" + "4" * 6
+MEMBER = "U" + "5" * 6
 GROUP_WAITING = "S" + "1" * 6
 GROUP_GOOD = "S" + "2" * 6
+GROUP_TEAM = "S" + "3" * 6
 DM = "D" + "1" * 6
 GROUP_DM = "G" + "1" * 6
 CHAN = "C" + "1" * 6
@@ -24,7 +26,7 @@ ANNOUNCE = "C" + "2" * 6
 EXCLUDED = "C" + "3" * 6
 FROM = "2026-10-15T07:45:00Z"
 NOW = "2026-10-16T07:45:00Z"
-NAMES = {OWNER: "Owner Name", PEER: "Peer Name", OTHER: "Other Name", BOT: "Bot App"}
+NAMES = {OWNER: "Owner Name", PEER: "Peer Name", OTHER: "Other Name", BOT: "Bot App", MEMBER: "Member Name"}
 CHAT_HOST = "chat.example.test"
 
 
@@ -59,6 +61,7 @@ def make_routine():
         "groups": [
             {"id": GROUP_WAITING, "label": "Core team", "lands_in": "waiting"},
             {"id": GROUP_GOOD, "label": "Everyone", "lands_in": "good_to_know"},
+            {"id": GROUP_TEAM, "label": "Architects", "lands_in": "team", "members": [OWNER, MEMBER]},
         ],
         "announcement": {"channels": [ANNOUNCE], "topics": ["releases"]},
         "exclude": {"authors": [OTHER], "channels": [EXCLUDED], "keep_bots": []},
@@ -540,6 +543,54 @@ class AllowedTest(FeaturesCase):
 
         self.assertNotIn("team ask", allowed)
 
+    def test_an_ask_to_a_team_group_nobody_answered_allows_waiting_on_your_team_only(self):
+        self.assertEqual(self.allowed(msg(PEER, self.EARLY, groups=[GROUP_TEAM])), ["waiting on your team", "noise"])
+
+    def test_a_team_ask_that_also_mentions_the_owner_allows_waiting_on_you_only(self):
+        self.assertEqual(self.allowed(msg(PEER, self.EARLY, mentions=[OWNER], groups=[GROUP_TEAM])), ["waiting on you", "noise"])
+
+    def test_a_team_ask_in_a_thread_the_owner_took_part_in_allows_waiting_on_you_only(self):
+        root = self.EARLY
+        allowed = self.allowed(msg(OWNER, root, root=root), msg(PEER, self.MID, root=root, groups=[GROUP_TEAM]))
+
+        self.assertEqual(allowed, ["waiting on you", "noise"])
+
+    def test_a_team_ask_a_member_replied_to_allows_already_handled_only(self):
+        allowed = self.allowed(msg(PEER, self.EARLY, groups=[GROUP_TEAM]), msg(MEMBER, self.MID))
+
+        self.assertEqual(allowed, ["already handled", "noise"])
+
+    def test_a_team_ask_a_member_reacted_to_allows_already_handled_only(self):
+        allowed = self.allowed(msg(PEER, self.EARLY, groups=[GROUP_TEAM], reacted_by=[MEMBER]))
+
+        self.assertEqual(allowed, ["already handled", "noise"])
+
+    def test_a_team_ask_only_a_non_member_replied_to_still_allows_waiting_on_your_team(self):
+        config = make_config(exclude={"authors": [], "channels": [], "keep_bots": []})
+        allowed = self.allowed(msg(PEER, self.EARLY, groups=[GROUP_TEAM], reacted_by=[OTHER]), msg(OTHER, self.MID), config=config)
+
+        self.assertEqual(allowed, ["waiting on your team", "noise"])
+
+    def test_a_member_asking_the_team_does_not_answer_their_own_ask(self):
+        allowed = self.allowed(msg(MEMBER, self.EARLY, groups=[GROUP_TEAM], reacted_by=[MEMBER]), msg(MEMBER, self.MID))
+
+        self.assertEqual(allowed, ["waiting on your team", "noise"])
+
+    def test_a_team_ask_a_member_answered_before_it_was_asked_still_allows_waiting_on_your_team(self):
+        allowed = self.allowed(msg(MEMBER, self.EARLY), msg(PEER, self.MID, groups=[GROUP_TEAM]))
+
+        self.assertEqual(allowed, ["waiting on your team", "noise"])
+
+    def test_a_stored_team_waiting_unit_still_unanswered_forbids_already_handled(self):
+        stored = make_stored(**{f"thread-{CHAN}-{self.EARLY}": make_unit(kind="group", channel=CHAN, status="team_waiting")})
+
+        self.assertEqual(self.allowed(msg(PEER, self.EARLY, groups=[GROUP_TEAM]), stored=stored), ["waiting on your team", "noise"])
+
+    def test_a_team_answer_is_a_fact_of_the_unit(self):
+        facts = self.facts(msg(PEER, self.EARLY, groups=[GROUP_TEAM]), msg(MEMBER, self.MID))
+
+        self.assertIs(facts["team_answered"], True)
+
     def test_an_owner_last_message_allows_waiting_on_others_promise_and_handled(self):
         self.assertEqual(self.one(dm(msg(PEER, self.EARLY), msg(OWNER, self.MID)))["allowed"], ["you're waiting on", "promise", "already handled", "noise"])
 
@@ -679,7 +730,7 @@ class FilesTest(FeaturesCase):
             (found["kind"], found["channel"], found["name"], sorted(found["facts"]), found["allowed"]),
             (
                 "dm", DM, "DM",
-                ["age_working_days", "announcement_channel", "direct_mention", "groups", "last_author_is_owner", "owner_answered", "owner_last_ts", "owner_took_part", "previous", "unanswered_from"],
+                ["age_working_days", "announcement_channel", "direct_mention", "groups", "last_author_is_owner", "owner_answered", "owner_last_ts", "owner_took_part", "previous", "team_answered", "unanswered_from"],
                 ["you're waiting on", "promise", "already handled", "noise"],
             ),
         )
@@ -718,7 +769,7 @@ class FilesTest(FeaturesCase):
 
         self.assertEqual(
             (rules["rules"], sorted(rules["kinds"]), rules["announcement_topics"]),
-            (["An ask needs a reply from the owner."], sorted(["waiting on you", "team ask", "you're waiting on", "promise", "already handled", "announcement", "noise"]), ["releases"]),
+            (["An ask needs a reply from the owner."], sorted(["waiting on you", "waiting on your team", "team ask", "you're waiting on", "promise", "already handled", "announcement", "noise"]), ["releases"]),
         )
 
     def test_writes_canonical_base_and_compact_features(self):
@@ -837,11 +888,23 @@ class CommandTest(FeaturesCase):
 
 
 class ContractTest(unittest.TestCase):
-    def test_a_unit_with_every_fact_allows_every_kind_of_the_definitions_in_order(self):
+    def test_an_owner_unit_and_a_team_unit_with_every_fact_allow_every_kind_in_the_definitions_order(self):
+        team = {
+            "last_author_is_owner": False,
+            "unanswered_from": "1.000001",
+            "groups": [{"lands_in": "team", "answered": False}],
+            "team_answered": False,
+            "direct_mention": False,
+            "announcement_channel": False,
+            "owner_took_part": False,
+            "owner_answered": False,
+            "previous": None,
+        }
         facts = {
             "last_author_is_owner": True,
             "unanswered_from": "1.000001",
             "groups": [{"lands_in": "good_to_know", "answered": False}],
+            "team_answered": False,
             "direct_mention": True,
             "announcement_channel": True,
             "owner_took_part": True,
@@ -849,7 +912,9 @@ class ContractTest(unittest.TestCase):
             "previous": {"status": "waiting"},
         }
 
-        self.assertEqual(recap_features.allowed_kinds("dm", facts), list(recap_features.KIND_DEFINITIONS))
+        found = recap_features.allowed_kinds("dm", facts) + recap_features.allowed_kinds("group", team)
+
+        self.assertEqual(sorted(set(found), key=list(recap_features.KIND_DEFINITIONS).index), list(recap_features.KIND_DEFINITIONS))
 
 
 if __name__ == "__main__":

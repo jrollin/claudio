@@ -19,7 +19,7 @@ from state import InputError, Nullable
 DEGRADED = {"judgment": "judgment rejected twice, no recap this run", "structure": "structure check failed, no recap this run"}
 CAUSES = tuple(DEGRADED)
 SUMMARY_FLAGS = ("summary", "config", "routine", "place", "tz")
-COUNTS = ("waiting", "late", "new", "resolved", "waiting_on_others")
+COUNTS = ("waiting", "late", "team_waiting", "team_late", "new", "resolved", "waiting_on_others")
 HANDLED_SHOWN = 5
 LATE_MARK = "⏰ "
 KIND_RANK = {"dm": 0, "group_dm": 0, "mention": 1, "group": 2, "thread": 3}
@@ -170,8 +170,9 @@ def title_lines(summary, run_at, lookback):
 
 def summary_section(summary):
     counts = summary["counts"]
+    team = f"{counts['team_waiting']} waiting on your team ({counts['team_late']} late), " if counts["team_waiting"] > 0 else ""
     lines = [
-        f"- {counts['waiting']} waiting on you ({counts['late']} late), {counts['new']} new, "
+        f"- {counts['waiting']} waiting on you ({counts['late']} late), {team}{counts['new']} new, "
         f"{counts['resolved']} resolved, {counts['waiting_on_others']} you're waiting on"
     ]
     gaps = [digest.text(spot["gap"]) for spot in summary["blind_spots"]]
@@ -186,11 +187,13 @@ def render(summary, workspace, zone, lookback_working_days):
     run_at = state.parse_time(summary["run_at"]).astimezone(zone)
     context = Context(run_at, zone, host_of(workspace))
     waiting = sorted(summary["waiting"], key=waiting_order)
+    team_waiting = sorted(summary["team_waiting"], key=waiting_order)
     good_to_know = sorted(summary["good_to_know"], key=lambda line: line["status"] != "team_ask")
     parts = [
         "\n".join(title_lines(summary, run_at, lookback_working_days)),
         summary_section(summary),
         lines_section("Waiting on you", [waiting_line(line, context) for line in waiting]),
+        lines_section("Waiting on your team", [waiting_line(line, context) for line in team_waiting]),
         lines_section("Good to know", [good_to_know_line(line, context) for line in good_to_know]),
         lines_section("You're waiting on", [waiting_on_others_line(line, context) for line in summary["waiting_on_others"]]),
         lines_section("Already handled", handled_lines(summary, context)),

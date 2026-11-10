@@ -12,6 +12,7 @@ from config import adapter_role
 from providers._errors import PAGE_CAP_PARTIAL
 
 WAITING_ON_YOU = "waiting on you"
+TEAM_WAITING = "waiting on your team"
 TEAM_ASK = "team ask"
 YOURE_WAITING_ON = "you're waiting on"
 PROMISE = "promise"
@@ -20,6 +21,7 @@ ANNOUNCEMENT = "announcement"
 NOISE = "noise"
 KIND_DEFINITIONS = {
     WAITING_ON_YOU: "someone asked the owner something, or wrote to the owner, and the owner has not answered",
+    TEAM_WAITING: "an ask to the owner's own team, not to the owner in person, still without a reply or reaction from a team member",
     TEAM_ASK: "an ask to a group the owner belongs to, still without an answer from anyone",
     YOURE_WAITING_ON: "the owner wrote last and waits for an answer or an action",
     PROMISE: "the owner committed to do something, with its due time when the message names one",
@@ -27,6 +29,7 @@ KIND_DEFINITIONS = {
     ANNOUNCEMENT: "a message of an announcement channel on a topic the owner keeps",
     NOISE: "nothing for the owner to do or to know",
 }
+TEAM_LANDING = roles.TEAM_LANDING
 CONVERSATION_NAMES = {"DM": "dm", "group DM": "group_dm"}
 SEARCH_PREFIX = "search:"
 SEARCH_CUT = re.compile(re.escape(PAGE_CAP_PARTIAL) + r": ([0-9]+) page\(s\) read")
@@ -37,6 +40,7 @@ class Settings:
     def __init__(self, routine):
         self.owner = routine["owner"]
         self.groups = [{"id": item["id"], "label": item["label"], "lands_in": item["lands_in"]} for item in routine["groups"]]
+        self.members = {item["id"]: frozenset(item.get("members", ())) for item in routine["groups"]}
         announcement, exclude = routine["announcement"], routine["exclude"]
         self.announcement_channels = announcement.get("channels", [])
         self.topics = announcement.get("topics", [])
@@ -63,6 +67,8 @@ def merged(before, message):
     }
     if "owner_reacted" in before or "owner_reacted" in message:
         joined["owner_reacted"] = before.get("owner_reacted", False) or message.get("owner_reacted", False)
+    if "reacted_by" in before or "reacted_by" in message:
+        joined["reacted_by"] = sorted({*before.get("reacted_by", ()), *message.get("reacted_by", ())})
     return joined
 
 
@@ -79,7 +85,7 @@ def add_record(units, record, settings):
         unit = unit_of(units, key, record, conversation)
         stamp = decimal.Decimal(message["ts"])
         copy = {field: message[field] for field in MESSAGE_FIELDS}
-        copy.update({"owner_reacted": message["owner_reacted"]} if "owner_reacted" in message else {})
+        copy.update({name: message[name] for name in ("owner_reacted", "reacted_by") if name in message})
         unit["messages"][stamp] = merged(unit["messages"][stamp], copy) if stamp in unit["messages"] else copy
         for person in record["participants"]:
             unit["participants"].setdefault(person["id"], person["name"])
@@ -115,14 +121,27 @@ def stored_owner_ts(previous):
     return None if stamp is None else decimal.Decimal(stamp)
 
 
+def anyone_replied(first, messages):
+    return any(decimal.Decimal(item["ts"]) > decimal.Decimal(first["ts"]) and item["user"] != first["user"] for item in messages)
+
+
+def member_answered(first, messages, members):
+    # a team member other than the asker settles a team ask, by a later reply or by a reaction to the ask or after it
+    answerers = members - {first["user"]}
+    since = [item for item in messages if decimal.Decimal(item["ts"]) >= decimal.Decimal(first["ts"])]
+    replied = any(item["user"] in answerers and item["ts"] != first["ts"] for item in since)
+    return replied or any(answerers.intersection(item.get("reacted_by", ())) for item in since)
+
+
 def group_facts(messages, settings):
     found = []
     for group in settings.groups:
         asks = [item for item in messages if item["user"] != settings.owner and group["id"] in item["group_mentions"]]
         if asks:
             first = asks[0]
-            replied = any(decimal.Decimal(item["ts"]) > decimal.Decimal(first["ts"]) and item["user"] != first["user"] for item in messages)
-            found.append({**group, "answered": replied})
+            team = group["lands_in"] == TEAM_LANDING
+            answered = member_answered(first, messages, settings.members[group["id"]]) if team else anyone_replied(first, messages)
+            found.append({**group, "answered": answered})
     return found
 
 
@@ -133,10 +152,12 @@ def facts_of(channel, messages, settings, previous, zone, window, merge_owner=Fa
     answered = later(read_at, stored_at)
     asks = [item for item in messages if is_ask_after(item, answered, owner)]
     unanswered = asks[0]["ts"] if asks else None
+    groups = group_facts(messages, settings)
     return {
         "last_author_is_owner": messages[-1]["user"] == owner,
         "unanswered_from": unanswered,
-        "groups": group_facts(messages, settings),
+        "groups": groups,
+        "team_answered": any(item["lands_in"] == TEAM_LANDING and item["answered"] for item in groups),
         "announcement_channel": channel in settings.announcement_channels,
         "direct_mention": any(item["user"] != owner and owner in item["mentions"] for item in messages),
         "owner_answered": unanswered is None and any(item["user"] != owner for item in messages),
@@ -158,14 +179,17 @@ def allowed_kinds(kind, facts):
     groups, previous = facts["groups"], facts["previous"]
     to_owner = kind in recap_state.DM_KINDS or facts["direct_mention"] or facts["owner_took_part"] or any(item["lands_in"] == "waiting" for item in groups)
     team = any(item["lands_in"] == "good_to_know" and not item["answered"] for item in groups)
+    team_open = any(item["lands_in"] == TEAM_LANDING and not item["answered"] for item in groups)
+    team_settled = facts["team_answered"] and not team_open and not to_owner
     last_is_owner = facts["last_author_is_owner"]
     held = previous is not None and previous["status"] in recap_state.HELD_STATUSES
     allowed = {
         WAITING_ON_YOU: asked and to_owner,
+        TEAM_WAITING: asked and team_open and not to_owner,
         TEAM_ASK: asked and team,
         YOURE_WAITING_ON: last_is_owner,
         PROMISE: last_is_owner,
-        ALREADY_HANDLED: facts["owner_answered"] or held,
+        ALREADY_HANDLED: facts["owner_answered"] or held or team_settled,
         ANNOUNCEMENT: facts["announcement_channel"],
         NOISE: True,
     }

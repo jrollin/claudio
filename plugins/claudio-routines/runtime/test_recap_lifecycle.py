@@ -51,6 +51,7 @@ def facts_of(**fields):
         "last_author_is_owner": False,
         "unanswered_from": None,
         "groups": [],
+        "team_answered": False,
         "announcement_channel": False,
         "direct_mention": False,
         "owner_answered": False,
@@ -145,6 +146,9 @@ class StatusMappingTest(LifecycleCase):
 
     def test_youre_waiting_on_is_stored_as_waiting_on_others(self):
         self.assertEqual(self.run_one("you're waiting on", messages=[msg(OWNER, ASKED)], unanswered_from=None)["status"], "waiting_on_others")
+
+    def test_waiting_on_your_team_is_stored_as_team_waiting(self):
+        self.assertEqual(self.run_one("waiting on your team")["status"], "team_waiting")
 
     def test_team_ask_is_stored_as_team_ask(self):
         self.assertEqual(self.run_one("team ask")["status"], "team_ask")
@@ -277,6 +281,19 @@ class WaitingLateTest(LifecycleCase):
         self.apply({DM_A: feature_unit(messages=messages, unanswered_from=messages[2]["ts"])}, {DM_A: entry()}, now=NOW)
 
         self.assertIsNone(self.unit()["late"])
+
+    def team_late(self, now, asked=None, history=HISTORY):
+        self.apply({DM_A: feature_unit(messages=[msg(PEER, asked or self.MONDAY)])}, {DM_A: entry("waiting on your team")}, now=now, history=history)
+        return self.unit()["late"]
+
+    def test_a_team_waiting_unit_is_late_after_the_team_threshold(self):
+        self.assertEqual(self.team_late(THURSDAY, history=History(3, 14, 2)), 3)
+
+    def test_a_team_waiting_unit_is_not_late_at_the_team_threshold(self):
+        self.assertIsNone(self.team_late(THURSDAY, asked=at("2026-10-13T09:00:00Z"), history=History(3, 14, 2)))
+
+    def test_a_team_waiting_unit_takes_the_owner_threshold_when_the_team_has_none(self):
+        self.assertIsNone(self.team_late(THURSDAY))
 
     def test_a_team_ask_is_never_late(self):
         self.apply({DM_A: feature_unit(messages=[msg(PEER, self.MONDAY)])}, {DM_A: entry("team ask")}, now=NOW)
@@ -454,6 +471,21 @@ class ResolvedTest(LifecycleCase):
         self.apply({DM_A: feature_unit(owner_answered=True, unanswered_from=None)}, {DM_A: entry("already handled")}, self.state)
 
         self.assertEqual(self.unit()["status"], "handled")
+
+    def test_a_stored_team_waiting_unit_judged_handled_is_resolved(self):
+        self.settle(stored_status="team_waiting", team_answered=True)
+
+        self.assertEqual((self.summary["resolved"], self.unit()["status"]), ([DM_A], "handled"))
+
+    def test_a_stored_team_waiting_unit_a_member_answered_is_resolved_even_when_judged_otherwise(self):
+        self.settle("you're waiting on", stored_status="team_waiting", team_answered=True)
+
+        self.assertEqual((self.summary["resolved"], self.unit()["status"]), ([DM_A], "handled"))
+
+    def test_a_stored_team_waiting_unit_now_asked_of_the_owner_is_new_under_waiting(self):
+        self.apply({DM_A: feature_unit()}, {DM_A: entry()}, state_of(dm_a=make_unit(status="team_waiting", runs_waiting=0)))
+
+        self.assertIs(self.line("waiting")["is_new"], True)
 
     def test_a_stored_team_ask_judged_handled_is_not_resolved(self):
         self.settle(stored_status="team_ask")
@@ -956,6 +988,11 @@ class SummaryTest(LifecycleCase):
 
         self.assertEqual(self.keys("good_to_know"), [DM_A, THREAD_B])
 
+    def test_a_team_waiting_unit_is_listed_under_team_waiting_and_names_its_asker(self):
+        self.apply({DM_A: feature_unit()}, {DM_A: entry("waiting on your team")})
+
+        self.assertEqual((self.keys("team_waiting"), self.line("team_waiting")["person"]["id"]), ([DM_A], PEER))
+
     def test_a_unit_waited_on_is_listed_under_waiting_on_others(self):
         unit = feature_unit(messages=[msg(OWNER, ASKED)], unanswered_from=None)
         self.apply({DM_A: unit}, {DM_A: entry("you're waiting on")})
@@ -1002,7 +1039,7 @@ class SummaryTest(LifecycleCase):
         self.apply({}, {})
 
         expected = {
-            "digest", "run_at", "window", "report_only", "limited", "waiting", "good_to_know", "waiting_on_others", "handled",
+            "digest", "run_at", "window", "report_only", "limited", "waiting", "team_waiting", "good_to_know", "waiting_on_others", "handled",
             "resolved", "reading", "counts", "blind_spots", "post",
         }
         self.assertEqual(set(self.summary), expected)
@@ -1032,7 +1069,19 @@ class CountsAndPostTest(LifecycleCase):
         }
         self.apply(units, entries, stored)
 
-        self.assertEqual(self.summary["counts"], {"waiting": 2, "late": 1, "new": 2, "resolved": 1, "waiting_on_others": 1})
+        self.assertEqual(self.summary["counts"], {"waiting": 2, "late": 1, "team_waiting": 0, "team_late": 0, "new": 2, "resolved": 1, "waiting_on_others": 1})
+
+    def test_counts_hold_the_team_waiting_units_and_the_late_ones(self):
+        units = {DM_A: feature_unit(messages=[msg(PEER, at("2026-10-09T09:00:00Z"))]), THREAD_B: feature_unit("thread", CHANNEL_B, "#b")}
+        self.apply(units, {DM_A: entry("waiting on your team"), THREAD_B: entry("waiting on your team")}, history=History(3, 14, 2))
+
+        self.assertEqual((self.summary["counts"]["team_waiting"], self.summary["counts"]["team_late"], self.summary["counts"]["late"]), (2, 1, 0))
+
+    def test_the_post_flag_is_true_when_a_unit_waits_on_the_team(self):
+        stored = state_of(dm_a=make_unit(status="team_waiting", runs_waiting=0))
+        self.apply({DM_A: feature_unit()}, {DM_A: entry("waiting on your team")}, stored)
+
+        self.assertIs(self.summary["post"], True)
 
     def test_the_post_flag_is_true_when_a_unit_is_waiting(self):
         self.apply({DM_A: feature_unit()}, {DM_A: entry()}, state_of(dm_a=make_unit()))
@@ -1162,7 +1211,10 @@ class RecordTest(LifecycleCase):
     def test_the_record_counts_each_list(self):
         self.record_run()
 
-        self.assertEqual(self.record["counts"], {"waiting": 1, "good_to_know": 1, "waiting_on_others": 0, "handled": 1, "resolved": 1, "new": 2, "late": 0, "dropped": 1})
+        self.assertEqual(
+            self.record["counts"],
+            {"waiting": 1, "team_waiting": 0, "good_to_know": 1, "waiting_on_others": 0, "handled": 1, "resolved": 1, "new": 2, "late": 0, "team_late": 0, "dropped": 1},
+        )
 
     def test_the_record_holds_the_run_time_and_window(self):
         self.record_run()

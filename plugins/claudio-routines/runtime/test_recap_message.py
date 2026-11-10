@@ -27,6 +27,7 @@ GROUP_DM = "G" + "1" * 6
 OPS = "C" + "1" * 6
 CORE = "C" + "2" * 6
 RELEASES = "C" + "3" * 6
+ARCHI = "C" + "4" * 6
 ROOT = "1791990000.000100"
 REPLY = "1791990730.002679"
 
@@ -70,12 +71,13 @@ def make_summary(**fields):
         "report_only": False,
         "limited": None,
         "waiting": [],
+        "team_waiting": [],
         "good_to_know": [],
         "waiting_on_others": [],
         "handled": [],
         "resolved": [],
         "reading": [],
-        "counts": {"waiting": 0, "late": 0, "new": 0, "resolved": 0, "waiting_on_others": 0},
+        "counts": {"waiting": 0, "late": 0, "team_waiting": 0, "team_late": 0, "new": 0, "resolved": 0, "waiting_on_others": 0},
         "blind_spots": [],
         "post": False,
     }
@@ -96,6 +98,10 @@ def golden_summary():
             make_line(ts=at("2026-10-14T13:00:00Z", 5), status="promise", person=None, due="2026-10-19T08:00:00Z", summary="the revised planning to the team"),
             asked(at("2026-10-15T14:20:00Z", 6), kind="mention", channel=OPS, channel_name="#ops", person=person(PEER, "Peer Name"), summary="mentions you on the incident review", is_new=True),
             make_line(ts=at("2026-10-13T12:00:00Z", 7), kind="thread", channel=OPS, channel_name="#ops", root_ts=at("2026-10-13T11:00:00Z", 7), status="promise", person=None, late=2, summary="the retry policy check"),
+        ],
+        team_waiting=[
+            asked(at("2026-10-15T15:00:00Z", 19), kind="group", status="team_waiting", channel=ARCHI, channel_name="#archi", person=person(THIRD, "Third Name"), summary="needs a review of the queue design", is_new=True),
+            asked(at("2026-10-12T15:00:00Z", 20), kind="group", status="team_waiting", channel=ARCHI, channel_name="#archi", person=person(PEER, "Peer Name"), late=3, summary="asks which cache to use"),
         ],
         good_to_know=[
             make_line(ts=at("2026-10-15T10:00:00Z", 8), kind="thread", status="announcement", channel=RELEASES, channel_name="#releases", root_ts=at("2026-10-15T10:00:00Z", 8), person=None, summary="Release 4 ships on Tuesday"),
@@ -118,7 +124,7 @@ def golden_summary():
             {"text": "Sign-off on the export plan is the one blocker, four days old.", "cites": ["dm-x"]},
             {"text": "Two promises are open, one of them late.", "cites": ["dm-x"]},
         ],
-        counts={"waiting": 7, "late": 2, "new": 3, "resolved": 2, "waiting_on_others": 2},
+        counts={"waiting": 7, "late": 2, "team_waiting": 2, "team_late": 1, "new": 4, "resolved": 2, "waiting_on_others": 2},
         blind_spots=[
             {"key": "search-mentions", "gap": "search mentions cut: 10 page(s) read", "runs": 1},
             {"key": "thread-read", "gap": "one thread could not be read", "runs": 2},
@@ -169,8 +175,14 @@ class TitleTest(RenderCase):
 
 class SummaryTest(RenderCase):
     def test_counts_the_waiting_late_new_resolved_and_awaited_units(self):
-        counts = {"waiting": 3, "late": 1, "new": 2, "resolved": 4, "waiting_on_others": 5}
+        counts = {"waiting": 3, "late": 1, "team_waiting": 0, "team_late": 0, "new": 2, "resolved": 4, "waiting_on_others": 5}
         self.assertEqual(self.lines("Summary", make_summary(counts=counts)), ["- 3 waiting on you (1 late), 2 new, 4 resolved, 5 you're waiting on"])
+
+    def test_counts_the_units_waiting_on_the_team_after_the_owner_ones(self):
+        counts = {"waiting": 3, "late": 1, "team_waiting": 2, "team_late": 1, "new": 2, "resolved": 4, "waiting_on_others": 5}
+        self.assertEqual(
+            self.lines("Summary", make_summary(counts=counts)), ["- 3 waiting on you (1 late), 2 waiting on your team (1 late), 2 new, 4 resolved, 5 you're waiting on"]
+        )
 
     def test_adds_the_blind_spot_gaps_joined_by_semicolons(self):
         spots = [{"key": "one", "gap": "first gap", "runs": 1}, {"key": "two", "gap": "second gap", "runs": 3}]
@@ -192,7 +204,7 @@ class SectionsTest(RenderCase):
     def test_orders_the_sections(self):
         headings = list(sections_of(self.render(golden_summary())))
         self.assertEqual(
-            headings[1:], ["**Summary**", "**Waiting on you**", "**Good to know**", "**You're waiting on**", "**Already handled**", "**Reading**"]
+            headings[1:], ["**Summary**", "**Waiting on you**", "**Waiting on your team**", "**Good to know**", "**You're waiting on**", "**Already handled**", "**Reading**"]
         )
 
     def test_separates_the_sections_by_one_blank_line_and_ends_with_a_newline(self):
@@ -291,6 +303,25 @@ class WaitingLineTest(RenderCase):
 
     def test_a_promise_does_not_name_the_person(self):
         self.assertNotIn("Peer Name", self.waiting(make_line(status="promise"))[0])
+
+
+class TeamWaitingTest(RenderCase):
+    def team(self, *lines):
+        return self.lines("Waiting on your team", make_summary(team_waiting=list(lines)))
+
+    def test_a_team_unit_reads_name_summary_since_and_link(self):
+        line = asked(at("2026-10-14T09:00:00Z"), kind="group", status="team_waiting", channel=ARCHI, channel_name="#archi", summary="asks which cache to use")
+        self.assertEqual(
+            self.team(line), [f"- **Peer Name** asks which cache to use · since Wed 11:00 · [group in #archi](https://example.test/archives/{ARCHI}/p{line['ts'].replace('.', '')})"]
+        )
+
+    def test_a_late_team_unit_has_the_clock_before_the_name(self):
+        self.assertTrue(self.team(asked(at("2026-10-14T09:00:00Z"), status="team_waiting", late=3))[0].startswith("- ⏰ **Peer Name**"))
+
+    def test_the_oldest_team_unit_comes_first(self):
+        newer = asked(at("2026-10-15T09:00:00Z"), status="team_waiting", summary="newer")
+        older = asked(at("2026-10-13T09:00:00Z"), status="team_waiting", summary="older")
+        self.assertEqual([text.split(" · ")[0] for text in self.team(newer, older)], ["- **Peer Name** older", "- **Peer Name** newer"])
 
 
 class OtherSectionsTest(RenderCase):
@@ -660,7 +691,7 @@ class RecapMainMessageTest(FileCase):
 class MessagePartsTest(CliTest):
     def long_summary(self):
         lines = [asked(at("2026-10-15T08:00:00Z", index + 1), key=f"dm-{DM}{index}", summary="asks for a long review " * 8) for index in range(40)]
-        return make_summary(waiting=lines, counts={"waiting": 40, "late": 0, "new": 0, "resolved": 0, "waiting_on_others": 0}, post=True)
+        return make_summary(waiting=lines, counts={"waiting": 40, "late": 0, "team_waiting": 0, "team_late": 0, "new": 0, "resolved": 0, "waiting_on_others": 0}, post=True)
 
     def parts(self):
         names = [f"message.md", *(f"message.{number}.md" for number in range(2, 100) if os.path.exists(self.path(f"message.{number}.md")))]

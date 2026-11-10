@@ -1445,16 +1445,18 @@ A degraded run's message is one line that starts with `degraded:` and names the 
 - Facts per unit, computed by the script (AC-46.1):
   - `last_author_is_owner`;
   - `unanswered_from`: the ts of the first message from someone else after the owner's last message or reaction, or null;
-  - `groups`: the configured groups mentioned (from the messages' group ids), each with its landing section and `answered`, true when someone other than the first mentioner wrote after the first mention;
+  - `groups`: the configured groups mentioned (from the messages' group ids), each with its landing section and `answered`, true when someone other than the first mentioner wrote after the first mention; for a group landing in team, true only when a listed member other than the first mentioner replied after the first mention or reacted to it or to a later message (`reacted_by`);
+  - `team_answered`: a group landing in team is mentioned and `answered`;
   - `direct_mention`, `announcement_channel`, `owner_took_part`;
   - `age_working_days` of `unanswered_from`, in the config timezone (AC-46.3);
   - `owner_answered`: a message from someone else exists and the owner replied after the last one or reacted to it;
   - `previous`: the stored unit, or null.
 - `allowed`: the kinds the facts allow, which the checker enforces (TD-61):
   - `waiting on you` when `unanswered_from` is set and the unit is a direct or group conversation, a direct mention (the owner's id in a message's user ids), a group landing in Waiting on you, or a thread the owner took part in;
+  - `waiting on your team` when `unanswered_from` is set, a group landing in team is mentioned, no member answered, and `waiting on you` is not allowed (AC-47.7);
   - `team ask` when `unanswered_from` is set, a group landing in Good to know is mentioned and nobody answered;
   - `you're waiting on` and `promise` when the last message is the owner's;
-  - `already handled` when the owner answered the last message from someone else, by a reply or a reaction, or the unit is stored as waiting or promise;
+  - `already handled` when the owner answered the last message from someone else, by a reply or a reaction, or the unit is stored as waiting or promise, or a team member answered a team ask not addressed to the owner in person;
   - `announcement` when the unit is in an announcement channel;
   - `noise` always.
 - `features.json` holds message text for the judgment and stays in the run directory; nothing of it reaches the state or the run record (BR-67).
@@ -1479,7 +1481,7 @@ A degraded run's message is one line that starts with `degraded:` and names the 
   - `due`, converted to UTC, is a valid time within 400 days of the window end.
   - `apply` loads the judgment through the same checks, so it never stores a kind the facts forbid.
 - The template allows one correction, then posts the degraded message and writes no state (AC-47.6), as the tribe template does.
-- The person a line names is chosen by the script, never written by the model: the author of `unanswered_from` for `waiting on you` and `team ask`, the other participant of a direct conversation or the last other author of a thread for `you're waiting on`.
+- The person a line names is chosen by the script, never written by the model: the author of `unanswered_from` for `waiting on you`, `waiting on your team` and `team ask`, the other participant of a direct conversation or the last other author of a thread for `you're waiting on`.
 
 **Alternatives considered**:
 - Free text per section: rejected, the post would carry unchecked model text (TD-33).
@@ -1490,9 +1492,10 @@ A degraded run's message is one line that starts with `degraded:` and names the 
 
 **Choice**:
 - State: `{"schema": 1, "digest", "run": {"at", "previous_at", "window": {"from_ts", "to_ts"}}, "units": {"<key>": {"kind", "channel", "channel_name", "person", "title", "first_seen", "last_ts", "status", "runs_waiting", "late", "due"}}, "blind_spots": [...]}`. `channel_name` and `person` (the id and display name the message names, TD-61) are kept so a unit read again outside any search still renders its label and person; both are null when unknown, as in a seeded unit. No message text, no summary (BR-67).
-- `apply` maps each judged kind to a status: `waiting on you` to `waiting`, `promise` to `promise`, `you're waiting on` to `waiting_on_others`, `team ask` to `team_ask`, `already handled` to `handled`, `announcement` to `announcement`; a `noise` unit is not stored.
+- `apply` maps each judged kind to a status: `waiting on you` to `waiting`, `waiting on your team` to `team_waiting`, `promise` to `promise`, `you're waiting on` to `waiting_on_others`, `team ask` to `team_ask`, `already handled` to `handled`, `announcement` to `announcement`; a `noise` unit is not stored.
 - `runs_waiting` counts the runs a unit stays `waiting` or `promise`; `late` is the age in working days once it exceeds `late_after_working_days` (default 3) for `waiting`, or once `due` has passed, or from the working day after `first_seen` with no `due`, for `promise` (AC-48.2, AC-47.4); a promise re-judged without a due keeps its stored due.
 - A stored `waiting` or `promise` unit judged `already handled` or `noise`, or a stored `waiting` unit whose facts show the owner answered, is resolved: listed once in the summary's `resolved`, then stored as `handled` (AC-48.3). A promise is made as a reply, so the owner having answered never resolves it.
+- A `team_waiting` unit is late once its age exceeds `team_late_after_working_days`, `late_after_working_days` when unset; a stored `team_waiting` unit judged `already handled` or `noise`, or whose facts show `team_answered`, is resolved (AC-48.5). It is listed under Waiting on your team and counted in `team_waiting` and `team_late` (AC-49.7).
 - A unit absent from the run whose `last_ts` is older than `drop_after_days` (default 14) leaves the state; a unit read in the run stays, since stored waiting and promise units are read again every run (AC-48.4).
 - The window: from `run.at` to now. A baseline run, or a gap of more than `lookback_working_days` (default 3) working days, starts at local midnight of the `lookback_working_days`-th working day before the local date of now: on a Thursday with 3, Monday 00:00; on a Saturday, Wednesday 00:00 (AC-45.4).
 - Working days are Monday to Friday in the config timezone, counted on local dates, so a daylight saving change counts the same days (AC-46.3). The calendar helpers sit in `recap_window.py`.
@@ -1514,7 +1517,7 @@ A degraded run's message is one line that starts with `degraded:` and names the 
 ### TD-64: Recap routine file, template and seed
 
 **Choice**:
-- `config/routines/<slug>.json` with `engine: recap` holds (AC-50.1): `owner` (chat user id), `workspace` host, `groups` (id, label, `lands_in`: `waiting` or `good_to_know`), `announcement` (channel ids and the topics kept), `window` (`lookback_working_days`), `exclude` (author ids, channel ids, and `keep_bots`, the bot ids kept), `history` (`late_after_working_days`, `drop_after_days`, both optional), the ask rules text, and chat sources only, each with the routine's `owner`; each search carries its own look-back. The role check names the key path of an invalid value, nested keys included, and `routines.py lint --private` runs it on every routine file.
+- `config/routines/<slug>.json` with `engine: recap` holds (AC-50.1): `owner` (chat user id), `workspace` host, `groups` (id, label, `lands_in`: `waiting`, `team` or `good_to_know`, and `members`, the user ids of the team, on a team group only and required there), `announcement` (channel ids and the topics kept), `window` (`lookback_working_days`), `exclude` (author ids, channel ids, and `keep_bots`, the bot ids kept), `history` (`late_after_working_days`, `team_late_after_working_days`, `drop_after_days`, all optional), the ask rules text, and chat sources only, each with the routine's `owner`; each search carries its own look-back. The role check names the key path of an invalid value, nested keys included, and `routines.py lint --private` runs it on every routine file.
 - The runnable template `chat-recap.md` follows the tribe template's steps without the page: runtime check, load state, window, environment check, collect, features, judge, apply, save state on the state branch, message, report, as the tribe template saves before it renders.
 - `recap.py seed --from <json>` converts the document store state (schema 1, units with kind, channel, title, permalink, first_seen, last_ts, status, runs_waiting, late) into the runtime state: it drops `permalink` (rebuilt from keys), maps statuses, truncates titles to 8 words and validates; it fails naming the key path of a unit it cannot map (AC-50.2).
 - After the switch, the template reads no document store page (AC-50.3).

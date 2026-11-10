@@ -1170,6 +1170,27 @@ class RecapConfigTest(unittest.TestCase):
     def test_rejects_a_group_landing_outside_the_two_sections(self):
         self.rejected("groups[0].lands_in", groups=[{"id": "S1", "label": "Core", "lands_in": "elsewhere"}])
 
+    def test_accepts_a_team_group_with_its_members(self):
+        config = make_recap_config(groups=[{"id": "S1", "label": "Core", "lands_in": "team", "members": ["U" + "4" * 6]}])
+        self.assertIsNone(roles.validate_config(config, RECAP, "local", role_of))
+
+    def test_rejects_a_team_group_without_members(self):
+        for group in ({"id": "S1", "label": "Core", "lands_in": "team"}, {"id": "S1", "label": "Core", "lands_in": "team", "members": []}):
+            with self.subTest(group=group):
+                self.rejected("groups[0].members", groups=[group])
+
+    def test_rejects_members_on_a_group_that_does_not_land_in_team(self):
+        self.rejected("groups[0].members", groups=[{"id": "S1", "label": "Core", "lands_in": "waiting", "members": ["U" + "4" * 6]}])
+
+    def test_accepts_a_team_late_after_of_its_own(self):
+        config = make_recap_config(history={"late_after_working_days": 3, "team_late_after_working_days": 2})
+        self.assertIsNone(roles.validate_config(config, RECAP, "local", role_of))
+
+    def test_rejects_a_team_late_after_outside_0_to_365(self):
+        for value in (-1, 366, "2", True):
+            with self.subTest(value=value):
+                self.rejected("history.team_late_after_working_days", history={"team_late_after_working_days": value})
+
     def test_rejects_a_group_without_a_label_naming_its_index(self):
         groups = [{"id": "S1", "label": "Core", "lands_in": "waiting"}, {"id": "S2", "lands_in": "waiting"}]
         self.rejected("groups[1].label", groups=groups)

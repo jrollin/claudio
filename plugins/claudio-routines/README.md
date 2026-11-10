@@ -499,11 +499,11 @@ Routine keys of the engine, validated at config load and by `routines.py lint --
 |---|---|
 | `owner` | The chat user id of the owner; each chat source sets the same `owner` |
 | `workspace` | The chat host name that builds the message links |
-| `groups` | List of `{id, label, lands_in}`, `lands_in` being `waiting` or `good_to_know` |
+| `groups` | List of `{id, label, lands_in}`, `lands_in` being `waiting` (Waiting on you), `team` (Waiting on your team) or `good_to_know`; a `team` group also lists `members`, the user ids whose reply or reaction settles its asks |
 | `announcement` | Optional `channels` and `topics`: the channels read for announcements and the topics kept |
 | `window` | `lookback_working_days`, 1 to 365: the working days a baseline run or a run after a long gap reads; each search carries its own look-back |
 | `exclude` | Optional `authors`, `channels` and `keep_bots` (the bot ids kept) |
-| `history` | Optional `late_after_working_days` (0 to 365) and `drop_after_days` (1 to 365); the engine defaults apply when left out |
+| `history` | Optional `late_after_working_days` (0 to 365), `team_late_after_working_days` (0 to 365, `late_after_working_days` when left out) and `drop_after_days` (1 to 365); the engine defaults apply when left out |
 | `rules` | Non-empty list of the ask rules the judgment follows |
 | `thread_reads` | Optional `full` (default) or `since`; see Thread reads |
 
@@ -538,7 +538,7 @@ python3 runtime/weekly.py message  --summary SUMMARY --features FEATURES --out M
 - `window` starts at Monday 00:00 of the week of `--now` in `--tz`, across a clock change, and ends at `--now`, which must be a UTC time ending in `Z`. It writes `from_ts`, `to_ts`, `week_start` and `report_only`; the window keeps no cursor, so `--report-only` only marks it.
 - `features` reads the collection of each source in `DIR/<source>.json` and writes one item per issue, pull request, chat thread or direct message and page with activity in the window. An item holds `source`, `role`, `kind`, `title`, `status`, `link`, `when`, `people`, `excerpts` (`by`, `at`, `text`), `channel_name` (the chat channel's name, else null) and `waiting_on`.
   - Keys: `issue:<key>`, `pr:<repo>#<number>`, `chat:<recap unit key>`, `page:<id>`.
-  - `waiting_on` says who waits: on a recap item, `owner` for the status `waiting` or `promise`, the person's name for `waiting_on_others` (null without a person) and `team` for `team_ask`, else null. An issue, a pull request, a page and a direct-only chat item keep null. The `weekly-status` template sets an open item's `owner` from it when it names another person.
+  - `waiting_on` says who waits: on a recap item, `owner` for the status `waiting` or `promise`, the person's name for `waiting_on_others` (null without a person) and `team` for `team_ask` and `team_waiting`, else null. An issue, a pull request, a page and a direct-only chat item keep null. The `weekly-status` template sets an open item's `owner` from it when it names another person.
   - Excerpts: pull request activity up to 10 and chat messages up to 15, each text cut to 500 characters, newest first; a page gives its first 1000 characters as one excerpt.
   - `--recap` is the folder of the recap routine's `state.json` and `runs/` records. A recap unit first seen or last written in the week makes a chat item with its title, status and link (a thread's root message, or the conversation); the week's records give `recap_counts` (`new`, `resolved`, `handled`). A direct chat source adds its messages to the item of the same key, or makes its own.
   - Chat units in `exclude.channels` are dropped from the items and the counts.
@@ -651,7 +651,7 @@ With `places.<place>.store_dir` set, the runs of that place share their reads:
 - A channel history fetches only the gaps of its span that the reused reads leave, one read per gap. A thread is read from the end of its covered part.
 - Messages merge by ts, the newest fetch winning, then keep the needed span.
 - Reactions, members and user names reuse the newest fresh read whole.
-- A reactions read is skipped for a message whose history or thread read of this run shows no `Reactions:` line: its `owner_reacted` is false. A message known only from a search hit, or from a stored read reused from an earlier fetch, keeps its reactions read: the flag is never stored, because a stored read can be older than a reaction.
+- A reactions read is skipped for a message whose history or thread read of this run shows no `Reactions:` line: its `owner_reacted` is false and its `reacted_by` empty. A message known only from a search hit, or from a stored read reused from an earlier fetch, keeps its reactions read: the flag is never stored, because a stored read can be older than a reaction.
 - A reused read is linked into `<run>/store` and listed in the manifest, so the run folder replays alone.
 - A reused read spends no call of `call_cap` or of the page caps.
 - Records that another runtime commit parsed are reparsed from their pages before use, with no network.

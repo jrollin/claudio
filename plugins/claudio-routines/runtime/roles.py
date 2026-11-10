@@ -29,7 +29,8 @@ TRIBE_ENGINE = ENGINES[1]
 RECAP_ENGINE = ENGINES[2]
 WEEKLY_ENGINE = ENGINES[3]
 WEEKLY_ROLES = ("issue_tracker", "code_host", "chat", "document_store")
-RECAP_LANDINGS = ("waiting", "good_to_know")
+RECAP_LANDINGS = ("waiting", "team", "good_to_know")
+TEAM_LANDING = "team"
 THREAD_READS = ("full", "since")
 MAX_AGE_KINDS = ("default", "history", "thread", "reactions", "people")
 DOT_PARTS = (".", "..")
@@ -246,7 +247,7 @@ WEEKLY_KEYS = {
 RECAP_KEYS = {
     "owner": TEXT,
     "workspace": WORKSPACE,
-    "groups": ListOf(Exact({"id": TEXT, "label": TEXT, "lands_in": Choice(RECAP_LANDINGS)})),
+    "groups": ListOf(Exact({"id": TEXT, "label": TEXT, "lands_in": Choice(RECAP_LANDINGS), "members": Omittable(ListOf(TEXT))})),
     "announcement": Exact({"channels": Omittable(ListOf(TEXT)), "topics": Omittable(ListOf(TEXT))}),
     "window": Exact({"lookback_working_days": _whole_days(1, RECAP_LOOKBACK_CAP)}),
     "exclude": Exact({"authors": Omittable(ListOf(TEXT)), "channels": Omittable(ListOf(TEXT)), "keep_bots": Omittable(ListOf(TEXT))}),
@@ -254,6 +255,7 @@ RECAP_KEYS = {
         Exact(
             {
                 "late_after_working_days": Omittable(_whole_days(0, RECAP_LOOKBACK_CAP)),
+                "team_late_after_working_days": Omittable(_whole_days(0, RECAP_LOOKBACK_CAP)),
                 "drop_after_days": Omittable(_whole_days(1, RECAP_LOOKBACK_CAP)),
             }
         )
@@ -412,6 +414,7 @@ ROLE_SCHEMAS = {
                                 "group_mentions": ListOf(STRING),
                                 "text": STRING,
                                 "owner_reacted": Omittable(BOOLEAN),
+                                "reacted_by": Omittable(ListOf(STRING)),
                             }
                         ),
                     }
@@ -573,6 +576,7 @@ def validate_config(config, routine, place, role_of=None):
     engine = chosen.get("engine", DEFAULT_ENGINE)
     if engine == RECAP_ENGINE:
         _conform(chosen, RECAP_KEYS, routine_path, ConfigError, exact=False)
+        _validate_group_members(chosen["groups"], routine_path)
     if engine == WEEKLY_ENGINE:
         _conform(chosen, WEEKLY_KEYS, routine_path, ConfigError, exact=False)
     sources = _config_field(chosen, routine_path, "sources", MapOf({}, non_empty=True))
@@ -583,6 +587,16 @@ def validate_config(config, routine, place, role_of=None):
         _validate_source(sources[name], f"{routine_path}.sources.{name}", providers, place, role_of, engine, chosen.get("owner"), injected)
     if chosen.get("engine") == TRIBE_ENGINE:
         _validate_publication(chosen, routine_path, providers)
+
+
+def _validate_group_members(groups, routine_path):
+    for index, group in enumerate(groups):
+        path = f"{routine_path}.groups[{index}].members"
+        is_team = group["lands_in"] == TEAM_LANDING
+        if is_team and not group.get("members"):
+            raise ConfigError(f"{path}: a group that lands in team lists its members, the user ids whose reply or reaction answers it")
+        if not is_team and "members" in group:
+            raise ConfigError(f"{path}: only a group that lands in team lists members")
 
 
 def _validate_source(source, path, providers, place, role_of, engine, owner=None, injected=()):

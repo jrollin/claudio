@@ -218,7 +218,7 @@ class KindTest(CheckTestCase):
     def test_an_unknown_kind_is_rejected_with_the_kinds(self):
         message = self.rejection(unit_field("kind", "urgent"))
 
-        self.assertIn(f"units.{ASK_KEY}.kind: expected one of waiting on you, team ask", message)
+        self.assertIn(f"units.{ASK_KEY}.kind: expected one of waiting on you, waiting on your team, team ask", message)
 
     def test_a_kind_that_is_not_a_string_is_rejected(self):
         self.assertIn(f"units.{ASK_KEY}.kind: expected one of", self.rejection(unit_field("kind", ["noise"])))

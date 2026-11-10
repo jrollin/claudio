@@ -143,7 +143,7 @@ def waiting_on(unit):
         return OWNER
     if unit["status"] == "waiting_on_others":
         return None if unit["person"] is None else unit["person"]["name"]
-    return TEAM if unit["status"] == "team_ask" else None
+    return TEAM if unit["status"] in ("team_ask", "team_waiting") else None
 
 
 def recap_unit_items(stored, window, routine, excluded, items):
