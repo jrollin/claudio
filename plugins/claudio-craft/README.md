@@ -74,6 +74,20 @@ Engineering craft plugin for Claude Code: TDD discipline, skill testing, doc/cod
   - `references/lenses.md`: the 8 lenses, with questions and code signals.
   - `references/report-template.md`: writing rules, Monitoring status, local report, draft comment.
 
+- **`verify-findings`**: check findings a review agent already produced, before acting on them.
+  - normalizes each finding into a neutral claim (defect and location, no impact) tagged
+    `runtime`, `structural`, or `absence`
+  - merges duplicates across agents and sorts claims by source severity
+  - hands all claims to one `verify-adversary` agent, never a fork
+  - withholds the reviewer's reasoning, severity, source, and fix
+  - static only: tests are read, never run
+  - reads every cited line, re-runs one search per search-based verdict, and reads the whole
+    path for a high or critical finding it would clear
+  - tags each finding `confirmed`, `plausible`, `unverified`, `stale`, `not relevant`, or
+    `refuted`, with evidence and the source's fix
+  - recomputes each source agent's verdict when a finding changes it
+  - `SKILL.md`: iron rule, normalization, code pinning, dispatch, adversary check table, report.
+
 ### Agents
 
 All agents are **read-only** by default: they report findings and suggested
@@ -131,6 +145,12 @@ individually, or fan them out in parallel for a full-spectrum review.
   Complements the `tdd` skill (which writes tests); this reviews them.
   Triggers on "are these tested?", "review the tests", "any flaky tests?".
 
+**Internal agents**: dispatched by a skill, not by a user request.
+
+- **`verify-adversary`**: dispatched by `verify-findings`. Gets neutral claims, looks for
+  counter-evidence first, and returns a verdict per claim with the evidence its kind requires.
+  Tools are Read, Glob, and Grep only, so it cannot edit or run code.
+
 ## Install
 
 Via the claudio marketplace:
@@ -147,6 +167,8 @@ Via the claudio marketplace:
 - Writing style: `/writing-style`, or "apply my writing style" / "rewrite this without AI slop".
 - PR review: `/pr-review 123`, or "review PR 123" / "re-review the PR".
 - PR challenge: `/pr-challenge 123`, or "challenge PR 123" / "will this PR scale?".
+- Verify findings: `/verify-findings`, or "verify these findings" / "any false positives?"
+  after a review agent reports.
 - Doc review: ask "review docs vs code" or "@doc-vs-code-review docs/architecture.md".
 - Best-practice review: invoke a single dimension (e.g.
   "@performance-review src/api" or "@security-review") or ask for several at
@@ -282,6 +304,7 @@ claudio-craft/
     quality-review.md
     documentation-review.md
     test-review.md
+    verify-adversary.md      # internal, dispatched by verify-findings
   tests/
     eval.sh                  # routing eval harness (agent descriptions)
     golden_examples.yaml     # 16 routing scenarios
@@ -304,4 +327,6 @@ claudio-craft/
     pr-challenge/
       SKILL.md
       references/{lenses,report-template}.md
+    verify-findings/
+      SKILL.md
 ```

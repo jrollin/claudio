@@ -30,6 +30,7 @@ This repository hosts several plugins, each shipped independently from the `clau
 | `pr-review` | Review someone else's pull request: threads, diff, severity-tagged comments posted after approval |
 | `pr-triage` | Address review feedback on your own pull request: verify, fix, reply |
 | `pr-challenge` | Challenge a pull request as an architect: scale, monitoring, failure modes, cost |
+| `verify-findings` | Verify a review agent's findings with a read-only adversary agent: verdict and `path:line` evidence per finding |
 | `@agent-claudio-craft:doc-vs-code-review` | Review whether documentation matches the current code |
 | `@agent-claudio-craft:documentation-review` | Judge documentation quality: completeness, clarity, structure |
 | `@agent-claudio-craft:quality-review` | Review readability, duplication, dead code and simplicity |
