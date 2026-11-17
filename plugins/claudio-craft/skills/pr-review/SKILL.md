@@ -208,6 +208,29 @@ A resolved thread whose concern still holds at `headRefOid`, fully or in part, d
 finding: nobody acts on a resolved thread. List it under **Notes for you** with the thread and the
 `path:line`, never under **Checked and dropped**.
 
+#### Verify
+
+After the dedupe check, look for the code that proves each remaining candidate wrong:
+
+- Reachability: trace the faulty code back to an entry point at `headRefOid`.
+  - An entry point (route, exported function, event, queue, or schedule trigger) is reachable
+    even with no caller in the repository.
+  - Drop the finding when no entry point reaches the faulty code.
+- Guards: look for a validator, type, constraint, or caller check that already prevents it.
+- Tests: a passing test refutes it only when it asserts the correct outcome for the exact input
+  the finding names. A test that only runs the path refutes nothing.
+- Relevance:
+  - Drop the finding when the author would not act on it.
+  - Lower the severity when the impact shrinks at the inputs and volumes this code really sees.
+
+Give each candidate one verdict:
+
+| Verdict | Evidence | Goes to |
+| --- | --- | --- |
+| **confirmed** | `path:line` showing the code is reachable and unguarded, or a repro | New findings, drafted as a claim |
+| **plausible** | Real risk, inconclusive evidence (runtime value, config, external system) | New findings, drafted as a question |
+| **dropped** | Refuted by the entry-point trace, a guard, a test, or the relevance check | **Checked and dropped**, with the refuting `path:line` or the relevance reason |
+
 ### 4. Report
 
 One block per item, draft right under it. Numbered continuously across sections, so one number
@@ -237,7 +260,7 @@ Nothing to post:
 
 ## New findings
 
-3. 🟡 medium · `path:line` · <title>
+3. 🟡 medium · confirmed · `path:line` · <title>
 
    🟡 medium: <title>
 
@@ -248,7 +271,7 @@ Nothing to post:
 
 ## Checked and dropped
 
-- <suspected issue>: why it does not hold, or which thread already covers it
+- <suspected issue>: the refuting `path:line`, the relevance reason, or the thread that covers it
 
 ## Notes for you
 
@@ -264,8 +287,10 @@ New findings are sorted by severity, one emoji each: 🔴 critical > 🟠 high >
 ⚪ low. The draft is the comment text as posted: severity line, then Risk, Impact, and Fix, one
 sentence each (about 25 words). Evidence the author does not need to act (runtime source lines,
 private symbols) goes to **Notes for you**. A finding confirmed by running code gets a `Repro:`
-bullet: one line of code, its result, and the expected result. A finding outside the diff has no
-number: it goes into the summary comment.
+bullet: one line of code, its result, and the expected result. A `plausible` finding keeps the
+severity block, but its Risk line asks the author whether the condition can happen. The verdict
+stays in the report header, never in the posted draft. A finding outside the diff has no number:
+it goes into the summary comment.
 
 Thread replies stay 1 to 2 sentences, no severity block.
 
@@ -279,11 +304,23 @@ Draft style: direct, specific, one issue per comment, no praise padding, no hedg
 - Fix: load the invoice scoped to `current_user`
 ```
 
+A `plausible` finding asks instead of asserting:
+
+```markdown
+🟡 medium: retry loop may never stop on a 4xx
+
+- Risk: can the payment API return a 4xx here? `retry()` retries every error with no cap
+- Impact: if so, each failed charge holds a worker until the job timeout
+- Fix: retry only 5xx and timeouts, and cap the attempts
+```
+
 The summary comment is for the PR author, not a log of the review:
 
 - Verdict in one line: `Blocking: <reason>`, `Non-blocking: <reason>`, or `No issues found`.
   Never "Approve" or "Request changes": those are review states the user sets.
-- Finding counts per severity, and open threads by status.
+  Only a **confirmed** finding makes it `Blocking`.
+- Finding counts per severity, plausible findings counted apart as questions, and open threads
+  by status.
 - Out-of-diff follow-ups.
 
 Thread bookkeeping (counts read, resolved-without-reply, skipped threads) goes to **Notes for
@@ -351,5 +388,6 @@ ask whether to fold it into the summary. Report the URL of the review and of eac
 - A finding that undoes what a resolved thread asked for.
 - A reply on another reviewer's thread that only restates the ask.
 - A finding without risk, impact, and fix.
+- A finding drafted as a claim without a **confirmed** verdict.
 - Inline comments anchored to a stale commit.
 - Resolving `{owner}`/`{repo}` from the current directory when the PR lives elsewhere.
